@@ -1,0 +1,58 @@
+import { WORLD_OFFSET } from "./worldFrame";
+
+/**
+ * Loads scanner poses from a header-less CSV. Each row:
+ *
+ *   timestamp, x, y, z, qx, qy, qz, qw
+ *
+ *   timestamp   Unix time in seconds (5 Hz in our file)
+ *   x, y, z     scanner position in metres, same frame as map.las (Z-up)
+ *   qx..qw      orientation quaternion, scalar (w) last — not visualised yet
+ *
+ * Positions are shifted by WORLD_OFFSET, exactly like the point cloud.
+ */
+
+export type PoseData = {
+  count: number;
+  timestamps: Float64Array;
+  /** [x0, y0, z0, x1, y1, z1, ...], offset already subtracted */
+  positions: Float32Array;
+  /** [qx0, qy0, qz0, qw0, ...] */
+  orientations: Float32Array;
+};
+
+const COLUMNS = 8;
+
+export async function loadPoses(url: string): Promise<PoseData> {
+  const response = await fetch(url);
+  if (!response.ok) {
+    throw new Error(`Could not load ${url} (HTTP ${response.status})`);
+  }
+  const text = await response.text();
+
+  const lines = text.split("\n").filter((line) => line.trim() !== "");
+  const count = lines.length;
+
+  const timestamps = new Float64Array(count);
+  const positions = new Float32Array(count * 3);
+  const orientations = new Float32Array(count * 4);
+
+  lines.forEach((line, i) => {
+    const values = line.split(",").map(Number);
+    if (values.length !== COLUMNS || values.some(Number.isNaN)) {
+      throw new Error(`poses.csv line ${i + 1}: expected ${COLUMNS} numbers, got "${line}"`);
+    }
+    const [t, x, y, z, qx, qy, qz, qw] = values;
+
+    timestamps[i] = t;
+
+    // Subtract in float64 (plain JS numbers) before storing as float32.
+    positions[i * 3 + 0] = x - WORLD_OFFSET[0];
+    positions[i * 3 + 1] = y - WORLD_OFFSET[1];
+    positions[i * 3 + 2] = z - WORLD_OFFSET[2];
+
+    orientations.set([qx, qy, qz, qw], i * 4);
+  });
+
+  return { count, timestamps, positions, orientations };
+}

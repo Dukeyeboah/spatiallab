@@ -1,0 +1,20 @@
+node_modules
+.next
+out
+next-env.d.ts
+*.tsbuildinfo
+.DS_Store
+
+# Raw LiDAR files are large; keep them out of git.
+*.las
+*.laz
+
+# Converted point clouds (regenerate with scripts/convert_las.py).
+public/data/*.bin
+
+# Local dataset store written by the backend (uploads + converted data).
+spatial-data/
+
+# Python backend environment.
+backend/.venv/
+__pycache__/
