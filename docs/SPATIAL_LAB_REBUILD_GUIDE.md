@@ -39,6 +39,7 @@ A deliberately small Next.js + React Three Fiber app that renders a **real** LiD
 | 4 | Soft points | alpha, blending, `depthWrite`/`depthTest` tradeoffs |
 | 5 | Elliptical Gaussian | anisotropic Gaussians, rotation, covariance (pre-splatting) |
 | 6 | 3D Gaussian projection (separate page `/gaussian-projection`) | Σ3D = R S Sᵀ Rᵀ, Jacobian projection Σ2D = J W Σ3D Wᵀ Jᵀ, screen-space quads |
+| 7A | Multi-dataset import (local FastAPI backend) | per-dataset offsets and metadata, background conversion, pose/frame validation, safe local storage, GPU disposal on switch |
 
 The dataset used: a handheld/SLAM LiDAR scan (`map.las`, 5,242,880 points, 178 MB, local metric frame, RGB) plus `poses.csv` (208 poses, 5 Hz, 41.4 s).
 
@@ -99,16 +100,37 @@ export default nextConfig;
 - `.gitignore`: `node_modules`, `.next`, `*.las`, `*.laz` (raw scans are large).
 - Next.js 16 writes an `AGENTS.md`/`CLAUDE.md` block on `next dev`; leave it.
 
+### 3.1 Local dataset backend (Lab 7A)
+
+Python 3.11+ (tested with 3.13), its own virtual environment, pinned in `backend/requirements.txt`: `fastapi 0.143.0`, `uvicorn[standard] 0.54.0`, `python-multipart 0.0.32`, `laspy 2.7.0`, `numpy 2.5.3`.
+
+```bash
+# once
+python3 -m venv backend/.venv
+backend/.venv/bin/pip install -r backend/requirements.txt
+
+# terminal 1: backend (local only)
+cd backend && .venv/bin/uvicorn app:app --host 127.0.0.1 --port 8000
+
+# terminal 2: frontend
+npm run dev        # http://localhost:3000
+```
+
+Environment variables (all optional): `SPATIAL_LAB_DATA_DIR` (default `<repo>/spatial-data`), `SPATIAL_LAB_ALLOWED_ORIGINS` (CORS, default `http://localhost:3000,http://127.0.0.1:3000`), and for the frontend `NEXT_PUBLIC_SPATIAL_API_URL` (default `http://127.0.0.1:8000`). The viewer works without the backend (built-in dataset only).
+
+Disk: an import needs roughly 2.3× the LAS size free while uploading (upload buffer + stored original) plus ~15 bytes × 3.5M points for the budgets.
+
 ## 4. Architecture
 
 ```
 app/
   layout.tsx            root HTML, imports globals.css
-  page.tsx              client page: ALL app state + data loading; renders scene + panel
+  page.tsx              client page: ALL app state + data loading (datasets, budgets, poses); renders scene + panel
   globals.css           full-screen canvas, overlay panel styles
 components/
   SpatialScene.tsx      <Canvas>, background, Perf, OrbitControls, grid, LiDAR group
-  CameraFraming.tsx     initial camera + OrbitControls target, Reset View (renders nothing)
+  CameraFraming.tsx     camera + OrbitControls target framed once per dataset, Reset View (renders nothing)
+  DatasetManager.tsx    collapsible Datasets section: select, metadata/status, import form, delete
   PointCloud.tsx        BufferGeometry from typed arrays; picks Standard or Shader material
   ShaderPointsMaterial.tsx  RawShaderMaterial; shader table per experiment; uniforms; blending
   Trajectory.tsx        THREE.Line + <points> sharing one geometry of pose positions
@@ -127,21 +149,32 @@ lib/gaussian/
 shaders/projectedGaussianShader.ts  GLSL3 quad vertex/fragment (conic falloff, outline)
 lib/
   loadPointCloud.ts     binary point-cloud loader (format in section 5)
-  loadPoses.ts          poses.csv parser, applies WORLD_OFFSET
-  worldFrame.ts         WORLD_OFFSET and LIDAR_TO_THREE_ROTATION (single source of truth)
-  pointBudgets.ts       list of { label, url } datasets
+  loadPoses.ts          poses.csv parser, subtracts the dataset's offset
+  worldFrame.ts         LIDAR_TO_THREE_ROTATION (Z-up → Y-up)
+  datasets.ts           Dataset type (= backend metadata), BUILTIN_DATASET (map.las offset/bounds),
+                        asset URLs, pickBudget(), backend API calls, client-side file checks
   usefulBounds.ts       1st–99th percentile bounding box (ignores stray points)
   initialView.ts        computes camera position + target from useful bounds
   viewSettings.ts       ViewSettings type + defaults; shader experiment types/params
 shaders/                GLSL as exported TS template strings (no bundler loader needed)
-scripts/convert_las.py  LAS → browser binary converter
-public/data/            pointcloud-500k.bin, pointcloud-1m.bin, pointcloud-2m.bin, poses.csv
+scripts/convert_las.py  LAS → browser binary converter (CLI; uses backend/lidar_conversion.py)
+public/data/            built-in dataset: pointcloud-500k/1m/2m.bin (gitignored), poses.csv
+backend/                local FastAPI dataset service (Lab 7A)
+  app.py                routes, CORS, worker process pool, restart recovery
+  storage.py            dataset folders, id validation, atomic metadata.json, budget table
+  uploads.py            per-role extension/size/content validation
+  converter.py          conversion job (progress → metadata) + pose/frame validation
+  lidar_conversion.py   shared core: chunked LAS read, offset, sampling, .bin writer
+  requirements.txt
+spatial-data/           (gitignored) datasets/<id>/{metadata.json, source/, converted/}
 docs/                   this guide
 ```
 
 Data and state flow:
 
-- `page.tsx` owns state: selected budget, loaded point cloud, poses, selected pose index, `ViewSettings`, `viewResetRequest` counter, status/error strings.
+- `page.tsx` owns state: dataset list (built-in + backend), selected dataset id, preferred budget key, loaded point cloud and poses (each tagged with its dataset id), selected pose index, `ViewSettings`, `viewResetRequest` counter, status/error strings. The dataset list is polled every 1.5 s only while a conversion runs.
+- Loaded data is stored as `{ datasetId, data }` and only passed to the scene when `datasetId` matches the selection, so the scene never sees the previous dataset's data together with the new dataset's id (which would frame the camera on the wrong scene).
+- Effects depend on primitive keys (URL strings, ids), not on dataset objects, because polling replaces the objects every 1.5 s.
 - Data flows **down** as props: `page → SpatialScene → PointCloud/Trajectory/ScannerMarker`, and `page → Controls`.
 - Controls report changes **up** via callbacks (`onChange(settings)`, `onBudgetChange`, `onPoseIndexChange`, `onResetView`).
 - HTML UI lives outside the `<Canvas>`; communication into the canvas uses props (e.g. an incrementing `viewResetRequest` number that an effect inside the canvas watches).
@@ -170,7 +203,7 @@ Little-endian, no padding:
 
 ```
 uint32                N
-float32[N * 3]        X, Y, Z    metres, WORLD_OFFSET already subtracted, Z-up
+float32[N * 3]        X, Y, Z    metres, the dataset's offset already subtracted, Z-up
 uint8[N * 3]          R, G, B    0..255
 ```
 
@@ -184,16 +217,16 @@ python3 scripts/convert_las.py source-data/map.las public/data/pointcloud-1m.bin
 python3 scripts/convert_las.py source-data/map.las public/data/pointcloud-2m.bin  --max-points 2000000
 ```
 
-Steps, in this exact order:
+The logic lives in `backend/lidar_conversion.py`, shared by this CLI and the backend (Lab 7A). Steps, in this exact order:
 
-1. Read real XYZ (laspy applies LAS scale/offset) and RGB.
-2. **Compute the offset from the FULL dataset before downsampling**: X/Y = bounding-box centre, Z = minimum. Print it.
-3. Random downsample with a fixed seed (`default_rng(0)`).
-4. Subtract the offset, store as float32.
-5. If RGB max > 255, shift 16-bit colours down by 8 bits.
+1. Read real XYZ (laspy applies LAS scale/offset) and RGB, in 1M-point chunks (for progress).
+2. **Compute the offset from the FULL dataset before downsampling**: X/Y = bounding-box centre, Z = minimum, from the actual points (not the LAS header's min/max, which can be rounded: map.las header says Z min −1.14509, real data −1.14500). Print it.
+3. Random downsample with a fixed seed (a fresh `default_rng(0)` per budget).
+4. Subtract the offset in float64, store as float32.
+5. If RGB max (of the full dataset) > 255, shift 16-bit colours down by 8 bits. No RGB → grey 180, flagged `hasRgb: false`.
 
 The printed offset must be **identical** for every budget. For our scan it is
-`[-8.19650038931286, 13.09700062207412, -1.1450000543845817]`, hard-coded in `lib/worldFrame.ts` as `WORLD_OFFSET`. If `map.las` changes, update it.
+`[-8.19650038931286, 13.09700062207412, -1.1450000543845817]`, stored in `BUILTIN_DATASET.offset` (`lib/datasets.ts`) together with the original bounds and point count. Imported datasets get theirs in `metadata.json`. The refactored converter reproduces the existing `public/data/*.bin` files **byte for byte** (verified with `cmp`).
 
 Why an offset at all: float32 has ~7 significant digits; real-world coordinates (e.g. UTM, hundreds of thousands of metres) lose centimetre precision. Subtract in float64, then store float32.
 
@@ -212,11 +245,50 @@ Validated properties of our file (re-check these for a new dataset before trusti
 - quaternion: unit length (|q| = 1 ± 5e-6), **scalar last** (column 8 starts at 0.998; column 5 never near 1).
 - body +Z stays within ~10° of world up for all poses → Z-up body frame; yaw dominates.
 
-`loadPoses.ts` subtracts `WORLD_OFFSET` from positions (float64 → float32) and keeps timestamps (Float64Array) and orientations (Float32Array, xyzw).
+`loadPoses(url, offset)` subtracts the dataset's offset from positions (float64 → float32) and keeps timestamps (Float64Array) and orientations (Float32Array, xyzw).
 
 Frame-agreement evidence for poses vs LAS (do this for any new dataset): the poses sit inside the LAS bounds, 86% of points lie within 3 m of the path, and the path is ~1.1–1.2 m above the lowest scan points (plausible scanner height). If such checks fail, the frames differ — diagnose; don't nudge.
 
-### 5.4 Coordinate frames
+For imported datasets the backend automates this (`converter.validate_poses`):
+
+| Check | Rule | Fails → |
+| --- | --- | --- |
+| schema | every row 8 finite numbers; one text header row allowed (skipped) | `invalid` (not served) |
+| timestamps | strictly increasing | `suspect` |
+| quaternions | max \|‖q‖ − 1\| ≤ 0.01 (otherwise columns are probably not qx, qy, qz, qw) | `suspect` |
+| inside bounds | ≥ 95% of poses inside the LAS bounds + 1 m | `suspect` |
+| near the scan | median distance pose → nearest of 200k sampled scan points ≤ 2 m | `suspect` |
+
+Only `aligned` poses are loaded and drawn; otherwise the panel shows the reason. Poses are never shifted to fit. map.las + poses.csv: 100% inside, median 0.30 m, p95 0.69 m → aligned; shifted by 500 m → suspect ("median 493.1 m … probably a different coordinate frame"). Neither LAS nor CSV carry enough metadata to prove a shared frame (map.las has no CRS record), so the check is coordinate-based; `georeferenced` (LAS has a `LASF_Projection` VLR) is recorded for future CRS-aware alignment.
+
+### 5.4 Dataset metadata (`metadata.json`, Lab 7A)
+
+One JSON per dataset, also the frontend's `Dataset` type (`lib/datasets.ts`; `BUILTIN_DATASET` uses the same shape):
+
+```jsonc
+{
+  "schemaVersion": 1, "id": "ds_<12 hex>", "name": "…", "kind": "lidar-capture",
+  "createdAt": "ISO", "convertedAt": "ISO",
+  "status": "queued | converting | ready | failed", "progress": 0.0–1.0, "stage": "Reading points 40%", "error": null,
+  "source": { "pointcloud": { "filename", "bytes", "lasVersion", "pointFormat", "headerPointCount", "hasRgb", "georeferenced" },
+              "poses": { "filename", "bytes", "rows", "firstLine", "columns" }, "project": { "filename", "bytes", "topLevelType", "topLevelKeys" }, … },
+  "originalPointCount": 5242880,
+  "originalBounds": { "min": [x, y, z], "max": [x, y, z] },   // real-world, full cloud
+  "offset": [x, y, z],                                        // subtracted from budgets AND poses
+  "hasRgb": true,
+  "budgets": [{ "key": "500k", "label": "500K", "pointCount": 500000, "bytes": 7500004 }, …],
+  "poses": { "status": "aligned | suspect | invalid", "count", "message", "checks": { … } } | null,
+  "attachments": [{ "role": "control_points | gnss", "filename", "bytes", "rows", "firstLine", "columns" }]
+}
+```
+
+Budgets: 500K, 1M, 2M; the first budget ≥ the dataset size is replaced by one `"all"` budget labelled `All (N)` and larger budgets are skipped (a 300K scan has only `All (300K)`; a 1.5M scan has 500K, 1M, All (1.5M)).
+
+Extensibility: new asset types (trained splats, meshes, measurements, annotations) become new optional top-level keys next to `budgets`/`poses`, each with its own status; multiple captures of one space and coordinate alignment become a `frame` transform relative to another dataset on top of `offset`. Bump `schemaVersion` when an existing key changes meaning.
+
+### 5.5 Coordinate frames
+
+Each dataset has its own local frame: real-world LAS coordinates minus that dataset's `offset`. Two datasets are therefore **not** in a common frame, even if they cover the same space; comparing captures needs an explicit alignment step (roadmap).
 
 | Frame | Up axis | Where used |
 | --- | --- | --- |
@@ -289,7 +361,7 @@ For Soft Circle / Gaussian / Elliptical Gaussian: `transparent: true`, `depthTes
 - Compute **useful bounds**: per-axis 1st/99th percentile from an evenly strided sample of ≤50,000 points. (Our full box is ~28×31×7 m because of stray points; 98% of points sit in ~6×8×1.5 m, centred ~15 m from the full-box centre.)
 - Rotate that box into three.js space with the LiDAR group's rotation; target = box centre.
 - Distance = bounding-sphere radius / sin(min(vFov, hFov)/2). Direction: elevation 15°, azimuth 45°.
-- Compute once from the first dataset, store in a ref, reuse for Reset View, so switching budgets never moves the camera.
+- Compute once per dataset (keyed by dataset id) from its first loaded budget, store in a ref, reuse for Reset View: switching budgets never moves the camera; switching datasets frames the new scene.
 - When applying a view with damped OrbitControls, flush leftover drag momentum first: set `enableDamping = false`, `update()`, set position/target, `update()`, restore damping.
 
 ### 6.7 Projecting a 3D Gaussian (Lab 6)
@@ -331,7 +403,7 @@ Accept: switching budgets keeps the exact same view (pixel-identical after a rou
 
 ### Lab 2 — Scanner trajectory
 
-Requirements: inspect `poses.csv` and validate column meaning from values (section 5.3); parse; subtract the shared `WORLD_OFFSET`; render inside the LiDAR group as a `THREE.Line` (via `<primitive>`, because JSX `<line>` is the SVG element) plus subtle `<points>` markers sharing one geometry; toggles "Show scanner path", "Show pose points"; display pose count. No orientation yet, no animation. If misaligned, report — don't adjust.
+Requirements: inspect `poses.csv` and validate column meaning from values (section 5.3); parse; subtract the same offset as the point cloud (now the dataset's `offset`, section 5.4); render inside the LiDAR group as a `THREE.Line` (via `<primitive>`, because JSX `<line>` is the SVG element) plus subtle `<points>` markers sharing one geometry; toggles "Show scanner path", "Show pose points"; display pose count. No orientation yet, no animation. If misaligned, report — don't adjust.
 
 Accept: path lies inside the scanned space at plausible scanner height.
 
@@ -383,6 +455,31 @@ Accept:
 
 Limitations to state: first-order (affine) projection — exact at the centre, approximate for large Gaussians close to the camera or near screen edges; clamping of x/d, y/d and of footprint size; 0.3 px² low-pass slightly enlarges tiny Gaussians; depth test off (single overlay, no occlusion); no sorting.
 
+### Lab 7A — Multi-dataset import and management
+
+Requirements:
+
+- Local FastAPI backend (`backend/`, section 3.1), bound to 127.0.0.1, CORS only for the dev origin. Endpoints: `GET /health`, `GET /datasets`, `POST /datasets` (multipart: `name`, `pointcloud` required; `poses`, `project`, `control_points`, `gnss` optional), `GET /datasets/{id}`, `DELETE /datasets/{id}` (409 while converting), `GET /datasets/{id}/points/{budgetKey}`, `GET /datasets/{id}/poses`.
+- Storage `spatial-data/datasets/<id>/` (gitignored, outside `public/`): `source/` (originals under fixed names: `pointcloud.las`, `poses.csv`, `project.json`, `control_points.csv`, `gnss.csv`), `converted/` (budgets + normalised header-less poses), `metadata.json` (section 5.4, written atomically via temp file + `os.replace`).
+- Security: ids generated server-side (`ds_` + 12 hex) and matched against a strict regex before any path is built, and the resolved path must stay inside the store; budget keys served only if listed in the metadata; client file names are display text only; per-role extension + size limit (LAS 4 GiB, CSV 200 MiB, JSON 10 MiB) + content check (`LASF` signature and a laspy header read, uncompressed only; UTF-8 text without NUL for CSV; `json.loads` for JSON); nothing uploaded is executed; helpful messages for `.laz`, `.ply`, `.splat`, `.e57`, … (also checked client-side before uploading).
+- Conversion in a `ProcessPoolExecutor(max_workers=1, spawn)` worker; progress (reading 0–60%, budgets 60–90%, poses 90–100%) written to metadata; the page polls every 1.5 s while anything converts. Interrupted conversions are re-queued on backend start. On failure, partial `converted/` output is deleted, sources are kept, and the error is shown.
+- Pose validation per section 5.3; control points/GNSS stored with rows/first line only (schema not assumed); project JSON parsed, top-level keys recorded. None of these are treated as splat data.
+- Frontend: built-in dataset (`BUILTIN_DATASET`, served from `public/data`, works without the backend) + backend datasets in one list; collapsible "Datasets" section (`<details>`): select (status in the option label), metadata (original points, size, offset with full precision in the tooltip, budgets, poses count + status, source file, attachments, import date), progress bar, "Import dataset…" form (name + one file input per role, upload progress via XMLHttpRequest), "Delete" with `window.confirm`. Global `WORLD_OFFSET` and `pointBudgets.ts` removed.
+- Switching datasets: drop the old point cloud and poses (JS arrays freed; `PointCloud`/`Trajectory` dispose GPU geometry on change/unmount), keep `ViewSettings`, reset pose playback, keep the *preferred* budget key (`pickBudget` falls back to the largest budget not bigger than it), reframe the camera once per dataset.
+
+Accept:
+
+1. Built-in dataset unchanged (500K/1M/2M, 208 poses, same framing).
+2. The same `map.las` converted through the backend: identical offset, bounds, 5,242,880 points; budgets byte-identical to `public/data`; screenshot pixel-identical (0% diff) to the built-in dataset.
+3. Budget switching within a dataset after an orbit (camera at rest): 0% diff.
+4. Switching datasets reframes; Reset View returns exactly to that dataset's framing.
+5. Poses: aligned ones drawn (208); shifted/malformed ones hidden with a specific reason.
+6. Repeated switching: live WebGL buffer bytes, textures and programs of the scene canvas stay constant.
+7. Validation messages for wrong extension, fake LAS content, empty name; delete removes the files and falls back to the built-in dataset; backend offline → built-in still works and the panel says so.
+8. No TypeScript, Python (pyflakes) or console errors.
+
+Limitations to state: each dataset has its own local frame (no cross-dataset alignment yet); the whole LAS is held in memory during conversion (~40 bytes/point); LAZ/E57 not supported; conversions run one at a time; no authentication (local development only).
+
 ## 8. Pitfalls we hit and how they were fixed
 
 | Symptom | Cause | Fix |
@@ -401,6 +498,13 @@ Limitations to state: first-order (affine) projection — exact at the centre, a
 | `fwidth` unavailable / shader error in outline code | GLSL ES 1.00 needs an extension for derivatives | use `glslVersion: THREE.GLSL3` (`in`/`out`, declare `out vec4 fragColor;`) |
 | (Preventive) quad culled although visible | three.js frustum-culls using the plane's model-space bounds, but the shader places it elsewhere | `frustumCulled={false}` on the mesh |
 | Wireframe 1σ ellipsoid invisible in Lab 6 | the near-opaque footprint (depthTest off) is drawn over it | draw the wireframe after it: higher `renderOrder`, `depthTest: false` |
+| Offset differs slightly from expectations | LAS header min/max are stored rounded | compute bounds from the actual points |
+| Camera frames the *previous* dataset after a switch | for one render the scene got the new dataset id with the old data | tag loaded data with its dataset id; pass it only when ids match |
+| Effects re-run / reload every 1.5 s while converting | polling replaces dataset objects | depend on URL strings and ids, not objects |
+| "Budget switch moves the camera" in headless tests | OrbitControls damping is per frame; SwiftShader renders few frames per second, so the drag keeps drifting for seconds | wait until two screenshots are identical before comparing |
+| Live WebGL buffer count grows a little on every switch | r3f-perf's chart canvas (310×100, its own context) rebuilds small text buffers when the point count changes | not an app leak: the scene canvas's buffers stay constant; attribute buffers to their canvas when checking |
+| `[Errno 28] No space left on device` during conversion | each conversion writes ~52 MB of budgets; uploads need ~2.3× the LAS size | failed jobs delete partial output; free disk before importing large files |
+| Killing a background `uvicorn` leaves it listening | the shell wrapper was killed, not the server | `lsof -ti tcp:8000 -sTCP:LISTEN \| xargs kill` |
 
 ## 9. Validation playbook
 
@@ -430,6 +534,9 @@ Techniques used:
 - **Shape measurement**: crop around an isolated point, weight pixels by luminance above background, compute second moments → elongation `sqrt(λ1/λ2)` and major-axis angle `½·atan2(2σxy, σxx − σyy)` (flip image y to get counter-clockwise angles).
 - **Data checks** (Python): offsets identical across conversions; 1st–99th percentile centre identical across budget files.
 - **Pure-math unit tests** (Lab 6): import `lib/gaussian/gaussianMath.ts` from a script run with `npx tsx` (outside the project); check circle/ratio/angle/distance cases, symmetry + positive-definiteness for thousands of random inputs, and a Monte Carlo comparison (sample points from N(0, Σ3D), push through T = J·W, compare sample covariance to Σ2D).
+- **Backend without copying big files** (Lab 7A): create a dataset folder whose `source/pointcloud.las` is a *symlink* to the original, write `new_metadata()`, call `converter.convert_dataset(id)` directly; use `SPATIAL_LAB_DATA_DIR=/tmp/...` so tests don't touch the real store. Patch `converter.BUDGETS` (e.g. a 10M budget) to exercise the "All (N)" path with real data. `cmp` the budgets against `public/data`.
+- **API checks** with `curl -F`: wrong extension, fake content, empty name, invalid ids (`..%2F`), delete.
+- **GPU leak check**: `page.addInitScript` wrapping `createBuffer/deleteBuffer/bufferData/createTexture/createProgram` on both WebGL prototypes to count live objects and bytes, grouped by `ctx.canvas` size (to separate the r3f-perf chart canvas from the scene). Compare the same state before and after N round trips.
 - **Projected-footprint measurement** (Lab 6): weight only pixels with the Gaussian's hue (`(G−B)/(R−B) ≈ 0.47` for the orange), and keep only the half of the screen away from the axis lines (the footprint is centrally symmetric) — otherwise axes blended into the faint tail bias the moments. Compare to a *simulated measurement* of the predicted Σ2D (same opacity, 8-bit rounding, threshold and 3σ cut), not to raw Σ2D: truncation and thresholding make the measured σ ~6% smaller.
 - Note: FPS numbers from SwiftShader are meaningless; use real hardware for performance conclusions.
 
@@ -453,13 +560,13 @@ General scaling rules: raw LAS is never loaded directly; convert offline to a ty
 
 ## 11. Not built yet / roadmap
 
-Explicitly out of scope so far (each would be its own lab): LiDAR intensity visualisation, pose animation, clipping/cropping, measurement tools, annotations/hotspots, full Gaussian splatting (Lab 6 projects a single Gaussian; still missing: many Gaussians via instanced quads with per-instance Σ3D, projection in the vertex shader, back-to-front depth sorting, spherical-harmonic colour, loading `.ply`/`.splat` files), ordinary meshes, WebXR, LOD/octrees, workers.
+Explicitly out of scope so far (each would be its own lab): cross-dataset alignment (multiple captures of one space in one frame, using control points/GNSS/CRS), trained splat and mesh assets per dataset (metadata keys reserved, section 5.4), LAZ/E57 import, LiDAR intensity visualisation, pose animation, clipping/cropping, measurement tools, annotations/hotspots, full Gaussian splatting (Lab 6 projects a single Gaussian; still missing: many Gaussians via instanced quads with per-instance Σ3D, projection in the vertex shader, back-to-front depth sorting, spherical-harmonic colour, loading `.ply`/`.splat` files), ordinary meshes, WebXR, LOD/octrees, workers.
 
 ## 12. Prompt templates
 
 **Rebuild the whole app:**
 
-> Build "Spatial Lab" exactly as specified in `docs/SPATIAL_LAB_REBUILD_GUIDE.md`. Follow the principles in section 2, the versions and config in section 3, the architecture in section 4, and implement Labs 1 through 6 in order (section 7). The datasets are in `public/data/` (`pointcloud-500k.bin`, `pointcloud-1m.bin`, `pointcloud-2m.bin`, `poses.csv`); the offset is in section 5.2. After each lab run the validation playbook (section 9) and report results. Do not generate fake data.
+> Build "Spatial Lab" exactly as specified in `docs/SPATIAL_LAB_REBUILD_GUIDE.md`. Follow the principles in section 2, the versions and config in section 3, the architecture in section 4, and implement Labs 1 through 7A in order (section 7). The built-in dataset is in `public/data/` (`pointcloud-500k.bin`, `pointcloud-1m.bin`, `pointcloud-2m.bin`, `poses.csv`); its offset is in section 5.2. Start the backend as in section 3.1. After each lab run the validation playbook (section 9) and report results. Do not generate fake data.
 
 **Variant for another purpose:**
 
@@ -471,7 +578,7 @@ Explicitly out of scope so far (each would be its own lab): LiDAR intensity visu
 
 **New dataset:**
 
-> Convert `[file.las]` with `scripts/convert_las.py` for each budget; confirm the printed offset is identical; update `WORLD_OFFSET` in `lib/worldFrame.ts`. Validate `poses.csv` columns as in section 5.3 before rendering, and check frame agreement; if it fails, report instead of adjusting.
+> Start the backend (section 3.1) and import `[file.las]` (+ `poses.csv`) through the Datasets panel. Check the metadata: offset, bounds and point count from the full cloud, budgets, pose status. If poses are `suspect`, read the reason and diagnose the frames instead of adjusting. (Offline alternative: `scripts/convert_las.py` per budget, confirm identical offsets, and add a dataset record like `BUILTIN_DATASET`.)
 
 ## 13. Changelog
 
@@ -489,3 +596,4 @@ Explicitly out of scope so far (each would be its own lab): LiDAR intensity visu
 | 5 | Elliptical Gaussian (`rotate2D`, σx/σy/rotation), Gaussian Shape panel with covariance, Reset Experiment; this guide |
 | 5a | `withDefaults()` so settings added during development can't crash a hot-reloaded page |
 | 6 | Separate `/gaussian-projection` page: 3D Gaussian → Σ3D → Jacobian-projected Σ2D → screen-space quad with conic falloff, premultiplied alpha, outlines, Σ displays; wireframe ellipsoid drawn on top |
+| 7A | Local FastAPI backend (upload validation, worker-process conversion with progress, pose/frame validation, `spatial-data/` store); per-dataset metadata replaces `WORLD_OFFSET` and `pointBudgets.ts`; Datasets panel; per-dataset camera framing; converter core moved to `backend/lidar_conversion.py` (byte-identical output); `.bin` files and `spatial-data/` gitignored |

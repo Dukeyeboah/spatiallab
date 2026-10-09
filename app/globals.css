@@ -162,6 +162,74 @@ body {
   font-size: 11px;
 }
 
+/* Datasets section (collapsible). */
+.controls .datasets summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.controls .datasets select,
+.controls .datasets input[type="text"] {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 3px;
+  border: 1px solid #555;
+  border-radius: 4px;
+  background: #222;
+  color: #ddd;
+  font-size: 12px;
+}
+
+.controls .dataset-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 11px;
+  color: #bbb;
+  overflow-wrap: anywhere;
+}
+
+.controls .dataset-info progress {
+  display: block;
+  width: 100%;
+}
+
+.controls .dataset-actions {
+  display: flex;
+  gap: 4px;
+}
+
+.controls .dataset-actions button,
+.controls .import-form button {
+  flex: 1;
+  padding: 4px 0;
+  border: 1px solid #555;
+  border-radius: 4px;
+  background: #222;
+  color: #ddd;
+  cursor: pointer;
+}
+
+.controls .import-form {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+/* Label text above its input (file inputs are too wide to sit beside it). */
+.controls label.stacked {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 2px;
+  font-size: 11px;
+  white-space: normal;
+}
+
+.controls .import-form input[type="file"] {
+  width: 100%;
+  font-size: 11px;
+}
+
 .segmented button.selected {
   background: #4a6fa5;
   border-color: #4a6fa5;

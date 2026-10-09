@@ -13,6 +13,8 @@ import type { ViewSettings } from "@/lib/viewSettings";
 import { LIDAR_TO_THREE_ROTATION } from "@/lib/worldFrame";
 
 type SpatialSceneProps = {
+  /** The selected dataset's id: the camera is framed once per dataset. */
+  datasetId: string;
   data: PointCloudData | null;
   poses: PoseData | null;
   /** 0-based index of the pose shown by the scanner marker. */
@@ -23,6 +25,7 @@ type SpatialSceneProps = {
 };
 
 export function SpatialScene({
+  datasetId,
   data,
   poses,
   poseIndex,
@@ -47,7 +50,7 @@ export function SpatialScene({
         <OrbitControls makeDefault />
 
         {/* Initial camera + OrbitControls target, and Reset View. */}
-        <CameraFraming data={data} resetRequest={viewResetRequest} />
+        <CameraFraming data={data} frameKey={datasetId} resetRequest={viewResetRequest} />
 
         {/* Grid lies on the ground plane (three.js XZ). 1 cell = 1 metre. */}
         {settings.showGrid && <gridHelper args={[100, 100, "#666", "#333"]} />}
@@ -72,7 +75,7 @@ export function SpatialScene({
             />
           )}
 
-          {/* Scanner path: same LiDAR frame and same WORLD_OFFSET as the point cloud. */}
+          {/* Scanner path: same LiDAR frame and same dataset offset as the point cloud. */}
           {poses && (
             <Trajectory
               poses={poses}

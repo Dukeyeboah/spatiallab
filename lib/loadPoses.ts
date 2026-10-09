@@ -1,4 +1,4 @@
-import { WORLD_OFFSET } from "./worldFrame";
+import type { Vec3 } from "./datasets";
 
 /**
  * Loads scanner poses from a header-less CSV. Each row:
@@ -6,10 +6,11 @@ import { WORLD_OFFSET } from "./worldFrame";
  *   timestamp, x, y, z, qx, qy, qz, qw
  *
  *   timestamp   Unix time in seconds (5 Hz in our file)
- *   x, y, z     scanner position in metres, same frame as map.las (Z-up)
- *   qx..qw      orientation quaternion, scalar (w) last — not visualised yet
+ *   x, y, z     scanner position in metres, same frame as the dataset's LAS (Z-up)
+ *   qx..qw      orientation quaternion, scalar (w) last
  *
- * Positions are shifted by WORLD_OFFSET, exactly like the point cloud.
+ * Positions are shifted by the dataset's offset, exactly like its point cloud.
+ * (Imported poses are validated by the backend before they are served.)
  */
 
 export type PoseData = {
@@ -23,8 +24,8 @@ export type PoseData = {
 
 const COLUMNS = 8;
 
-export async function loadPoses(url: string): Promise<PoseData> {
-  const response = await fetch(url);
+export async function loadPoses(url: string, offset: Vec3, signal?: AbortSignal): Promise<PoseData> {
+  const response = await fetch(url, { signal });
   if (!response.ok) {
     throw new Error(`Could not load ${url} (HTTP ${response.status})`);
   }
@@ -47,9 +48,9 @@ export async function loadPoses(url: string): Promise<PoseData> {
     timestamps[i] = t;
 
     // Subtract in float64 (plain JS numbers) before storing as float32.
-    positions[i * 3 + 0] = x - WORLD_OFFSET[0];
-    positions[i * 3 + 1] = y - WORLD_OFFSET[1];
-    positions[i * 3 + 2] = z - WORLD_OFFSET[2];
+    positions[i * 3 + 0] = x - offset[0];
+    positions[i * 3 + 1] = y - offset[1];
+    positions[i * 3 + 2] = z - offset[2];
 
     orientations.set([qx, qy, qz, qw], i * 4);
   });

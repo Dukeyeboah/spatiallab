@@ -1,7 +1,8 @@
 "use client";
 
+import type { ReactNode } from "react";
 import Link from "next/link";
-import { POINT_BUDGETS, type PointBudget } from "@/lib/pointBudgets";
+import type { DatasetBudget } from "@/lib/datasets";
 import { GaussianShapePanel } from "./GaussianShapePanel";
 import {
   EXPERIMENT_PARAMETERS,
@@ -29,11 +30,17 @@ const SHADER_EXPERIMENTS: { experiment: ShaderExperiment; label: string }[] = [
 ];
 
 type ControlsProps = {
-  budget: PointBudget;
-  onBudgetChange: (budget: PointBudget) => void;
+  /** The collapsible Datasets section (rendered at the top). */
+  datasetPanel: ReactNode;
+  /** The selected dataset's budgets. */
+  budgets: DatasetBudget[];
+  budget: DatasetBudget | null;
+  onBudgetChange: (budgetKey: string) => void;
   pointCount: number;
   poseCount: number;
   poseError: string | null;
+  /** Why the dataset's poses aren't shown (none uploaded, failed checks). */
+  poseNote: string | null;
   /** 0-based selected pose. */
   poseIndex: number;
   onPoseIndexChange: (index: number) => void;
@@ -47,11 +54,14 @@ type ControlsProps = {
 
 /** A plain HTML panel drawn on top of the canvas. */
 export function Controls({
+  datasetPanel,
+  budgets,
   budget,
   onBudgetChange,
   pointCount,
   poseCount,
   poseError,
+  poseNote,
   poseIndex,
   onPoseIndexChange,
   elapsedSeconds,
@@ -94,14 +104,16 @@ export function Controls({
         Lab 6: 3D Gaussian Projection →
       </Link>
 
+      {datasetPanel}
+
       <div className="budget">
         Point Budget
         <div className="segmented">
-          {POINT_BUDGETS.map((option) => (
+          {budgets.map((option) => (
             <button
-              key={option.label}
-              className={option === budget ? "selected" : ""}
-              onClick={() => onBudgetChange(option)}
+              key={option.key}
+              className={option.key === budget?.key ? "selected" : ""}
+              onClick={() => onBudgetChange(option.key)}
             >
               {option.label}
             </button>
@@ -272,7 +284,7 @@ export function Controls({
       )}
 
       <div>
-        <div>Budget: {budget.label}</div>
+        <div>Budget: {budget?.label ?? "—"}</div>
         <div>Loaded points: {pointCount.toLocaleString()}</div>
         <div>Point size: {settings.pointSize}px</div>
         <div>Poses loaded: {poseCount.toLocaleString()}</div>
@@ -280,6 +292,7 @@ export function Controls({
       {status && <div className="status">{status}</div>}
       {error && <div className="error">{error}</div>}
       {poseError && <div className="error">{poseError}</div>}
+      {poseNote && <div className="note">{poseNote}</div>}
 
       <label>
         Size
