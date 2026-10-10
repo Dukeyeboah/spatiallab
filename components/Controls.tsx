@@ -103,6 +103,9 @@ export function Controls({
       <Link href="/gaussian-projection" className="lab-link">
         Lab 6: 3D Gaussian Projection →
       </Link>
+      <Link href="/gaussian-compositing" className="lab-link">
+        Lab 7B: Gaussian Compositing →
+      </Link>
 
       {datasetPanel}
 

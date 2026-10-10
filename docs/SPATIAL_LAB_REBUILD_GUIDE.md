@@ -40,6 +40,7 @@ A deliberately small Next.js + React Three Fiber app that renders a **real** LiD
 | 5 | Elliptical Gaussian | anisotropic Gaussians, rotation, covariance (pre-splatting) |
 | 6 | 3D Gaussian projection (separate page `/gaussian-projection`) | Σ3D = R S Sᵀ Rᵀ, Jacobian projection Σ2D = J W Σ3D Wᵀ Jᵀ, screen-space quads |
 | 7A | Multi-dataset import (local FastAPI backend) | per-dataset offsets and metadata, background conversion, pose/frame validation, safe local storage, GPU disposal on switch |
+| 7B | Gaussian compositing (separate page `/gaussian-compositing`) | many Gaussians in one instanced draw call, depth sorting, front-to-back alpha compositing, transmittance, animation |
 
 The dataset used: a handheld/SLAM LiDAR scan (`map.las`, 5,242,880 points, 178 MB, local metric frame, RGB) plus `poses.csv` (208 poses, 5 Hz, 41.4 s).
 
@@ -137,16 +138,24 @@ components/
   ScannerMarker.tsx     body + cone marker at the selected pose (position + quaternion)
   Controls.tsx          plain HTML overlay panel (no UI library)
   GaussianShapePanel.tsx    learning panel: sigmas, angle, covariance matrix
-  gaussian/                 Lab 6 only (own page, own Canvas, own camera)
-    GaussianProjectionScene.tsx  <Canvas>, OrbitControls, grid, axes, 1σ wireframe ellipsoid, quad
+  gaussian/                 Labs 6 and 7B only (own pages, own Canvas, own camera)
+    GaussianProjectionScene.tsx  <Canvas>, OrbitControls, grid, axes, 1σ wireframe ellipsoid, quad; exports CameraReset
     ProjectedGaussianQuad.tsx    imperative RawShaderMaterial; projects every frame in useFrame
     GaussianProjectionPanel.tsx  sliders, toggles, Σ3D/Σ2D displays
     MatrixDisplay.tsx            monospace matrix printer
-app/gaussian-projection/page.tsx  Lab 6 client page: controls state, Σ3D via useMemo
+    CompositingScene.tsx         Lab 7B <Canvas> (transparent clear), OrbitControls, background grid, probe marker
+    CompositedGaussians.tsx      Lab 7B frame loop: animate → Σ3D → project → sort → instance buffers; 2 instanced meshes
+    CompositingPanel.tsx         Lab 7B controls, probe-pixel table, explanations, stats
+app/gaussian-projection/page.tsx   Lab 6 client page: controls state, Σ3D via useMemo
+app/gaussian-compositing/page.tsx  Lab 7B client page: controls state, scene via useMemo(count), report state
 lib/gaussian/
   gaussianMath.ts       Gaussian3D type, covariance3D(), projectGaussian() (all math, commented)
   gaussianControls.ts   slider state + defaults, toGaussian3D() (Euler degrees → quaternion)
+  compositing.ts        Lab 7B: allocation-free covariance/projection (same math as gaussianMath), splatAlphaAt, compositePixel
+  compositingScene.ts   Lab 7B: scenes (3 hand-placed / 100 / 500 / 1,000 seeded), animation presets
+  compositingControls.ts  Lab 7B panel state + defaults
 shaders/projectedGaussianShader.ts  GLSL3 quad vertex/fragment (conic falloff, outline)
+shaders/compositedGaussianShader.ts GLSL3 instanced version (per-instance attributes, fill + outline pass)
 lib/
   loadPointCloud.ts     binary point-cloud loader (format in section 5)
   loadPoses.ts          poses.csv parser, subtracts the dataset's offset
@@ -393,6 +402,29 @@ GPU (`shaders/projectedGaussianShader.ts`, GLSL3):
 - Optional outline via `fwidth`: 1σ (white), support (blue), quad edge (grey).
 - `depthTest: false`, `renderOrder` high: the footprint is a 2D overlay of a single Gaussian. The 1σ wireframe ellipsoid is drawn after it (also `depthTest: false`) so its silhouette can be compared against the white 1σ ellipse — they coincide.
 
+### 6.8 Compositing many Gaussians (Lab 7B)
+
+Per frame, on the CPU (`CompositedGaussians.tsx`, math in `lib/gaussian/compositing.ts`):
+
+1. **Animate** each Gaussian (preset + global scale/opacity) into a reused object.
+2. **Σ3D** from scale + quaternion, written into a `Float64Array(6)` (`[xx, xy, xz, yy, yz, zz]`).
+3. **Project** exactly as section 6.7 (same Jacobian, clamps, 0.3 px² low-pass, σ clamp), written out by hand without allocations. Unit-tested against `projectGaussian`: identical to ~1e-13 over 2,000 random cases.
+4. **Sort** the visible Gaussians by the camera-space depth of their **centres** (`Uint32Array.sort` with a comparator): nearest first ("correct"), farthest first ("reversed").
+5. **Upload**: write clip centre (vec4), quad half-axes in px (vec4, already × 3σ), conic (vec3) and colour + opacity (vec4) into `InstancedBufferAttribute`s (`DynamicDrawUsage`) in drawing order; `geometry.instanceCount = visible`. 1,000 Gaussians ≈ 1 ms CPU.
+
+GPU (`shaders/compositedGaussianShader.ts`): Lab 6's quad shader with per-instance attributes instead of uniforms (`flat` varyings for conic/colour). `α = min(0.99, opacity·exp(−½m²))`, discarded beyond 3σ or below 1/255 (both as in 3DGS). Output premultiplied.
+
+**Front-to-back blending** ("under" operator), `CustomBlending`, rgb and alpha alike: `src = OneMinusDstAlpha`, `dst = One`. The canvas is cleared to **transparent** (`gl.setClearColor(0, 0)`, no `<color attach="background">`), so its alpha holds 1 − T:
+
+```
+dst.rgb += (1 − dst.a) · α·c     // = T·α·c
+dst.a   += (1 − dst.a) · α       // T ← T·(1 − α)
+```
+
+The browser composites the premultiplied canvas over the page's `#1a1a1a`, adding `T_final·background`. The probe in the panel evaluates the same sum on the CPU at the screen centre (`compositePixel`); rendered and predicted pixels agree within 1/255. Anything drawn later with this blending appears *behind* everything before it, which is how the reference grid is drawn (`renderOrder` 2, after the Gaussians at 1): it is always the farthest layer. Footprint outlines are a second instanced mesh over the same geometry (`renderOrder` 3, normal premultiplied blending, on top). Total: 3 draw calls regardless of count.
+
+Approximations: sorting by centre gives one order per frame for all pixels; overlapping or intersecting Gaussians whose per-pixel order differs from their centre order are composited in the wrong order there, and the order "pops" when centres swap during an orbit. Exact visibility needs per-pixel ordering (ray marching or per-pixel fragment lists). The grid is always behind every Gaussian, even when it is physically in front (seen from below).
+
 ## 7. Lab-by-lab build specification
 
 Each lab lists requirements and acceptance criteria. Build them in order.
@@ -507,6 +539,28 @@ Accept:
 
 Limitations to state: each dataset has its own local frame (no cross-dataset alignment yet); the whole LAS is held in memory during conversion (~40 bytes/point); LAZ/E57 not supported; conversions run one at a time; no authentication (local development only).
 
+### Lab 7B — Multiple Gaussians and alpha compositing
+
+Requirements: separate route `/gaussian-compositing` (own `<Canvas>`, camera as Lab 6, reuses Lab 6's `CameraReset`); links from the LiDAR viewer and Lab 6. The Gaussians are explicit synthetic teaching objects (like Lab 6's single Gaussian), never presented as scan or splat data. Rendering and math per section 6.8.
+
+- Scenes (`compositingScene.ts`): **3** hand-placed Gaussians, one per depth layer (red z = 1, green z = 0, blue z = −1; opacity 0.8; all covering the screen centre), or **100 / 500 / 1,000** from a seeded PRNG (mulberry32, seed = count) in the same three layers (colour families per layer, σ ≈ sqrt(4.4/N), random rotation, opacity 0.55–0.9). Each Gaussian: position, scale, quaternion, colour, opacity (+ an animation phase).
+- Controls (`compositingControls.ts`; defaults in brackets): count [3], ordering Correct | Reversed [Correct], footprint outlines [on], opacity × 0.05–1 [1], scale × 0.25–2 [1], preset None | Breathing | Wave | Dreamscape [None], speed 0–3× [1], Pause/Play [playing], Reset (controls, animation time, camera).
+- Animation (time advances only while playing: `t += min(delta, 0.1)·speed`): Breathing — scale × (1 + 0.3 sin(2π·0.25t)); Wave — y += 0.25 sin(2x − 2π·0.3t); Dreamscape — rotation about own Z (±0.5 rad) and X (±0.25 rad), scale × (1 ± 0.12), opacity × (0.7…1), each with its own phase. Colour is never animated.
+- Panel: drawing order; **probe pixel** table (screen centre, ring marker) with depth, α, T before, T·α per contributing Gaussian (first 8) + final T and the predicted pixel colour; Gaussian 0's live animated values (scale factor, Δy, opacity, rotation angle vs base); collapsible explanations (alpha, transmittance, depth ordering, why footprints overlap, why the wrong order looks wrong, limits of centre sorting); stats (drawn, draw calls, CPU ms). Reports throttled to 10 Hz and only when a rounded key changes.
+
+Accept:
+
+1. Unit test: `compositing.ts` projection equals `projectGaussian` (random cases); weights + T_final = 1.
+2. 3 Gaussians, correct order at the probe: red α 0.499 (T 1) → green 0.619 (T 0.501) → blue 0.581 (T 0.191), T_final 0.080, pixel ≈ (0.566, 0.416, 0.287); rendered pixel within 1/255.
+3. Reversed: blue first, pixel ≈ (0.252, 0.477, 0.679) — same T_final, different colour; ~8% of the image changes.
+4. Orbit ~180°: blue becomes nearest and is drawn first; rendered still matches predicted.
+5. Each preset changes only its properties (Breathing: scale; Wave: y; Dreamscape: rotation, scale, opacity).
+6. Pause: values and image identical over 1.5 s (excluding the Perf overlay); Play resumes.
+7. Reset after changing everything and orbiting: defaults restored, image identical to the initial one.
+8. 100 / 500 / 1,000: 3 draw calls per frame; no console errors; LiDAR viewer and Lab 6 unchanged.
+
+Limitations to state: centre-based sorting (section 6.8); CPU projection and sorting (fine for ~1,000, not for millions — real splatting projects in the vertex/compute stage and sorts on the GPU, per screen tile); first-order projection as Lab 6; no spherical harmonics (one colour per Gaussian); not a trained splat and no file loading.
+
 ## 8. Pitfalls we hit and how they were fixed
 
 | Symptom | Cause | Fix |
@@ -533,6 +587,8 @@ Limitations to state: each dataset has its own local frame (no cross-dataset ali
 | Headless folder upload "finds no .las" | Playwright's directory `setInputFiles` skips symlinked files | use a hard link (`ln`, same disk, no copy) in test folders |
 | A background server started with `( … &)` inside a one-off shell dies | it ends with that shell | start long-running servers as their own background process |
 | `[Errno 28] No space left on device` during conversion | each conversion writes ~52 MB of budgets; uploads need ~2.3× the LAS size | failed jobs delete partial output; free disk before importing large files |
+| Front-to-back blending shows nothing / Gaussians vanish over the grid | "under" blending needs destination alpha = accumulated opacity; a `<color attach="background">` clear (alpha 1) or an opaque object drawn first already reads as fully covered | clear to alpha 0, let the page background show through, and draw everything that should be behind *after* the Gaussians with the same blending |
+| Test uploads land in the user's real dataset store | the user's own backend was already listening on :8000, so the test server failed to bind and requests went to theirs | check `lsof -iTCP:8000` first; run test backends on another port with a temp `SPATIAL_LAB_DATA_DIR` |
 | Killing a background `uvicorn` leaves it listening | the shell wrapper was killed, not the server | `lsof -ti tcp:8000 -sTCP:LISTEN \| xargs kill` |
 
 ## 9. Validation playbook
@@ -569,6 +625,7 @@ Techniques used:
 - **Sparse imports** (7A.2), against a backend with `SPATIAL_LAB_DATA_DIR=/tmp/...` on a spare port (never the user's running backend on 8000 — it writes to the real store; in Playwright, `page.route` can redirect `:8000` to the test port): `map.las` + empty `poses.csv`/`control_points.csv` + whitespace/BOM `gnss.csv` → 201, three skip warnings, `projectInferred` with CRS unknown, conversion ready, poses none; empty `project.json` and `{}` → inferred metadata; full set → no warnings, poses aligned (unchanged); empty LAS → 400; invalid non-empty JSON → 400.
 - **GPU leak check**: `page.addInitScript` wrapping `createBuffer/deleteBuffer/bufferData/createTexture/createProgram` on both WebGL prototypes to count live objects and bytes, grouped by `ctx.canvas` size (to separate the r3f-perf chart canvas from the scene). Compare the same state before and after N round trips.
 - **Projected-footprint measurement** (Lab 6): weight only pixels with the Gaussian's hue (`(G−B)/(R−B) ≈ 0.47` for the orange), and keep only the half of the screen away from the axis lines (the footprint is centrally symmetric) — otherwise axes blended into the faint tail bias the moments. Compare to a *simulated measurement* of the predicted Σ2D (same opacity, 8-bit rounding, threshold and 3σ cut), not to raw Σ2D: truncation and thresholding make the measured σ ~6% smaller.
+- **Compositing** (Lab 7B): unit-test `compositing.ts` against `gaussianMath.ts` with `npx tsx` (run with `NODE_PATH=<repo>/node_modules` so `three` resolves). In the browser, average the 2×2 pixels around the canvas centre and compare with the panel's predicted probe colour (the canvas uses `linear`, so screenshot values are the shader's values); count draw calls per frame by wrapping `draw*` on `WebGL2RenderingContext.prototype` (only the scene canvas, width > 400); orbit with `page.mouse` drags (≈ viewport height / 2 px of horizontal drag = 180°); exclude the panel and the Perf overlay from pause/reset image diffs (both change while the scene doesn't).
 - Note: FPS numbers from SwiftShader are meaningless; use real hardware for performance conclusions.
 
 ## 10. Adapting Spatial Lab for different web purposes
@@ -591,13 +648,13 @@ General scaling rules: raw LAS is never loaded directly; convert offline to a ty
 
 ## 11. Not built yet / roadmap
 
-Explicitly out of scope so far (each would be its own lab): cross-dataset alignment (multiple captures of one space in one frame, using control points/GNSS/CRS), trained splat and mesh assets per dataset (metadata keys reserved, section 5.4), LAZ/E57 import, LiDAR intensity visualisation, pose animation, clipping/cropping, measurement tools, annotations/hotspots, full Gaussian splatting (Lab 6 projects a single Gaussian; still missing: many Gaussians via instanced quads with per-instance Σ3D, projection in the vertex shader, back-to-front depth sorting, spherical-harmonic colour, loading `.ply`/`.splat` files), ordinary meshes, WebXR, LOD/octrees, workers.
+Explicitly out of scope so far (each would be its own lab): cross-dataset alignment (multiple captures of one space in one frame, using control points/GNSS/CRS), trained splat and mesh assets per dataset (metadata keys reserved, section 5.4), LAZ/E57 import, LiDAR intensity visualisation, pose animation, clipping/cropping, measurement tools, annotations/hotspots, full Gaussian splatting (Lab 6 projects one Gaussian; Lab 7B composites up to 1,000 with CPU projection, centre sorting and instanced quads; still missing: projection and sorting on the GPU for millions of Gaussians, tile-based rasterisation, spherical-harmonic colour, loading `.ply`/`.splat` files, training), ordinary meshes, WebXR, LOD/octrees, workers.
 
 ## 12. Prompt templates
 
 **Rebuild the whole app:**
 
-> Build "Spatial Lab" exactly as specified in `docs/SPATIAL_LAB_REBUILD_GUIDE.md`. Follow the principles in section 2, the versions and config in section 3, the architecture in section 4, and implement Labs 1 through 7A in order (section 7). The built-in dataset is in `public/data/` (`pointcloud-500k.bin`, `pointcloud-1m.bin`, `pointcloud-2m.bin`, `poses.csv`); its offset is in section 5.2. Start the backend as in section 3.1. After each lab run the validation playbook (section 9) and report results. Do not generate fake data.
+> Build "Spatial Lab" exactly as specified in `docs/SPATIAL_LAB_REBUILD_GUIDE.md`. Follow the principles in section 2, the versions and config in section 3, the architecture in section 4, and implement Labs 1 through 7B in order (section 7). The built-in dataset is in `public/data/` (`pointcloud-500k.bin`, `pointcloud-1m.bin`, `pointcloud-2m.bin`, `poses.csv`); its offset is in section 5.2. Start the backend as in section 3.1. After each lab run the validation playbook (section 9) and report results. Do not generate fake data.
 
 **Variant for another purpose:**
 
@@ -630,3 +687,4 @@ Explicitly out of scope so far (each would be its own lab): cross-dataset alignm
 | 7A | Local FastAPI backend (upload validation, worker-process conversion with progress, pose/frame validation, `spatial-data/` store); per-dataset metadata replaces `WORLD_OFFSET` and `pointBudgets.ts`; Datasets panel; per-dataset camera framing; converter core moved to `backend/lidar_conversion.py` (byte-identical output); `.bin` files and `spatial-data/` gitignored |
 | 7A.1 | Importer: folder or individual files, preview summary, per-file role selection, ambiguity flags instead of guessing (`lib/importPlan.ts`); verified end to end with the real map.las |
 | 7A.2 | Sparse datasets: empty optional files (poses, control points, GNSS, project) are skipped with warnings instead of failing the import; missing/empty project.json → metadata inferred from the LAS header with explicit unknown-CRS warnings; new metadata keys `warnings`, `skippedFiles`, `projectInferred`; warnings shown in the import preview and the dataset panel |
+| 7B | Separate `/gaussian-compositing` page: 3 / 100 / 500 / 1,000 Gaussians in three depth layers; allocation-free projection (same math as Lab 6, unit-tested); per-frame centre-depth sort; one instanced draw call with front-to-back ("under") blending on a transparent canvas; correct/reversed ordering; Breathing/Wave/Dreamscape presets, speed, pause, reset; probe-pixel transmittance table; explanations; links from the viewer and Lab 6; Lab 6's `CameraReset` exported |

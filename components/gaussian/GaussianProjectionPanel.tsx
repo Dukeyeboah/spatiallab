@@ -54,6 +54,9 @@ export function GaussianProjectionPanel({
       <Link href="/" className="lab-link">
         ← LiDAR viewer
       </Link>
+      <Link href="/gaussian-compositing" className="lab-link">
+        Lab 7B: many Gaussians, compositing →
+      </Link>
       <div className="note">
         One 3D Gaussian (grey wireframe = its 1σ surface) projected through the camera into a 2D
         ellipse (orange). Drag to orbit: the Gaussian stays fixed in the world, its projection

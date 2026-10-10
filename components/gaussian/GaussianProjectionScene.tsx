@@ -81,8 +81,8 @@ export function GaussianProjectionScene({
 
 type OrbitControlsLike = { target: THREE.Vector3; enableDamping: boolean; update: () => void };
 
-/** Puts the camera back at its starting position (after the Reset button). */
-function CameraReset({ resetRequest }: { resetRequest: number }) {
+/** Puts the camera back at its starting position (after the Reset button). Also used by Lab 7B. */
+export function CameraReset({ resetRequest }: { resetRequest: number }) {
   const camera = useThree((state) => state.camera);
   const controls = useThree((state) => state.controls) as unknown as OrbitControlsLike | null;
 

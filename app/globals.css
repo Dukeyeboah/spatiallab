@@ -276,6 +276,57 @@ body {
   font-size: 11px;
 }
 
+/* Lab 7B: the probe pixel, a small ring around the centre of the canvas. */
+.probe-marker {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 14px;
+  height: 14px;
+  margin: -8px 0 0 -8px;
+  border: 1px solid rgba(255, 255, 255, 0.7);
+  border-radius: 50%;
+  pointer-events: none;
+}
+
+.controls .probe table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.controls .probe th,
+.controls .probe td {
+  padding: 1px 2px;
+  text-align: right;
+}
+
+.controls .probe th:nth-child(2),
+.controls .probe td:nth-child(2) {
+  text-align: left;
+}
+
+.controls .swatch {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border: 1px solid #666;
+  vertical-align: middle;
+}
+
+.controls .explain details {
+  font-size: 11px;
+  color: #bbb;
+  line-height: 1.4;
+}
+
+.controls .explain summary {
+  cursor: pointer;
+  color: #ddd;
+  font-size: 12px;
+}
+
 .segmented button.selected {
   background: #4a6fa5;
   border-color: #4a6fa5;
