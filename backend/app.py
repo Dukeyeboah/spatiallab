@@ -29,9 +29,18 @@ from fastapi.responses import FileResponse
 
 import storage
 from converter import NORMALISED_POSES_FILE, convert_dataset
-from uploads import UploadError, inspect_json, inspect_las, inspect_text_csv, save_upload
+from uploads import (
+    UploadError,
+    infer_project_metadata,
+    inspect_json,
+    inspect_las,
+    inspect_text_csv,
+    is_blank,
+    save_upload,
+)
 
 MAX_NAME_LENGTH = 80
+ROLE_LABELS = {"poses": "Poses", "project": "Project metadata", "control_points": "Control points", "gnss": "GNSS"}
 ALLOWED_ORIGINS = os.environ.get(
     "SPATIAL_LAB_ALLOWED_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000"
 ).split(",")
@@ -121,7 +130,16 @@ async def create_dataset(
             path = source / storage.SOURCE_FILES[role]
             size = await save_upload(role, upload, path)
             # The client's file name is kept only as display text.
-            info = {"filename": os.path.basename(upload.filename or "")[:200], "bytes": size}
+            filename = os.path.basename(upload.filename or "")[:200]
+            info = {"filename": filename, "bytes": size}
+
+            # Empty optional files are skipped with a warning; only the LAS is required.
+            if role != "pointcloud" and (size == 0 or is_blank(path)):
+                path.unlink()
+                metadata["skippedFiles"].append({"role": role, "filename": filename, "reason": "empty"})
+                metadata["warnings"].append(f"{ROLE_LABELS[role]} file \"{filename}\" is empty and was skipped.")
+                continue
+
             if role == "pointcloud":
                 info.update(inspect_las(path))
             elif role == "project":
@@ -132,6 +150,14 @@ async def create_dataset(
             if role in ("control_points", "gnss"):
                 # Preserved for later analysis; schema deliberately not assumed.
                 metadata["attachments"].append({"role": role, **info})
+
+        # No project.json (or one without content): state what the LAS header
+        # says and flag the unknown coordinate information.
+        project = metadata["source"].get("project")
+        if not project or not project.get("hasContent"):
+            inferred, warnings = infer_project_metadata(metadata["source"]["pointcloud"])
+            metadata["projectInferred"] = inferred
+            metadata["warnings"].extend(warnings)
     except UploadError as error:
         shutil.rmtree(folder, ignore_errors=True)
         raise HTTPException(400, str(error)) from error

@@ -100,6 +100,12 @@ def new_metadata(dataset_id: str, name: str) -> dict[str, Any]:
         "budgets": [],
         "poses": None,
         "attachments": [],
+        # Non-fatal import notes (skipped empty files, unknown coordinate info).
+        "warnings": [],
+        # Optional uploads that were empty: [{"role", "filename", "reason"}].
+        "skippedFiles": [],
+        # Set when project.json is missing or empty (see uploads.infer_project_metadata).
+        "projectInferred": None,
     }
 
 

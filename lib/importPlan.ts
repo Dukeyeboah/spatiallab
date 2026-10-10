@@ -27,6 +27,8 @@ export type ImportCandidate = {
   ambiguousRole: UploadRole | null;
   /** CSV whose role couldn't be told from its name. */
   unrecognised: boolean;
+  /** 0-byte file: an empty .las blocks the import, empty optional files are skipped. */
+  empty: boolean;
 };
 
 export type ImportPlanStatus = {
@@ -83,11 +85,18 @@ export function planImport(files: File[]): ImportCandidate[] {
     .filter((file) => !isSystemFile(file.name))
     .map((file) => {
       const extension = extensionOf(file.name);
-      const allowedRoles = ROLES_BY_EXTENSION[extension] ?? [];
+      const empty = file.size === 0 && extension in ROLES_BY_EXTENSION;
+      // An empty file can't take any role.
+      const allowedRoles = empty ? [] : (ROLES_BY_EXTENSION[extension] ?? []);
       let guess: UploadRole | null = null;
       let note: string | null = null;
 
-      if (UNSUPPORTED[extension]) {
+      if (empty) {
+        note =
+          extension === ".las"
+            ? "Empty file (0 bytes): not a valid point cloud."
+            : "Empty file (0 bytes): will be skipped.";
+      } else if (UNSUPPORTED[extension]) {
         note = UNSUPPORTED[extension];
       } else if (allowedRoles.length === 0) {
         note = "Not a supported file type; not imported.";
@@ -100,8 +109,8 @@ export function planImport(files: File[]): ImportCandidate[] {
       }
 
       const path = file.webkitRelativePath || file.name;
-      const unrecognised = extension === ".csv" && !guess;
-      return { file, path, role: "ignore", allowedRoles, note, ambiguousRole: null, unrecognised, guess };
+      const unrecognised = extension === ".csv" && !guess && !empty;
+      return { file, path, role: "ignore", allowedRoles, note, ambiguousRole: null, unrecognised, empty, guess };
     });
 
   // Assign each role only if exactly one file claims it.
@@ -152,11 +161,25 @@ export function describePlan(candidates: ImportCandidate[]): ImportPlanStatus {
   }
 
   const lasFiles = candidates.filter((c) => c.allowedRoles.includes("pointcloud"));
+  const emptyLas = candidates.filter((c) => c.empty && c.path.toLowerCase().endsWith(".las"));
   if (assigned("pointcloud").length === 0) {
     problems.push(
       lasFiles.length > 1
         ? `Found ${lasFiles.length} LAS files; choose which one is the point cloud.`
-        : "No .las point cloud found.",
+        : emptyLas.length > 0
+          ? `${emptyLas.map((c) => c.path).join(", ")} is empty (0 bytes); a valid .las point cloud is required.`
+          : "No .las point cloud found.",
+    );
+  }
+
+  // Empty optional files don't stop the import; they're skipped.
+  for (const c of candidates) {
+    if (c.empty && !emptyLas.includes(c)) warnings.push(`${c.path} is empty and will be skipped.`);
+  }
+  if (assigned("pointcloud").length > 0 && assigned("project").length === 0) {
+    warnings.push(
+      "No project.json: project metadata will be inferred from the LAS header, and the coordinate " +
+        "reference system may be unknown (treated as a local frame in metres).",
     );
   }
 

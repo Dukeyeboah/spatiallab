@@ -279,9 +279,16 @@ One JSON per dataset, also the frontend's `Dataset` type (`lib/datasets.ts`; `BU
   "hasRgb": true,
   "budgets": [{ "key": "500k", "label": "500K", "pointCount": 500000, "bytes": 7500004 }, …],
   "poses": { "status": "aligned | suspect | invalid", "count", "message", "checks": { … } } | null,
-  "attachments": [{ "role": "control_points | gnss", "filename", "bytes", "rows", "firstLine", "columns" }]
+  "attachments": [{ "role": "control_points | gnss", "filename", "bytes", "rows", "firstLine", "columns" }],
+  "warnings": ["Poses file \"poses.csv\" is empty and was skipped.", …],   // shown with ⚠ in the dataset panel
+  "skippedFiles": [{ "role": "poses", "filename": "poses.csv", "reason": "empty" }],
+  "projectInferred": { "source", "captureDate", "generatingSoftware", "systemIdentifier",
+                       "coordinateReferenceSystem": "unknown | declared in the LAS file (not interpreted yet)",
+                       "units": "unknown (treated as metres)", "upAxis": "Z (LAS convention)" } | null
 }
 ```
+
+`warnings`, `skippedFiles` and `projectInferred` are optional on the frontend type (datasets imported before 7A.2 lack them). `projectInferred` is set only when `project.json` is missing, empty or `{}`/`[]`; it records only what the LAS header actually says (blank header fields → `null`), never a guessed CRS.
 
 Budgets: 500K, 1M, 2M; the first budget ≥ the dataset size is replaced by one `"all"` budget labelled `All (N)` and larger budgets are skipped (a 300K scan has only `All (300K)`; a 1.5M scan has 500K, 1M, All (1.5M)).
 
@@ -480,6 +487,11 @@ Requirements:
   | `.DS_Store`, dot-files, `Thumbs.db` | skipped silently |
 
   A role is assigned automatically **only if exactly one file claims it**. Two LAS files or several pose/JSON candidates are marked "Ambiguous" and left unassigned: a missing point cloud blocks the upload ("Found 2 LAS files; choose which one is the point cloud"), an unresolved optional role is a warning ("…none will be imported unless you choose one"). Each file has a role dropdown (only roles valid for its extension, plus "Don't import"); two files on one role block the upload. Preview line: "Found 1 LAS point cloud, 1 poses CSV, 1 project JSON, and 2 optional metadata files." (counts assigned files plus unresolved candidates; control points + GNSS = optional metadata). Paths are shown relative to the picked folder; the folder name becomes the default dataset name.
+- Sparse datasets (7A.2): the point cloud is the only required file and must be a valid, non-empty LAS (empty → 400 "the file is empty"; bad content → "LASF signature" error). Empty optional files (`poses`, `control_points`, `gnss`, `project`) never fail the import:
+  - Preview: a 0-byte file gets "Don't import" with the note "Empty file (0 bytes): will be skipped." and a yellow warning; it is not counted as unrecognised. A 0-byte `.las` with no other point cloud is a blocking problem. With a point cloud but no `project.json`, the preview warns that metadata will be inferred and the CRS may be unknown.
+  - Backend: an optional file that is 0 bytes or only whitespace (UTF-8 BOM allowed) is deleted from `source/`, listed in `skippedFiles`, and warned about. Non-empty but invalid optional files (bad JSON, binary CSV) are still rejected, so a corrupt file is never silently dropped.
+  - Missing/empty/`{}` project: `infer_project_metadata` (`backend/uploads.py`) fills `projectInferred` from the LAS header and adds warnings that the CRS is unknown (or declared in the LAS but not interpreted) and coordinates are a local frame in metres. The panel shows "Project metadata: inferred from the LAS header (CRS: …)" plus each `⚠` warning.
+  - A whitespace-only file isn't 0 bytes, so only the backend catches it; the warning appears in the dataset panel after upload.
 - Switching datasets: drop the old point cloud and poses (JS arrays freed; `PointCloud`/`Trajectory` dispose GPU geometry on change/unmount), keep `ViewSettings`, reset pose playback, keep the *preferred* budget key (`pickBudget` falls back to the largest budget not bigger than it), reframe the camera once per dataset.
 
 Accept:
@@ -554,6 +566,7 @@ Techniques used:
 - **Backend without copying big files** (Lab 7A): create a dataset folder whose `source/pointcloud.las` is a *symlink* to the original, write `new_metadata()`, call `converter.convert_dataset(id)` directly; use `SPATIAL_LAB_DATA_DIR=/tmp/...` so tests don't touch the real store. Patch `converter.BUDGETS` (e.g. a 10M budget) to exercise the "All (N)" path with real data. `cmp` the budgets against `public/data`.
 - **API checks** with `curl -F`: wrong extension, fake content, empty name, invalid ids (`..%2F`), delete.
 - **Importer**: unit-test `planImport`/`describePlan` with `npx tsx` (Node's `File`, `webkitRelativePath` set via `Object.defineProperty`): complete folder, two LAS files, several pose candidates, user resolution, two files on one role, unknown CSV + unsupported formats, no LAS, only system files. In the browser, `setInputFiles(<folder path>)` on the folder input; placeholder files are enough for the preview, and uploading a placeholder `.las` must return the backend's "LASF signature" error. End to end: a folder with a hard link to `map.las` + `poses.csv` + `project.json` → 5,242,880 points, same offset, poses aligned, 0% pixel diff vs the built-in dataset.
+- **Sparse imports** (7A.2), against a backend with `SPATIAL_LAB_DATA_DIR=/tmp/...` on a spare port (never the user's running backend on 8000 — it writes to the real store; in Playwright, `page.route` can redirect `:8000` to the test port): `map.las` + empty `poses.csv`/`control_points.csv` + whitespace/BOM `gnss.csv` → 201, three skip warnings, `projectInferred` with CRS unknown, conversion ready, poses none; empty `project.json` and `{}` → inferred metadata; full set → no warnings, poses aligned (unchanged); empty LAS → 400; invalid non-empty JSON → 400.
 - **GPU leak check**: `page.addInitScript` wrapping `createBuffer/deleteBuffer/bufferData/createTexture/createProgram` on both WebGL prototypes to count live objects and bytes, grouped by `ctx.canvas` size (to separate the r3f-perf chart canvas from the scene). Compare the same state before and after N round trips.
 - **Projected-footprint measurement** (Lab 6): weight only pixels with the Gaussian's hue (`(G−B)/(R−B) ≈ 0.47` for the orange), and keep only the half of the screen away from the axis lines (the footprint is centrally symmetric) — otherwise axes blended into the faint tail bias the moments. Compare to a *simulated measurement* of the predicted Σ2D (same opacity, 8-bit rounding, threshold and 3σ cut), not to raw Σ2D: truncation and thresholding make the measured σ ~6% smaller.
 - Note: FPS numbers from SwiftShader are meaningless; use real hardware for performance conclusions.
@@ -616,3 +629,4 @@ Explicitly out of scope so far (each would be its own lab): cross-dataset alignm
 | 6 | Separate `/gaussian-projection` page: 3D Gaussian → Σ3D → Jacobian-projected Σ2D → screen-space quad with conic falloff, premultiplied alpha, outlines, Σ displays; wireframe ellipsoid drawn on top |
 | 7A | Local FastAPI backend (upload validation, worker-process conversion with progress, pose/frame validation, `spatial-data/` store); per-dataset metadata replaces `WORLD_OFFSET` and `pointBudgets.ts`; Datasets panel; per-dataset camera framing; converter core moved to `backend/lidar_conversion.py` (byte-identical output); `.bin` files and `spatial-data/` gitignored |
 | 7A.1 | Importer: folder or individual files, preview summary, per-file role selection, ambiguity flags instead of guessing (`lib/importPlan.ts`); verified end to end with the real map.las |
+| 7A.2 | Sparse datasets: empty optional files (poses, control points, GNSS, project) are skipped with warnings instead of failing the import; missing/empty project.json → metadata inferred from the LAS header with explicit unknown-CRS warnings; new metadata keys `warnings`, `skippedFiles`, `projectInferred`; warnings shown in the import preview and the dataset panel |

@@ -120,6 +120,12 @@ function DatasetInfo({ dataset }: { dataset: Dataset }) {
         </div>
       )}
       {dataset.source.project && <div>Project metadata: {dataset.source.project.filename}</div>}
+      {dataset.projectInferred && (
+        <div>
+          Project metadata: inferred from the LAS header (CRS:{" "}
+          {dataset.projectInferred.coordinateReferenceSystem ?? "unknown"})
+        </div>
+      )}
       {dataset.attachments.map((a) => (
         <div key={a.role}>
           Kept for later: {a.filename} ({String(a.rows ?? "?")} rows)
@@ -128,6 +134,11 @@ function DatasetInfo({ dataset }: { dataset: Dataset }) {
       {dataset.origin === "local-backend" && (
         <div>Imported: {new Date(dataset.createdAt).toLocaleString()}</div>
       )}
+      {dataset.warnings?.map((warning) => (
+        <div key={warning} className="status">
+          ⚠ {warning}
+        </div>
+      ))}
     </div>
   );
 }

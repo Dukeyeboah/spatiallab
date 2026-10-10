@@ -66,6 +66,12 @@ export type Dataset = {
   poses: DatasetPoses | null;
   /** control_points.csv / gnss.csv: preserved for later, schema not assumed. */
   attachments: (SourceFileInfo & { role: UploadRole })[];
+  /** Non-fatal import notes (absent in datasets imported before they existed). */
+  warnings?: string[];
+  /** Optional uploads that were empty and skipped. */
+  skippedFiles?: { role: UploadRole; filename: string; reason: string }[];
+  /** Safe facts from the LAS header when project.json was missing or empty. */
+  projectInferred?: Record<string, string | null> | null;
 };
 
 /** The original scan (Labs 1–6). Values printed by scripts/convert_las.py for map.las. */

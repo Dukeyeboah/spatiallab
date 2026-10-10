@@ -71,9 +71,23 @@ async def save_upload(role: str, upload: UploadFile, destination: Path) -> int:
             if size > limit:
                 raise UploadError(f"{role.replace('_', ' ')}: file is larger than {limit // MiB} MiB.")
             out.write(chunk)
-    if size == 0:
-        raise UploadError(f"{role.replace('_', ' ')}: the file is empty.")
+    # Only the point cloud is required; empty optional files are skipped by the caller.
+    if size == 0 and role == "pointcloud":
+        raise UploadError("point cloud: the file is empty.")
     return size
+
+
+def is_blank(path: Path) -> bool:
+    """True for an empty text file, or one with only whitespace / a UTF-8 BOM."""
+    with open(path, "rb") as f:
+        first = True
+        while chunk := f.read(COPY_CHUNK):
+            if first and chunk.startswith(b"\xef\xbb\xbf"):
+                chunk = chunk[3:]
+            first = False
+            if chunk.strip():
+                return False
+    return True
 
 
 def inspect_las(path: Path) -> dict[str, Any]:
@@ -97,6 +111,10 @@ def inspect_las(path: Path) -> dict[str, Any]:
                 "hasRgb": "red" in dimensions,
                 # True if the file carries a coordinate reference system (CRS) record.
                 "georeferenced": georeferenced,
+                # Descriptive header fields (often blank); used when there's no project.json.
+                "generatingSoftware": header.generating_software.strip("\x00 ") or None,
+                "systemIdentifier": header.system_identifier.strip("\x00 ") or None,
+                "creationDate": header.creation_date.isoformat() if header.creation_date else None,
             }
     except UploadError:
         raise
@@ -132,4 +150,40 @@ def inspect_json(path: Path) -> dict[str, Any]:
     except (UnicodeDecodeError, json.JSONDecodeError) as error:
         raise UploadError(f"project metadata: not valid JSON ({error}).") from error
     keys = list(value.keys())[:50] if isinstance(value, dict) else []
-    return {"topLevelType": type(value).__name__, "topLevelKeys": keys}
+    return {
+        "topLevelType": type(value).__name__,
+        "topLevelKeys": keys,
+        # {} / [] / null: valid JSON, but nothing to learn from it.
+        "hasContent": bool(value),
+    }
+
+
+def infer_project_metadata(las_info: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
+    """
+    Safe project metadata when project.json is missing or empty: only facts
+    the LAS header states, with everything else marked unknown. Returns
+    (metadata, warnings). Nothing here is guessed from the coordinates.
+    """
+    georeferenced = bool(las_info.get("georeferenced"))
+    inferred = {
+        "source": "LAS header (no usable project.json)",
+        "captureDate": las_info.get("creationDate"),
+        "generatingSoftware": las_info.get("generatingSoftware"),
+        "systemIdentifier": las_info.get("systemIdentifier"),
+        "coordinateReferenceSystem": "declared in the LAS file (not interpreted yet)" if georeferenced else "unknown",
+        "units": "unknown (treated as metres)",
+        "upAxis": "Z (LAS convention)",
+    }
+    warnings = ["No usable project.json: project metadata was inferred from the LAS header."]
+    if georeferenced:
+        warnings.append(
+            "The LAS file declares a coordinate reference system, but Spatial Lab doesn't interpret it yet; "
+            "units are treated as metres."
+        )
+    else:
+        warnings.append(
+            "Coordinate reference system unknown: the LAS file has no CRS record and there is no usable project.json, "
+            "so coordinates are treated as a local frame in metres. Don't align this dataset with others "
+            "until its CRS is known."
+        )
+    return inferred, warnings
