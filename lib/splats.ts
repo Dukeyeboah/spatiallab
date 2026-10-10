@@ -120,6 +120,12 @@ export function formatBytes(bytes: number): string {
 
 export async function fetchSplats(signal?: AbortSignal): Promise<SplatScene[]> {
   const response = await fetch(`${API_URL}/splats`, { signal, cache: "no-store" });
+  if (response.status === 404) {
+    throw new Error(
+      `The backend at ${API_URL} is running but has no /splats endpoint: it was started before Lab 8. ` +
+        "Restart it (Ctrl+C, then uvicorn again) after pip install -r requirements.txt.",
+    );
+  }
   if (!response.ok) throw new Error(await errorMessage(response));
   return response.json();
 }

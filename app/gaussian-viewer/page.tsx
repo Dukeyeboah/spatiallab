@@ -44,8 +44,13 @@ export default function GaussianViewerPage() {
       setScenes(list);
       setSelectedId((current) => (current && list.some((s) => s.id === current) ? current : (list[0]?.id ?? null)));
       setError(null);
-    } catch {
-      setError(`The local backend isn't reachable at ${API_URL}. Start it to import and view Gaussian scenes.`);
+    } catch (err) {
+      // fetch() itself rejects only when nothing answers; HTTP errors carry their own message.
+      setError(
+        err instanceof TypeError
+          ? `The local backend isn't reachable at ${API_URL}. Start it to import and view Gaussian scenes.`
+          : (err as Error).message,
+      );
       return;
     }
     // An older backend has no catalog: scenes still work, just unorganised.
