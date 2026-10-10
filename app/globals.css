@@ -225,8 +225,54 @@ body {
   white-space: normal;
 }
 
-.controls .import-form input[type="file"] {
-  width: 100%;
+/* "Choose folder…" / "Choose files…": a button-looking label around a hidden input. */
+.controls .import-form .picker {
+  flex: 1;
+  justify-content: center;
+  padding: 4px 0;
+  border: 1px solid #555;
+  border-radius: 4px;
+  background: #222;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.controls .import-form .picker input {
+  display: none;
+}
+
+.controls .import-summary {
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.controls .import-files {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 11px;
+}
+
+.controls .import-file-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.controls .import-path {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.controls .import-file-row select {
+  width: 100px;
+  flex: none;
   font-size: 11px;
 }
 

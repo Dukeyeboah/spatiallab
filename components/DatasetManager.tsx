@@ -1,14 +1,8 @@
 "use client";
 
 import { useState, type FormEvent } from "react";
-import {
-  UPLOAD_ROLES,
-  checkFileForRole,
-  deleteDataset,
-  uploadDataset,
-  type Dataset,
-  type UploadRole,
-} from "@/lib/datasets";
+import { deleteDataset, uploadDataset, type Dataset } from "@/lib/datasets";
+import { describePlan, planImport, type ImportCandidate, type ImportRole } from "@/lib/importPlan";
 
 type DatasetManagerProps = {
   datasets: Dataset[];
@@ -142,73 +136,144 @@ function formatBytes(bytes: number): string {
   return bytes >= 1024 * 1024 ? `${(bytes / 1024 / 1024).toFixed(1)} MB` : `${Math.ceil(bytes / 1024)} KB`;
 }
 
-/** Name + one file input per role. Checks extensions before uploading. */
+const ROLE_LABELS: Record<ImportRole, string> = {
+  pointcloud: "Point cloud",
+  poses: "Scanner poses",
+  project: "Project metadata",
+  control_points: "Control points",
+  gnss: "GNSS",
+  ignore: "Don't import",
+};
+
+/**
+ * Pick a folder or individual files, review what was detected, fix any
+ * ambiguous roles, then upload. Nothing is sent before "Upload and convert".
+ */
 function ImportForm({ onImported }: { onImported: (dataset: Dataset) => Promise<void> }) {
   const [name, setName] = useState("");
-  const [files, setFiles] = useState<Partial<Record<UploadRole, File>>>({});
-  const [problem, setProblem] = useState<string | null>(null);
+  const [candidates, setCandidates] = useState<ImportCandidate[] | null>(null);
+  const [uploadError, setUploadError] = useState<string | null>(null);
   const [uploadProgress, setUploadProgress] = useState<number | null>(null);
+  const plan = candidates && describePlan(candidates);
 
-  function pick(role: UploadRole, file: File | undefined) {
-    setFiles((current) => ({ ...current, [role]: file }));
-    setProblem(file ? checkFileForRole(role, file.name) : null);
-    // Suggest a name from the point-cloud file.
-    if (role === "pointcloud" && file && !name) setName(file.name.replace(/\.[^.]+$/, ""));
+  function choose(fileList: FileList | null) {
+    const files = Array.from(fileList ?? []);
+    if (files.length === 0) return;
+    const planned = planImport(files);
+    setCandidates(planned);
+    setUploadError(null);
+    // Suggest a name: the folder's name, or the point cloud's file name.
+    const folder = files[0].webkitRelativePath.split("/")[0];
+    const las = planned.find((c) => c.role === "pointcloud");
+    setName(folder || las?.file.name.replace(/\.[^.]+$/, "") || "");
+  }
+
+  function setRole(index: number, role: ImportRole) {
+    setCandidates((current) => current && current.map((c, i) => (i === index ? { ...c, role } : c)));
   }
 
   async function submit(event: FormEvent) {
     event.preventDefault();
-    if (!files.pointcloud) return setProblem("Choose a .las point cloud.");
-    for (const [role, file] of Object.entries(files) as [UploadRole, File | undefined][]) {
-      const message = file && checkFileForRole(role, file.name);
-      if (message) return setProblem(message);
-    }
+    if (!candidates || !plan?.ready) return;
 
     const form = new FormData();
-    form.append("name", name.trim() || files.pointcloud.name);
-    for (const [role, file] of Object.entries(files)) {
-      if (file) form.append(role, file);
+    const pointcloud = candidates.find((c) => c.role === "pointcloud")!;
+    form.append("name", name.trim() || pointcloud.file.name);
+    for (const c of candidates) {
+      if (c.role !== "ignore") form.append(c.role, c.file, c.file.name);
     }
 
-    setProblem(null);
+    setUploadError(null);
     setUploadProgress(0);
     try {
       const dataset = await uploadDataset(form, setUploadProgress);
       await onImported(dataset);
     } catch (err) {
-      setProblem((err as Error).message);
+      setUploadError((err as Error).message);
     } finally {
       setUploadProgress(null);
     }
   }
 
   const uploading = uploadProgress !== null;
+  const uploadBytes = candidates?.filter((c) => c.role !== "ignore").reduce((sum, c) => sum + c.file.size, 0) ?? 0;
 
   return (
     <form className="import-form" onSubmit={submit}>
-      <label className="stacked">
-        Name
-        <input type="text" value={name} maxLength={80} onChange={(e) => setName(e.target.value)} />
-      </label>
-      {UPLOAD_ROLES.map((rule) => (
-        <label key={rule.role} className="stacked">
-          {rule.label} ({rule.extension}
-          {rule.required ? ", required" : ", optional"})
+      <div className="dataset-actions">
+        <label className="picker">
+          Choose folder…
           <input
             type="file"
-            accept={rule.extension}
+            // Not in React's types: lets the user pick a whole folder (all files inside, recursively).
+            ref={(input) => input?.setAttribute("webkitdirectory", "")}
             disabled={uploading}
-            onChange={(e) => pick(rule.role, e.target.files?.[0])}
+            onChange={(e) => choose(e.target.files)}
           />
         </label>
-      ))}
-      <div className="note">
-        Control points and GNSS files are stored for later analysis; their columns aren&apos;t interpreted yet.
+        <label className="picker">
+          Choose files…
+          <input
+            type="file"
+            multiple
+            accept=".las,.csv,.json"
+            disabled={uploading}
+            onChange={(e) => choose(e.target.files)}
+          />
+        </label>
       </div>
-      <button type="submit" disabled={uploading || !files.pointcloud}>
-        {uploading ? `Uploading ${Math.round(uploadProgress * 100)}%` : "Upload and convert"}
-      </button>
-      {problem && <div className="error">{problem}</div>}
+
+      {candidates && plan && (
+        <>
+          <div className="import-summary">{plan.summary}</div>
+          <ul className="import-files">
+            {candidates.map((c, i) => (
+              <li key={c.path}>
+                <div className="import-file-row">
+                  <span className="import-path" title={c.path}>
+                    {c.path}
+                  </span>
+                  <select
+                    value={c.role}
+                    disabled={uploading || c.allowedRoles.length === 0}
+                    onChange={(e) => setRole(i, e.target.value as ImportRole)}
+                  >
+                    {[...c.allowedRoles, "ignore" as const].map((role) => (
+                      <option key={role} value={role}>
+                        {ROLE_LABELS[role]}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                {c.note && <div className={c.ambiguousRole ? "status" : "note"}>{c.note}</div>}
+              </li>
+            ))}
+          </ul>
+          {plan.problems.map((p) => (
+            <div key={p} className="error">
+              {p}
+            </div>
+          ))}
+          {plan.warnings.map((w) => (
+            <div key={w} className="status">
+              {w}
+            </div>
+          ))}
+          <label className="stacked">
+            Name
+            <input type="text" value={name} maxLength={80} onChange={(e) => setName(e.target.value)} />
+          </label>
+          <div className="note">
+            Control points and GNSS files are stored for later analysis; their columns aren&apos;t interpreted yet.
+          </div>
+          <button type="submit" disabled={uploading || !plan.ready}>
+            {uploading
+              ? `Uploading ${Math.round(uploadProgress * 100)}%`
+              : `Upload and convert (${formatBytes(uploadBytes)})`}
+          </button>
+        </>
+      )}
+      {uploadError && <div className="error">{uploadError}</div>}
     </form>
   );
 }

@@ -193,7 +193,8 @@ export function uploadDataset(
 }
 
 // ---------------------------------------------------------------------------
-// Client-side file checks (the backend checks again, including contents).
+// Upload roles (one file each). File detection lives in lib/importPlan.ts;
+// the backend checks again, including contents.
 
 export const UPLOAD_ROLES: { role: UploadRole; label: string; extension: string; required: boolean }[] = [
   { role: "pointcloud", label: "Point cloud", extension: ".las", required: true },
@@ -202,23 +203,3 @@ export const UPLOAD_ROLES: { role: UploadRole; label: string; extension: string;
   { role: "control_points", label: "Control points", extension: ".csv", required: false },
   { role: "gnss", label: "GNSS", extension: ".csv", required: false },
 ];
-
-const UNSUPPORTED_HINTS: Record<string, string> = {
-  ".laz": "LAZ (compressed LAS) isn't supported yet; decompress it to .las first.",
-  ".ply": ".ply (mesh or trained Gaussian splat) isn't supported in this lab.",
-  ".splat": ".splat files are trained Gaussian splats, which this lab doesn't load yet.",
-  ".ksplat": ".ksplat files are trained Gaussian splats, which this lab doesn't load yet.",
-  ".e57": ".e57 isn't supported yet; export the scan as .las.",
-};
-
-/** null if the file name fits the role, otherwise a helpful message. */
-export function checkFileForRole(role: UploadRole, fileName: string): string | null {
-  const rule = UPLOAD_ROLES.find((r) => r.role === role)!;
-  const dot = fileName.lastIndexOf(".");
-  const extension = dot >= 0 ? fileName.slice(dot).toLowerCase() : "";
-  if (extension === rule.extension) return null;
-  return (
-    `${rule.label}: expected a ${rule.extension} file, got "${fileName}". ` +
-    (UNSUPPORTED_HINTS[extension] ?? "")
-  ).trim();
-}

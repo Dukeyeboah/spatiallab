@@ -151,6 +151,7 @@ lib/
   loadPointCloud.ts     binary point-cloud loader (format in section 5)
   loadPoses.ts          poses.csv parser, subtracts the dataset's offset
   worldFrame.ts         LIDAR_TO_THREE_ROTATION (Z-up → Y-up)
+  importPlan.ts         folder/files → import plan: role detection, ambiguity flags, preview summary
   datasets.ts           Dataset type (= backend metadata), BUILTIN_DATASET (map.las offset/bounds),
                         asset URLs, pickBudget(), backend API calls, client-side file checks
   usefulBounds.ts       1st–99th percentile bounding box (ignores stray points)
@@ -464,7 +465,21 @@ Requirements:
 - Security: ids generated server-side (`ds_` + 12 hex) and matched against a strict regex before any path is built, and the resolved path must stay inside the store; budget keys served only if listed in the metadata; client file names are display text only; per-role extension + size limit (LAS 4 GiB, CSV 200 MiB, JSON 10 MiB) + content check (`LASF` signature and a laspy header read, uncompressed only; UTF-8 text without NUL for CSV; `json.loads` for JSON); nothing uploaded is executed; helpful messages for `.laz`, `.ply`, `.splat`, `.e57`, … (also checked client-side before uploading).
 - Conversion in a `ProcessPoolExecutor(max_workers=1, spawn)` worker; progress (reading 0–60%, budgets 60–90%, poses 90–100%) written to metadata; the page polls every 1.5 s while anything converts. Interrupted conversions are re-queued on backend start. On failure, partial `converted/` output is deleted, sources are kept, and the error is shown.
 - Pose validation per section 5.3; control points/GNSS stored with rows/first line only (schema not assumed); project JSON parsed, top-level keys recorded. None of these are treated as splat data.
-- Frontend: built-in dataset (`BUILTIN_DATASET`, served from `public/data`, works without the backend) + backend datasets in one list; collapsible "Datasets" section (`<details>`): select (status in the option label), metadata (original points, size, offset with full precision in the tooltip, budgets, poses count + status, source file, attachments, import date), progress bar, "Import dataset…" form (name + one file input per role, upload progress via XMLHttpRequest), "Delete" with `window.confirm`. Global `WORLD_OFFSET` and `pointBudgets.ts` removed.
+- Frontend: built-in dataset (`BUILTIN_DATASET`, served from `public/data`, works without the backend) + backend datasets in one list; collapsible "Datasets" section (`<details>`): select (status in the option label), metadata (original points, size, offset with full precision in the tooltip, budgets, poses count + status, source file, attachments, import date), progress bar, "Import dataset…" form (see the importer below), "Delete" with `window.confirm`. Global `WORLD_OFFSET` and `pointBudgets.ts` removed.
+- Importer (`lib/importPlan.ts` + `ImportForm`): "Choose folder…" (`<input type=file webkitdirectory>`, recursive; the attribute is set through a ref because React's types lack it) or "Choose files…" (`multiple`). Nothing is uploaded until "Upload and convert". Detection by extension and name only (contents are checked by the backend):
+
+  | File | Detected as |
+  | --- | --- |
+  | `.las` | point cloud |
+  | `.json` | project metadata |
+  | `.csv` with `control_points`/`gcp` in the name | control points |
+  | `.csv` with `gnss`/`gps` | GNSS |
+  | `.csv` with `pose`/`trajectory`/`odom` | scanner poses |
+  | other `.csv` | unrecognised (not imported unless the user assigns a role) |
+  | `.laz`, `.ply`, `.splat`, `.e57`, other | not imported, with a reason |
+  | `.DS_Store`, dot-files, `Thumbs.db` | skipped silently |
+
+  A role is assigned automatically **only if exactly one file claims it**. Two LAS files or several pose/JSON candidates are marked "Ambiguous" and left unassigned: a missing point cloud blocks the upload ("Found 2 LAS files; choose which one is the point cloud"), an unresolved optional role is a warning ("…none will be imported unless you choose one"). Each file has a role dropdown (only roles valid for its extension, plus "Don't import"); two files on one role block the upload. Preview line: "Found 1 LAS point cloud, 1 poses CSV, 1 project JSON, and 2 optional metadata files." (counts assigned files plus unresolved candidates; control points + GNSS = optional metadata). Paths are shown relative to the picked folder; the folder name becomes the default dataset name.
 - Switching datasets: drop the old point cloud and poses (JS arrays freed; `PointCloud`/`Trajectory` dispose GPU geometry on change/unmount), keep `ViewSettings`, reset pose playback, keep the *preferred* budget key (`pickBudget` falls back to the largest budget not bigger than it), reframe the camera once per dataset.
 
 Accept:
@@ -503,6 +518,8 @@ Limitations to state: each dataset has its own local frame (no cross-dataset ali
 | Effects re-run / reload every 1.5 s while converting | polling replaces dataset objects | depend on URL strings and ids, not objects |
 | "Budget switch moves the camera" in headless tests | OrbitControls damping is per frame; SwiftShader renders few frames per second, so the drag keeps drifting for seconds | wait until two screenshots are identical before comparing |
 | Live WebGL buffer count grows a little on every switch | r3f-perf's chart canvas (310×100, its own context) rebuilds small text buffers when the point count changes | not an app leak: the scene canvas's buffers stay constant; attribute buffers to their canvas when checking |
+| Headless folder upload "finds no .las" | Playwright's directory `setInputFiles` skips symlinked files | use a hard link (`ln`, same disk, no copy) in test folders |
+| A background server started with `( … &)` inside a one-off shell dies | it ends with that shell | start long-running servers as their own background process |
 | `[Errno 28] No space left on device` during conversion | each conversion writes ~52 MB of budgets; uploads need ~2.3× the LAS size | failed jobs delete partial output; free disk before importing large files |
 | Killing a background `uvicorn` leaves it listening | the shell wrapper was killed, not the server | `lsof -ti tcp:8000 -sTCP:LISTEN \| xargs kill` |
 
@@ -536,6 +553,7 @@ Techniques used:
 - **Pure-math unit tests** (Lab 6): import `lib/gaussian/gaussianMath.ts` from a script run with `npx tsx` (outside the project); check circle/ratio/angle/distance cases, symmetry + positive-definiteness for thousands of random inputs, and a Monte Carlo comparison (sample points from N(0, Σ3D), push through T = J·W, compare sample covariance to Σ2D).
 - **Backend without copying big files** (Lab 7A): create a dataset folder whose `source/pointcloud.las` is a *symlink* to the original, write `new_metadata()`, call `converter.convert_dataset(id)` directly; use `SPATIAL_LAB_DATA_DIR=/tmp/...` so tests don't touch the real store. Patch `converter.BUDGETS` (e.g. a 10M budget) to exercise the "All (N)" path with real data. `cmp` the budgets against `public/data`.
 - **API checks** with `curl -F`: wrong extension, fake content, empty name, invalid ids (`..%2F`), delete.
+- **Importer**: unit-test `planImport`/`describePlan` with `npx tsx` (Node's `File`, `webkitRelativePath` set via `Object.defineProperty`): complete folder, two LAS files, several pose candidates, user resolution, two files on one role, unknown CSV + unsupported formats, no LAS, only system files. In the browser, `setInputFiles(<folder path>)` on the folder input; placeholder files are enough for the preview, and uploading a placeholder `.las` must return the backend's "LASF signature" error. End to end: a folder with a hard link to `map.las` + `poses.csv` + `project.json` → 5,242,880 points, same offset, poses aligned, 0% pixel diff vs the built-in dataset.
 - **GPU leak check**: `page.addInitScript` wrapping `createBuffer/deleteBuffer/bufferData/createTexture/createProgram` on both WebGL prototypes to count live objects and bytes, grouped by `ctx.canvas` size (to separate the r3f-perf chart canvas from the scene). Compare the same state before and after N round trips.
 - **Projected-footprint measurement** (Lab 6): weight only pixels with the Gaussian's hue (`(G−B)/(R−B) ≈ 0.47` for the orange), and keep only the half of the screen away from the axis lines (the footprint is centrally symmetric) — otherwise axes blended into the faint tail bias the moments. Compare to a *simulated measurement* of the predicted Σ2D (same opacity, 8-bit rounding, threshold and 3σ cut), not to raw Σ2D: truncation and thresholding make the measured σ ~6% smaller.
 - Note: FPS numbers from SwiftShader are meaningless; use real hardware for performance conclusions.
@@ -597,3 +615,4 @@ Explicitly out of scope so far (each would be its own lab): cross-dataset alignm
 | 5a | `withDefaults()` so settings added during development can't crash a hot-reloaded page |
 | 6 | Separate `/gaussian-projection` page: 3D Gaussian → Σ3D → Jacobian-projected Σ2D → screen-space quad with conic falloff, premultiplied alpha, outlines, Σ displays; wireframe ellipsoid drawn on top |
 | 7A | Local FastAPI backend (upload validation, worker-process conversion with progress, pose/frame validation, `spatial-data/` store); per-dataset metadata replaces `WORLD_OFFSET` and `pointBudgets.ts`; Datasets panel; per-dataset camera framing; converter core moved to `backend/lidar_conversion.py` (byte-identical output); `.bin` files and `spatial-data/` gitignored |
+| 7A.1 | Importer: folder or individual files, preview summary, per-file role selection, ambiguity flags instead of guessing (`lib/importPlan.ts`); verified end to end with the real map.las |
