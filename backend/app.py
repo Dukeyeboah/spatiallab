@@ -31,6 +31,11 @@ Gaussian splat scenes (splats.py, Lab 8):
     DELETE /splats/{id}                      delete the scene's files
     GET    /splats/{id}/files/{path}         a file the scene's manifest references (whitelist)
 
+Individual Gaussians of a trained PLY scene (gaussian_records.py, Lab 9; read-only):
+    GET    /splats/{id}/gaussians?indices=0,17   stored + decoded records (at most 64)
+    GET    /splats/{id}/gaussians/sample?seed=42&count=12   reproducible random sample
+    GET    /splats/{id}/gaussians/summary?seed=1            statistics over 20,000 sampled Gaussians
+
 Only converted assets are served; original uploads never leave spatial-data/.
 Conversions run one at a time in a separate worker process; budgets added
 after a dataset was converted (e.g. 5M) are generated there at startup.
@@ -50,6 +55,7 @@ from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
 
 import catalog
+import gaussian_records
 import splats
 import storage
 from splat_bounds import robust_bounds
@@ -441,3 +447,42 @@ def get_splat_file(splat_id: str, relative: str) -> FileResponse:
         raise HTTPException(404, "File not found in this scene.")
     media_type = SPLAT_MEDIA_TYPES.get(path.suffix.lower(), "application/octet-stream")
     return FileResponse(path, media_type=media_type)
+
+
+# ---------------------------------------------------------------------------
+# Individual Gaussians of a trained PLY scene (gaussian_records.py, Lab 9).
+# Read-only: records are read from the memory-mapped file, never modified.
+
+MAX_SEED = 2**63 - 1
+
+
+def gaussian_call(splat_id: str, read, *args) -> dict:
+    metadata = get_splat_or_404(splat_id)
+    try:
+        return read(metadata, *args)
+    except gaussian_records.GaussianReadError as error:
+        raise HTTPException(400, str(error)) from error
+
+
+@app.get("/splats/{splat_id}/gaussians")
+def get_gaussians(splat_id: str, indices: str) -> dict:
+    """indices: comma-separated, e.g. 0,17,812345 (at most 64)."""
+    try:
+        parsed = [int(part) for part in indices.split(",") if part.strip()]
+    except ValueError:
+        raise HTTPException(400, "Indices must be whole numbers separated by commas.") from None
+    return gaussian_call(splat_id, gaussian_records.read_records, parsed)
+
+
+@app.get("/splats/{splat_id}/gaussians/sample")
+def sample_gaussians(splat_id: str, seed: int, count: int = 12) -> dict:
+    if not 0 <= seed <= MAX_SEED:
+        raise HTTPException(400, f"Seed must be 0–{MAX_SEED}.")
+    return gaussian_call(splat_id, gaussian_records.read_sample, seed, count)
+
+
+@app.get("/splats/{splat_id}/gaussians/summary")
+def summarise_gaussians(splat_id: str, seed: int = 1) -> dict:
+    if not 0 <= seed <= MAX_SEED:
+        raise HTTPException(400, f"Seed must be 0–{MAX_SEED}.")
+    return gaussian_call(splat_id, gaussian_records.summarise, seed)

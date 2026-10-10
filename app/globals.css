@@ -369,6 +369,114 @@ body {
   font-size: 11px;
 }
 
+/* Lab 9: Gaussian Inspector panel (wider: it shows tables of stored values). */
+.controls.inspector {
+  width: 340px;
+}
+
+.controls.inspector select,
+.controls.inspector input[type="number"] {
+  padding: 3px;
+  border: 1px solid #555;
+  border-radius: 4px;
+  background: #222;
+  color: #ddd;
+  font-size: 12px;
+}
+
+.controls.inspector select {
+  width: 100%;
+}
+
+.controls .inline-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.controls .inline-row input[type="number"] {
+  flex: 1;
+  min-width: 0;
+  width: 80px;
+}
+
+.controls .inline-row button,
+.controls .sample-list button {
+  padding: 3px 8px;
+  border: 1px solid #555;
+  border-radius: 4px;
+  background: #222;
+  color: #ddd;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.controls .inline-row button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.controls .sample-list {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 3px;
+}
+
+.controls .sample-list button {
+  padding: 2px 4px;
+  text-align: left;
+  font-size: 11px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.controls .sample-list button.selected {
+  border-color: #8ab4f8;
+}
+
+.controls .sample-list .unit {
+  color: #999;
+}
+
+.controls .attr-table {
+  border-collapse: collapse;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.controls .attr-table th {
+  padding: 1px 4px 1px 0;
+  text-align: left;
+  font-weight: 600;
+  vertical-align: top;
+}
+
+.controls .attr-table td {
+  padding: 1px 4px;
+  vertical-align: top;
+  overflow-wrap: anywhere;
+}
+
+.controls .attr-table td:last-child {
+  color: #9cd;
+}
+
+.controls b.sub {
+  margin-top: 4px;
+  font-size: 12px;
+}
+
+.controls label .value {
+  min-width: 64px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.controls .note.ok {
+  color: #8c8;
+}
+
 .segmented button.selected {
   background: #4a6fa5;
   border-color: #4a6fa5;

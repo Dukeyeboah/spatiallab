@@ -112,6 +112,9 @@ export function Controls({
       <Link href="/gaussian-viewer" className="lab-link">
         Lab 8: Gaussian Splat Viewer →
       </Link>
+      <Link href="/gaussian-inspector" className="lab-link">
+        Lab 9: Gaussian Inspector →
+      </Link>
 
       {datasetPanel}
 

@@ -43,6 +43,7 @@ A deliberately small Next.js + React Three Fiber app that renders a **real** LiD
 | 7B | Gaussian compositing (separate page `/gaussian-compositing`) | many Gaussians in one instanced draw call, depth sorting, front-to-back alpha compositing, transmittance, animation |
 | 7C | 5M budget + Properties → Captures | budgets added later are backfilled from stored originals in the same frame; organising datasets by place and session without merging frames |
 | 8 | Real Gaussian splat viewer (separate page `/gaussian-viewer`) | real trained splats (PLY / SOG) imported locally and shown with the official SuperSplat Viewer; formats, packages, robust framing, renderer isolation and teardown |
+| 9 | Gaussian Inspector (separate page `/gaussian-inspector`) | single Gaussians of a real trained PLY: stored vs decoded values (log scale, logit opacity, quaternion, SH colour), isolated preview through Lab 6's projection, experiments, view-dependent colour, reproducible samples |
 
 The dataset used: a handheld/SLAM LiDAR scan (`map.las`, 5,242,880 points, 178 MB, local metric frame, RGB) plus `poses.csv` (208 poses, 5 Hz, 41.4 s).
 
@@ -154,6 +155,9 @@ components/
     CompositingScene.tsx         Lab 7B <Canvas> (transparent clear), OrbitControls, background grid, probe marker
     CompositedGaussians.tsx      Lab 7B frame loop: animate → Σ3D → project → sort → instance buffers; 2 instanced meshes
     CompositingPanel.tsx         Lab 7B controls, probe-pixel table, explanations, stats
+    InspectorScene.tsx           Lab 9 <Canvas> (Lab 6 camera/reset), 1σ ellipsoid + own axes, gizmo, quad with SH colour, view reporter
+    InspectorPanel.tsx           Lab 9 scene/index/sample pickers, stored → decoded table, experiments, Σ3D/Σ2D, scene statistics
+app/gaussian-inspector/page.tsx    Lab 9 client page: scenes, layout, record + edits, sample, summary; preview Gaussian via useMemo
 app/gaussian-viewer/page.tsx       Lab 8 client page: splat scene list, catalog, selection, start view; SplatViewer + SplatPanel
 components/splat/                  Lab 8 only (no React Three Fiber on this page)
   SplatViewer.tsx       embeds the official SuperSplat Viewer (createViewer in a <div>), one instance per scene, destroy on change
@@ -166,6 +170,8 @@ lib/gaussian/
   compositing.ts        Lab 7B: allocation-free covariance/projection (same math as gaussianMath), splatAlphaAt, compositePixel
   compositingScene.ts   Lab 7B: scenes (3 hand-placed / 100 / 500 / 1,000 seeded), animation presets
   compositingControls.ts  Lab 7B panel state + defaults
+  inspector.ts          Lab 9: record/layout/summary types + API, edits, preview Gaussian (180° Z, magnification), view colour
+  sphericalHarmonics.ts Lab 9: SH basis (degrees 0–3, reference constants) and view-dependent colour
 shaders/projectedGaussianShader.ts  GLSL3 quad vertex/fragment (conic falloff, outline)
 shaders/compositedGaussianShader.ts GLSL3 instanced version (per-instance attributes, fill + outline pass)
 lib/
@@ -189,6 +195,7 @@ backend/                local FastAPI dataset service (Lab 7A)
   catalog.py            properties/captures in catalog.json (references only), atomic writes, lock
   splats.py             Lab 8: splat scene store, PLY/SOG/zip inspection, safe extraction, served-file whitelist
   splat_bounds.py       Lab 8: robust bounds + free "inside" viewpoint from the splat centres (PLY, SOG decoding)
+  gaussian_records.py   Lab 9: memory-mapped, read-only access to single Gaussians of a PLY; decoding; SplitMix64 samples; statistics
   uploads.py            per-role extension/size/content validation
   converter.py          conversion job (progress → metadata), budget backfill job, pose/frame validation
   lidar_conversion.py   shared core: chunked LAS read, offset, sampling, .bin writer
@@ -408,6 +415,25 @@ Metadata (`metadata.json`): `id, name, kind: "gaussian-scene", createdAt, format
 
 **Robust bounds and start view** (`splat_bounds.py`, computed at import, never fails the import): centres are read per format (PLY `x y z` memory-mapped; compressed PLY: chunk box centres; SOG: `means_u << 8 | means_l` / 65535 → lerp(`mins`, `maxs`) → `sign(v)·(exp|v| − 1)`); the 2nd–98th percentile box per axis frames the scene (Ceramic Studio: core 10.9 × 3.8 × 3.3 inside a ±200 floater box; PLY and SOG versions give the same box to 4 decimals). `centralFraction` (share of centres in the middle half of the box: rooms 0.04–0.17, a compact object ~0.8) picks the default start view (> 0.35 → outside). `insideViewpoint`: the box in 16³ cells; a cell is free if it and its 26 neighbours are (almost) empty; the free cell at mid height nearest the centre, looking along the horizontal direction (of 16) with the longest clear run; the orbit target sits half that run ahead.
 
+### 5.8 Trained Gaussian attributes (Lab 9)
+
+A trained Gaussian PLY (3D Gaussian Splatting reference layout; SuperSplat's PLY download is the same) is a text header plus one binary little-endian `vertex` record of float32 properties per Gaussian, found by **name**, never by position (Ceramic Studio's order is `x y z rot_0..3 scale_0..2 opacity f_dc_0..2 f_rest_0..44`, 236 bytes; training output usually has `nx ny nz` after `z`, always 0 and unused). Gaussian *i* starts at `dataOffset + i·stride` (`dataOffset` = header length plus any earlier elements).
+
+| Stored | Meaning | Decoded (what the renderer uses) |
+| --- | --- | --- |
+| `x y z` | centre, scene file frame | as is |
+| `scale_0..2` | natural log of the standard deviation along the Gaussian's own axes | `σ = exp(v)` (always > 0; spans µm–m) |
+| `rot_0..3` | quaternion **(w, x, y, z)**, not normalised | `q / |q|` (three.js order is `(x, y, z, w)`) |
+| `opacity` | logit | `α = 1 / (1 + e^−v)` (in (0, 1)) |
+| `f_dc_0..2` | degree-0 SH coefficient per RGB channel | base colour `0.5 + C0·f_dc`, `C0 = 0.28209479177387814` |
+| `f_rest_*` | 3·K higher SH coefficients, K = 3 / 8 / 15 (degree 1 / 2 / 3), **channel-major**: all K red, then K green, then K blue | coefficient k of channel c = `f_rest[c·K + k]`; colour(dir) = base + Σ coefficient·basis(dir), clamped ≥ 0 |
+
+SH basis and constants are the reference implementation's (`sh_utils.py`), identical to PlayCanvas's `evalSH` (its constants and signs were compared); `dir` = unit vector **from the camera to the Gaussian, in the file (model) frame** (PlayCanvas: `normalize(center.view * mat3(modelView))`). An ordinary point-cloud PLY (`x y z red green blue …`) has none of these fields and is refused at import (section 5.7). A compressed PLY (chunked, quantised) and SOG (quantised WebP images) are not per-Gaussian records: the inspector refuses them with a hint (decompress with SplatTransform / import the `.ply`).
+
+**Reading** (`backend/gaussian_records.py`): `np.memmap` of the vertex records (structured dtype from the header), so a request reads only the requested records' pages (~16 ms for 3 records of a 236 MB file); read-only, nothing written back. Non-finite values become `null` in JSON and are flagged in `checks` (with zero-length quaternions, scales > 1 km and base colours outside 0..1). Samples use **SplitMix64** (seed → the same indices on any machine/NumPy version; duplicates skipped; modulo bias < 2⁻⁴⁰); the summary reads 20,000 sampled records in sorted order.
+
+**Ceramic Studio facts** (20,000 sampled, seed 1): no non-finite values or zero quaternions; quaternions already unit length (1 ± 4·10⁻⁸); largest σ median 11.4 mm (5%: 1.7 mm, 95%: 69 mm); smallest σ median 1.4 mm and ~0 for 5% (flat discs: largest ÷ smallest median 6.6, 95th percentile 10⁸); opacity median 0.21; every opacity is a multiple of 1/255 and every base colour inside 0..1 → this PLY was saved from compressed data (SuperSplat export), not straight from training. Cross-check: decoding 128 sampled PLY Gaussians and matching them by position to the same scene's SOG package (decoded independently: means, `scales` codebook → exp, `sh0` codebook + alpha/255, smallest-three quaternions) agrees to 3·10⁻⁷ m, exact scales and colours, opacity within 10⁻⁸, identical rotations.
+
 ## 6. Rendering pipeline
 
 ### 6.1 Geometry
@@ -541,6 +567,16 @@ viewer.destroy();            // engine app, GPU device/context, listeners, DOM
 - **Built-in UI kept:** orbit/fly mode buttons, controls help (H), settings, fullscreen, frame (F), reset (R); our panel only adds what the viewer doesn't show (format, splat count, sizes, license, organisation).
 
 **For direct R3F interaction later** (overlaying LiDAR, annotations, measurements in one scene) the embed must be replaced, because two engines can't share a depth buffer or camera: either (a) render splats inside three.js (e.g. a three.js splat renderer, or a custom one growing out of Labs 6/7B: GPU projection, GPU sort, SH colour) so R3F owns one canvas and camera; or (b) keep PlayCanvas and draw the other content in it via `viewer.app` (its scene graph), syncing the camera to React state through `events`. Either way a registration transform between the splat frame and the LiDAR frame (catalog `alignment`) is needed first; until then overlays would be visually "hacked" alignment, which section 2 forbids.
+
+### 6.10 Inspecting one trained Gaussian (Lab 9)
+
+The preview reuses Lab 6 unchanged: `covariance3D`, `projectGaussian`, `ProjectedGaussianQuad` (+ its shader), `CameraReset` and the start camera (0, 0, 6), fov 50, `<Canvas linear flat>`. Only one optional prop was added to the quad: `colorForCamera(cameraPosition, target)`, called every frame instead of copying `gaussian.color` (Labs 6/7B don't pass it).
+
+- **Frame:** shown upright as in the Gaussian viewer: file `(x, y, z)` → preview `(−x, −y, z)`, i.e. `rotation = Rz(180°) · q_file`. A rotation, so the shape is unchanged (test: preview Σ3D = F Σ_file Fᵀ to 10⁻¹⁵).
+- **Centre and size:** the Gaussian sits at the preview origin (its real position is shown in the panel). Trained Gaussians are mm–cm, below Lab 6's `MIN_DEPTH` (0.2) at a sensible viewing distance, so the preview is **magnified uniformly** so the original's largest σ is 0.6 units (Lab 6's default size). Scaling the Gaussian and the camera distance together leaves Σ2D unchanged (test: identical to 10⁻¹⁵), so the panel reports real distances (`depth / magnification`). The magnification is fixed per Gaussian (from the stored scales), so scale edits visibly grow/shrink it.
+- **Edits** (`GaussianEdits`): stored log σ per axis (slider ±3 around the stored value), Euler XYZ degrees from the stored quaternion (round trip exact to 10⁻¹⁶), decoded opacity, base colour (colour picker; shown as f_dc), SH degree used (0..stored). "Reset Gaussian" restores the decoded record; edits never leave the page.
+- **View-dependent colour:** per frame, `dir` = camera → origin in preview space, mapped back to the file frame (`(−x, −y, z)`), `shColor(f_dc from edited base colour, stored f_rest, dir, degree)`. The colour values are used as is (display values, like the viewer); the `linear` canvas writes them unchanged, so a screenshot pixel equals `colour·α + background·(1 − α)` (background `#1a1a1a` → 0.0103 after three's sRGB→linear conversion of `<color>`).
+- **Overlays:** the 1σ wireframe ellipsoid with the Gaussian's own axes (`axesHelper` inside the scaled/rotated group: red = scale_0, green = scale_1, blue = scale_2) and a drei `GizmoHelper` for the preview's X/Y/Z.
 
 ## 7. Lab-by-lab build specification
 
@@ -721,6 +757,24 @@ Accept (verified with the Ceramic Studio sample in three forms, plus a 3.7M-spla
 
 Limitations to state: viewing only (no training, editing, deformation effects); authored SuperSplat cameras/annotations (`settings.json`) aren't imported, the start view is computed; the inside/outside default is a heuristic; splat frames are not aligned with LiDAR and units are unknown; `.splat/.ksplat/.spz` need a manual SplatTransform step; imports are synchronous (a big PLY is validated and measured in seconds, but the request waits); the official viewer's own UI and keyboard shortcuts are active on this page.
 
+### Lab 9 — Inspect real Gaussian attributes
+
+Requirements:
+
+- Route `/gaussian-inspector` (linked from the LiDAR panel and Lab 8), its own `<Canvas>` per section 6.10; all other pages unchanged.
+- Backend (read-only, section 5.8): `GET /splats/{id}/gaussians?indices=…` (≤ 64), `GET /splats/{id}/gaussians/sample?seed=&count=` (≤ 64, seed 0..2⁶³−1), `GET /splats/{id}/gaussians/summary?seed=` (20,000 sampled). 400 with a message for out-of-range or malformed indices, bad seeds/counts, compressed PLY and SOG scenes; 404 for unknown scenes.
+- Panel: scene select (only `ply` scenes enabled; others listed as "not inspectable"); "How one Gaussian is stored" (record size, offset formula, property order, f_rest layout); index box + ◀ Show ▶; seed + "Random sample" (12 Gaussians, swatch, largest σ, α); stored → decoded table (position, 3 scales with e^v, quaternion with |q|, logit → sigmoid, f_dc → base colour, SH count/degree/size) with validity checks; "Why the stored numbers look odd"; experiments (scale, rotation, opacity, base colour, SH degree segmented control with the colour seen from the current view and the view direction), Reset Gaussian; display (support, outline, ellipsoid + own axes); Σ3D (mm²), Σ2D (px²), real camera distance, σ major/minor, angle, magnification note; scene statistics (5% / median / 95% of σ, anisotropy, opacity, SH size; validity; 1/255-quantisation note). Short plain-language notes beside each group.
+- Opens the first PLY scene with seed 42 and shows the first sampled Gaussian; each new Gaussian resets the camera.
+
+Accept (Ceramic Studio PLY, 999,986 Gaussians):
+
+1. Decoding: summary valid (0 non-finite, 0 zero quaternions); PLY ↔ SOG cross-check per section 5.8; SH basis orthonormal (16 functions, error 1.5·10⁻⁷); degree 0 = base colour exactly.
+2. Projection: unchanged by magnification (10⁻¹⁵); Lab 6's Σ2D matches a Monte Carlo projection of 20 real Gaussians within 2.1% at 8× the start distance (the linearised Jacobian is off by up to ~6% when the Gaussian is ~10% of the camera distance, as in Lab 6 and the reference renderer).
+3. Browser: centre pixel = predicted `colour·α + background·(1 − α)` exactly (α 0.02 → (6, 7, 7); α 0.9 → (126, 139, 146); after an orbit (128, 141, 147), i.e. the SH colour changes with the view); orbit changes Σ2D; Base only shows the base colour; editing changes Σ3D and enables Reset Gaussian, which restores it exactly; ◀ ▶ and index 0 work; index 999,986 → "Choose an index from 0 to 999,985."; seed 7 twice → same 12, seed 8 → different; SOG option disabled.
+4. `/`, `/gaussian-projection`, `/gaussian-compositing`, `/gaussian-viewer` load; `tsc`, `next build`, pyflakes clean; no console errors.
+
+Limitations to state: inspection and preview only (no editing or saving of the reconstruction); PLY only (compressed PLY and SOG are quantised); one Gaussian at a time, without its neighbours; Euler sliders (gimbal lock near ±90° Y, the quaternion is exact); the preview is magnified (stated in the panel); this Ceramic PLY is itself a quantised export, so its values are SuperSplat's 8-bit-rounded ones, not the original training output.
+
 ## 8. Pitfalls we hit and how they were fixed
 
 | Symptom | Cause | Fix |
@@ -759,6 +813,12 @@ Limitations to state: viewing only (no training, editing, deformation effects); 
 | WebGL path untested in headless Chrome | `--disable-features=WebGPU` doesn't hide `navigator.gpu` | `addInitScript`: `Object.defineProperty(Navigator.prototype, "gpu", { get: () => undefined })` |
 | Restarted test backend dies immediately | a `pkill -f uvicorn…` issued in parallel matched the new process too | stop, wait, then start (sequentially) |
 | Killing a background `uvicorn` leaves it listening | the shell wrapper was killed, not the server | `lsof -ti tcp:8000 -sTCP:LISTEN \| xargs kill` |
+| Gaussian #0 (and many others) looks like nothing in the inspector | real scenes contain huge faint floaters (#0: σ 2–3 m, α 0.016) and many nearly transparent Gaussians | expected; start from a random sample, show α beside each sampled Gaussian |
+| Real Gaussians are "too close to the camera" / not drawn | mm-sized Gaussians need a camera closer than Lab 6's `MIN_DEPTH` (0.2) | magnify Gaussian and camera distance together (Σ2D is unchanged) and report real distances |
+| Monte Carlo test of Σ2D fails by ~6% | (1) a JS LCG with `s * 1103515245` exceeds 2⁵³ and loses precision → biased samples; (2) at σ/distance ≈ 0.1 the linearised projection itself is ~6% off | use mulberry32 (`Math.imul`); test the linearisation at a larger distance (2% at 8×) |
+| `tsx` test with top-level `await` fails ("not supported with the cjs output format"), then "Cannot find package 'three'" | `.ts` outside a module package runs as CommonJS; ESM ignores `NODE_PATH` | name it `.mts` and symlink the project's `node_modules` next to it |
+| Colour picker shifts the colour | `THREE.Color.set("#hex")` converts sRGB → linear | parse hex manually and use `setRGB` with the values as is (Gaussian colours are display values) |
+| A field read by index gives the wrong attribute | PLY property order differs between exporters (SuperSplat puts `rot_*` before `scale_*`, training adds `nx ny nz`) | always read properties by name (structured dtype from the header) |
 
 ## 9. Validation playbook
 
@@ -798,6 +858,7 @@ Techniques used:
 - **Projected-footprint measurement** (Lab 6): weight only pixels with the Gaussian's hue (`(G−B)/(R−B) ≈ 0.47` for the orange), and keep only the half of the screen away from the axis lines (the footprint is centrally symmetric) — otherwise axes blended into the faint tail bias the moments. Compare to a *simulated measurement* of the predicted Σ2D (same opacity, 8-bit rounding, threshold and 3σ cut), not to raw Σ2D: truncation and thresholding make the measured σ ~6% smaller.
 - **Compositing** (Lab 7B): unit-test `compositing.ts` against `gaussianMath.ts` with `npx tsx` (run with `NODE_PATH=<repo>/node_modules` so `three` resolves). In the browser, average the 2×2 pixels around the canvas centre and compare with the panel's predicted probe colour (the canvas uses `linear`, so screenshot values are the shader's values); count draw calls per frame by wrapping `draw*` on `WebGL2RenderingContext.prototype` (only the scene canvas, width > 400); orbit with `page.mouse` drags (≈ viewport height / 2 px of horizontal drag = 180°); exclude the panel and the Perf overlay from pause/reset image diffs (both change while the scene doesn't).
 - **Splat scenes** (Lab 8): import real scenes with `curl -F files=@…` into a test backend (folder uploads: one `-F files=@path -F paths=path` pair per file); cross-check `robust_bounds` between the PLY and SOG versions of the same scene (identical to 4 decimals → the SOG decoder is right). In Playwright, use real GPU flags (`--use-angle=metal --enable-unsafe-webgpu`; SwiftShader is too slow for millions of splats); count WebGPU devices by wrapping `adapter.requestDevice` / `device.destroy` and WebGL contexts by wrapping `getContext` + `isContextLost()`; orbit/zoom/reset with image diffs (scene clip without the panel); folder import via `setInputFiles(<dir>)` on the folder input.
+- **Gaussian Inspector** (Lab 9): `curl` the three endpoints incl. errors; decode-check with an independent decoder (the same scene's SOG package, matched by nearest position); `npx tsx` script (`.mts`, `node_modules` symlinked) importing `lib/gaussian/inspector.ts`, `sphericalHarmonics.ts`, `gaussianMath.ts` with real records from the test backend: SH orthonormality (Fibonacci sphere), degree-0 = base, Euler round trip, preview Σ3D = FΣFᵀ, magnification invariance, Monte Carlo Σ2D (mulberry32), view direction mapping. In Playwright: turn the ellipsoid/outline off, compare the centre 2×2 pixel with `colour·α + bg·(1 − α)` from the panel (bg = 0.0103), orbit by dragging and compare again; set range inputs with the native value setter + `input` event.
 - Note: FPS numbers from SwiftShader are meaningless; use real hardware for performance conclusions.
 
 ## 10. Adapting Spatial Lab for different web purposes
@@ -820,13 +881,13 @@ General scaling rules: raw LAS is never loaded directly; convert offline to a ty
 
 ## 11. Not built yet / roadmap
 
-Explicitly out of scope so far (each would be its own lab): cross-capture alignment (Lab 7C organises captures per property; registration into a property frame via `alignment`/`frame`, using control points/GNSS/CRS, is not built), meshes and photographs as capture representations (splat scenes exist since Lab 8, section 5.7), splat ↔ LiDAR registration, importing SuperSplat `settings.json` (authored cameras/annotations), splat editing/cropping, background import jobs for very large splat files, LAZ/E57 import, LiDAR intensity visualisation, pose animation, clipping/cropping, measurement tools, annotations/hotspots, full Gaussian splatting (Lab 6 projects one Gaussian; Lab 7B composites up to 1,000 with CPU projection, centre sorting and instanced quads; still missing: projection and sorting on the GPU for millions of Gaussians, tile-based rasterisation, spherical-harmonic colour in our own renderer (Lab 8 views real trained scenes with the official viewer instead), training), ordinary meshes, WebXR, LOD/octrees, workers.
+Explicitly out of scope so far (each would be its own lab): cross-capture alignment (Lab 7C organises captures per property; registration into a property frame via `alignment`/`frame`, using control points/GNSS/CRS, is not built), meshes and photographs as capture representations (splat scenes exist since Lab 8, section 5.7), splat ↔ LiDAR registration, importing SuperSplat `settings.json` (authored cameras/annotations), splat editing/cropping, background import jobs for very large splat files, LAZ/E57 import, LiDAR intensity visualisation, pose animation, clipping/cropping, measurement tools, annotations/hotspots, full Gaussian splatting (Lab 6 projects one Gaussian; Lab 7B composites up to 1,000 with CPU projection, centre sorting and instanced quads; still missing: projection and sorting on the GPU for millions of Gaussians, tile-based rasterisation, spherical-harmonic colour for many Gaussians in our own renderer (Lab 9 evaluates it for one; Lab 8 views real trained scenes with the official viewer), training), editing/saving trained Gaussians (Lab 9 experiments are preview-only), inspecting a Gaussian among its neighbours, ordinary meshes, WebXR, LOD/octrees, workers.
 
 ## 12. Prompt templates
 
 **Rebuild the whole app:**
 
-> Build "Spatial Lab" exactly as specified in `docs/SPATIAL_LAB_REBUILD_GUIDE.md`. Follow the principles in section 2, the versions and config in section 3, the architecture in section 4, and implement Labs 1 through 8 in order (section 7). The built-in dataset is in `public/data/` (`pointcloud-500k.bin`, `pointcloud-1m.bin`, `pointcloud-2m.bin`, `pointcloud-5m.bin`, `poses.csv`); its offset is in section 5.2. Start the backend as in section 3.1. For Lab 8, use a downloaded SuperSplat scene (e.g. Ceramic Studio) as the test scene. After each lab run the validation playbook (section 9) and report results. Do not generate fake data.
+> Build "Spatial Lab" exactly as specified in `docs/SPATIAL_LAB_REBUILD_GUIDE.md`. Follow the principles in section 2, the versions and config in section 3, the architecture in section 4, and implement Labs 1 through 9 in order (section 7). The built-in dataset is in `public/data/` (`pointcloud-500k.bin`, `pointcloud-1m.bin`, `pointcloud-2m.bin`, `pointcloud-5m.bin`, `poses.csv`); its offset is in section 5.2. Start the backend as in section 3.1. For Labs 8 and 9, use a downloaded SuperSplat scene (e.g. Ceramic Studio; its PLY download for Lab 9) as the test scene. After each lab run the validation playbook (section 9) and report results. Do not generate fake data.
 
 **Variant for another purpose:**
 
@@ -863,3 +924,4 @@ Explicitly out of scope so far (each would be its own lab): cross-capture alignm
 | 7C | 5M point budget (`BUDGETS`, built-in `pointcloud-5m.bin`, startup backfill of missing budgets from stored LAS with offset/count verification, `budgetJob`, load size/time in the panel); Properties → Captures → representations in `spatial-data/catalog.json` (references only, one capture per dataset, no file deletion except Delete files, `alignment`/`frame`/`environment` reserved); catalog API; Datasets panel reorganised as "Properties"; no migration needed (missing catalog = all unassigned) |
 | 8 | Separate `/gaussian-viewer` page with the official SuperSplat Viewer (`@playcanvas/supersplat-viewer` 1.37.0 + `playcanvas` 2.23.0, `createViewer` in a div, destroyed per scene); backend splat store `spatial-data/splats/` (`splats.py`: PLY/compressed PLY/SOG/SOG folder/SOG LOD/zip detection and validation, safe extraction, whitelist file endpoint; `splat_bounds.py`: robust bounds, free inside viewpoint; `pillow` added); catalog representation kind `gaussian-splat`; LiDAR panel counts splats; importer hints point `.ply/.sog` to Lab 8; SplatTransform conversion documented |
 | 8.1 | `/gaussian-viewer` tells "backend not running" (fetch rejects) apart from "backend too old" (`/splats` 404 → restart it after `pip install -r requirements.txt`) |
+| 9 | Separate `/gaussian-inspector` page: backend `gaussian_records.py` (memory-mapped read-only PLY records by name, decoding exp/sigmoid/normalise/SH-DC, channel-major f_rest, validity checks, SplitMix64 samples, 20k-sample statistics incl. 1/255 quantisation) + 3 `GET /splats/{id}/gaussians…` endpoints; `lib/gaussian/inspector.ts` + `sphericalHarmonics.ts` (reference/PlayCanvas SH); `InspectorScene`/`InspectorPanel` reusing Lab 6's projection, quad and reset (quad gains optional `colorForCamera`); 180° Z frame, uniform magnification; links from the LiDAR panel and Lab 8; sections 5.8 and 6.10 |

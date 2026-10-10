@@ -66,6 +66,9 @@ export function SplatPanel(props: SplatPanelProps) {
       <Link href="/gaussian-compositing" className="lab-link">
         ← Lab 7B: how many Gaussians blend into one image
       </Link>
+      <Link href="/gaussian-inspector" className="lab-link">
+        Lab 9: inspect single Gaussians of a PLY scene →
+      </Link>
       <div className="note">
         Real trained Gaussian splat scenes, rendered by the official SuperSplat Viewer (PlayCanvas). Drag to
         orbit, scroll to zoom, right-drag to pan; the viewer&apos;s own buttons sit at the bottom.

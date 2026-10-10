@@ -16,6 +16,8 @@ type ProjectedGaussianQuadProps = {
   showOutline: boolean;
   /** Called when the projection result changes (camera or Gaussian moved). */
   onProjection: (projection: ProjectedGaussian) => void;
+  /** Optional view-dependent colour (Lab 9: spherical harmonics); writes into `target`. Default: gaussian.color. */
+  colorForCamera?: (cameraPosition: THREE.Vector3, target: THREE.Color) => void;
 };
 
 /**
@@ -28,6 +30,7 @@ export function ProjectedGaussianQuad({
   supportSigmas,
   showOutline,
   onProjection,
+  colorForCamera,
 }: ProjectedGaussianQuadProps) {
   const meshRef = useRef<THREE.Mesh>(null);
   const lastReport = useRef("");
@@ -97,7 +100,8 @@ export function ProjectedGaussianQuad({
         .multiplyScalar(supportSigmas * projection.sigmaMinorPx);
       u.uViewportPx.value.set(size.width, size.height);
       u.uConic.value.set(projection.conic.a, projection.conic.b, projection.conic.c);
-      u.uColor.value.copy(gaussian.color);
+      if (colorForCamera) colorForCamera(camera.position, u.uColor.value);
+      else u.uColor.value.copy(gaussian.color);
       u.uOpacity.value = gaussian.opacity;
       u.uSupportSigmas.value = supportSigmas;
       u.uShowOutline.value = showOutline;
