@@ -3,9 +3,10 @@ Properties and captures: how datasets are organised.
 
     Property  a real-world place (a resort, a house, a gallery)
       Capture   one scanning / photography session at that property
-        Representations   what that session produced; today only "lidar"
-                          (a reference to an imported dataset), later photos,
-                          trained Gaussian splats, meshes...
+        Representations   what that session produced: "lidar" (an imported
+                          LiDAR dataset, ds_...) or "gaussian-splat" (a
+                          trained splat scene, spl_..., Lab 8); later photos,
+                          meshes...
 
 Stored in spatial-data/catalog.json, separate from the datasets:
 
@@ -15,7 +16,8 @@ Stored in spatial-data/catalog.json, separate from the datasets:
                        "frame": null }],
       "captures":   [{ "id": "cap_<12 hex>", "propertyId", "name", "createdAt",
                        "environment": null,
-                       "representations": [{ "kind": "lidar", "datasetId": "ds_..." }],
+                       "representations": [{ "kind": "lidar", "datasetId": "ds_..." },
+                                           { "kind": "gaussian-splat", "datasetId": "spl_..." }],
                        "alignment": { "status": "unaligned", "method": null,
                                       "reference": null, "transform": null } }]
     }
@@ -44,6 +46,7 @@ import threading
 from contextlib import contextmanager
 from typing import Any, Iterator
 
+from splats import SPLAT_ID_PATTERN
 from storage import DATA_DIR, DATASET_ID_PATTERN, now_iso
 
 CATALOG_FILE = DATA_DIR / "catalog.json"
@@ -117,8 +120,13 @@ def find_capture(catalog: dict[str, Any], capture_id: str) -> dict[str, Any]:
     raise CatalogError("Capture not found.", 404)
 
 
+def is_splat_reference(dataset_id: str) -> bool:
+    return bool(SPLAT_ID_PATTERN.match(dataset_id))
+
+
 def is_dataset_reference(dataset_id: str) -> bool:
-    return dataset_id == BUILTIN_DATASET_ID or bool(DATASET_ID_PATTERN.match(dataset_id))
+    """A LiDAR dataset, the built-in sample, or a Gaussian splat scene."""
+    return dataset_id == BUILTIN_DATASET_ID or bool(DATASET_ID_PATTERN.match(dataset_id)) or is_splat_reference(dataset_id)
 
 
 # ---------------------------------------------------------------------------
@@ -176,10 +184,11 @@ def delete_capture(catalog: dict[str, Any], capture_id: str) -> list[str]:
 
 
 def assign_dataset(catalog: dict[str, Any], capture_id: str, dataset_id: str) -> None:
-    """Adds a LiDAR dataset to a capture, removing it from any other capture first."""
+    """Adds a dataset or splat scene to a capture, removing it from any other capture first."""
     capture = find_capture(catalog, capture_id)
     unassign_dataset(catalog, dataset_id)
-    capture["representations"].append({"kind": "lidar", "datasetId": dataset_id})
+    kind = "gaussian-splat" if is_splat_reference(dataset_id) else "lidar"
+    capture["representations"].append({"kind": kind, "datasetId": dataset_id})
 
 
 def unassign_dataset(catalog: dict[str, Any], dataset_id: str) -> None:

@@ -7,6 +7,7 @@ import {
   capturesOfProperty,
   catalogApi,
   lidarDatasetIds,
+  splatSceneIds,
   type Capture,
   type Catalog,
 } from "@/lib/catalog";
@@ -119,9 +120,11 @@ export function DatasetManager({
     run(async () => {
       if (!property) return;
       const datasetCount = captures.reduce((n, c) => n + lidarDatasetIds(c).length, 0);
+      const splatCount = captures.reduce((n, c) => n + splatSceneIds(c).length, 0);
       const ok = window.confirm(
         `Delete property "${property.name}" and its ${captures.length} capture(s)?\n\n` +
-          `No files are deleted: its ${datasetCount} dataset(s) stay available under "Unassigned datasets".`,
+          `No files are deleted: its ${datasetCount} dataset(s) stay available under "Unassigned datasets"` +
+          (splatCount ? ` and its ${splatCount} Gaussian scene(s) become standalone.` : "."),
       );
       if (!ok) return;
       onCatalogChange(await catalogApi.deleteProperty(property.id));
@@ -149,7 +152,10 @@ export function DatasetManager({
       if (!capture) return;
       const ok = window.confirm(
         `Delete capture "${capture.name}"?\n\nNo files are deleted: its ${lidarDatasetIds(capture).length} ` +
-          `dataset(s) stay available under "Unassigned datasets".`,
+          `dataset(s) stay available under "Unassigned datasets"` +
+          (splatSceneIds(capture).length
+            ? ` and its ${splatSceneIds(capture).length} Gaussian scene(s) become standalone.`
+            : "."),
       );
       if (!ok) return;
       onCatalogChange(await catalogApi.deleteCapture(capture.id));
@@ -220,7 +226,8 @@ export function DatasetManager({
               <select value={capture?.id} onChange={(e) => chooseCapture(e.target.value)}>
                 {captures.map((c) => (
                   <option key={c.id} value={c.id}>
-                    {c.name} ({plural(lidarDatasetIds(c).length, "dataset")})
+                    {c.name} ({plural(lidarDatasetIds(c).length, "dataset")}
+                    {splatSceneIds(c).length ? `, ${plural(splatSceneIds(c).length, "splat")}` : ""})
                   </option>
                 ))}
               </select>

@@ -32,10 +32,13 @@ ROLE_RULES = {
 KNOWN_UNSUPPORTED = {
     ".laz": "LAZ (compressed LAS) isn't supported yet. Decompress it to .las first "
     "(e.g. `pdal translate in.laz out.las` or `las2las -i in.laz -o out.las`).",
-    ".ply": ".ply files (meshes or trained Gaussian splats) aren't supported in this lab. "
-    "Point clouds must be .las.",
-    ".splat": ".splat files are trained Gaussian splats, which this lab doesn't load yet.",
-    ".ksplat": ".ksplat files are trained Gaussian splats, which this lab doesn't load yet.",
+    ".ply": "Trained Gaussian splat .ply files are imported in the Gaussian viewer (/gaussian-viewer). "
+    "LiDAR point clouds must be .las.",
+    ".sog": ".sog files are trained Gaussian splats: import them in the Gaussian viewer (/gaussian-viewer).",
+    ".splat": ".splat files are trained Gaussian splats: convert them to .sog with SplatTransform and "
+    "import them in the Gaussian viewer (/gaussian-viewer).",
+    ".ksplat": ".ksplat files are trained Gaussian splats: convert them to .sog with SplatTransform and "
+    "import them in the Gaussian viewer (/gaussian-viewer).",
     ".e57": ".e57 isn't supported yet. Export the scan as .las.",
     ".xyz": "Plain-text .xyz point clouds aren't supported yet. Export the scan as .las.",
     ".pts": "Plain-text .pts point clouds aren't supported yet. Export the scan as .las.",
@@ -74,6 +77,20 @@ async def save_upload(role: str, upload: UploadFile, destination: Path) -> int:
     # Only the point cloud is required; empty optional files are skipped by the caller.
     if size == 0 and role == "pointcloud":
         raise UploadError("point cloud: the file is empty.")
+    return size
+
+
+async def save_stream(upload: UploadFile, destination: Path, limit: int, label: str) -> int:
+    """Stream an upload to disk with a size limit (no extension rules). Returns the size in bytes."""
+    size = 0
+    with open(destination, "wb") as out:
+        while chunk := await upload.read(COPY_CHUNK):
+            size += len(chunk)
+            if size > limit:
+                raise UploadError(f"{label}: larger than {limit // MiB:,} MiB.")
+            out.write(chunk)
+    if size == 0:
+        raise UploadError(f"{label}: the file is empty.")
     return size
 
 

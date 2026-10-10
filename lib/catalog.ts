@@ -3,8 +3,9 @@
  *
  *   Property  a real-world place (resort, house, gallery)
  *     Capture   one scanning / photography session there
- *       Representations   what the session produced; today only "lidar"
- *                         (a reference to an imported dataset)
+ *       Representations   what the session produced: "lidar" (an imported
+ *                         dataset, ds_...) or "gaussian-splat" (a trained
+ *                         splat scene, spl_..., Lab 8); later photos, meshes
  *
  * The catalog only references datasets by id; it never copies or changes
  * their files, metadata or offsets. A dataset is in at most one capture;
@@ -15,7 +16,8 @@
 
 import { API_URL, errorMessage } from "./datasets";
 
-export type Representation = { kind: "lidar"; datasetId: string };
+/** `datasetId` is the referenced item's id in its own store (LiDAR dataset or splat scene). */
+export type Representation = { kind: "lidar" | "gaussian-splat"; datasetId: string };
 
 export type CaptureAlignment = {
   status: "unaligned";
@@ -60,6 +62,10 @@ export function capturesOfProperty(catalog: Catalog, propertyId: string): Captur
 
 export function lidarDatasetIds(capture: Capture): string[] {
   return capture.representations.filter((r) => r.kind === "lidar").map((r) => r.datasetId);
+}
+
+export function splatSceneIds(capture: Capture): string[] {
+  return capture.representations.filter((r) => r.kind === "gaussian-splat").map((r) => r.datasetId);
 }
 
 // ---------------------------------------------------------------------------

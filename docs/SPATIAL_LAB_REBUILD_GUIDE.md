@@ -42,6 +42,7 @@ A deliberately small Next.js + React Three Fiber app that renders a **real** LiD
 | 7A | Multi-dataset import (local FastAPI backend) | per-dataset offsets and metadata, background conversion, pose/frame validation, safe local storage, GPU disposal on switch |
 | 7B | Gaussian compositing (separate page `/gaussian-compositing`) | many Gaussians in one instanced draw call, depth sorting, front-to-back alpha compositing, transmittance, animation |
 | 7C | 5M budget + Properties → Captures | budgets added later are backfilled from stored originals in the same frame; organising datasets by place and session without merging frames |
+| 8 | Real Gaussian splat viewer (separate page `/gaussian-viewer`) | real trained splats (PLY / SOG) imported locally and shown with the official SuperSplat Viewer; formats, packages, robust framing, renderer isolation and teardown |
 
 The dataset used: a handheld/SLAM LiDAR scan (`map.las`, 5,242,880 points, 178 MB, local metric frame, RGB) plus `poses.csv` (208 poses, 5 Hz, 41.4 s).
 
@@ -70,9 +71,13 @@ Versions that are known to work together:
 | `@react-three/drei` | 10.7.9 | only `OrbitControls` is used now |
 | `r3f-perf` | 7.2.3 | performance overlay |
 | `typescript` | **5.9.x** | pin to 5 (see pitfalls) |
+| `@playcanvas/supersplat-viewer` | **1.37.0** (exact) | Lab 8 only; the official SuperSplat Viewer, embedded with `createViewer` |
+| `playcanvas` | **2.23.0** (exact) | the viewer's peer dependency (engine); the version the viewer is built against |
 | `@types/three`, `@types/react`, `@types/react-dom`, `@types/node` | matching | dev |
 
 Python (converter only): `python3`, `laspy`, `numpy` (`laspy[lazrs]` for `.laz`).
+
+Optional CLI (not a dependency): SplatTransform, `npx @playcanvas/splat-transform` (3.10.1 tested; Node ≥ 22), to convert splat formats the viewer can't open (section 5.7).
 
 Setup from an empty folder (create files by hand rather than an interactive scaffolder):
 
@@ -104,7 +109,7 @@ export default nextConfig;
 
 ### 3.1 Local dataset backend (Lab 7A)
 
-Python 3.11+ (tested with 3.13), its own virtual environment, pinned in `backend/requirements.txt`: `fastapi 0.143.0`, `uvicorn[standard] 0.54.0`, `python-multipart 0.0.32`, `laspy 2.7.0`, `numpy 2.5.3`.
+Python 3.11+ (tested with 3.13), its own virtual environment, pinned in `backend/requirements.txt`: `fastapi 0.143.0`, `uvicorn[standard] 0.54.0`, `python-multipart 0.0.32`, `laspy 2.7.0`, `numpy 2.5.3`, `pillow 12.3.0` (Lab 8: decoding SOG WebP images to measure scenes). After pulling a lab that adds a requirement, run `pip install -r` again and restart the backend.
 
 ```bash
 # once
@@ -119,6 +124,8 @@ npm run dev        # http://localhost:3000
 ```
 
 Environment variables (all optional): `SPATIAL_LAB_DATA_DIR` (default `<repo>/spatial-data`), `SPATIAL_LAB_ALLOWED_ORIGINS` (CORS, default `http://localhost:3000,http://127.0.0.1:3000`), and for the frontend `NEXT_PUBLIC_SPATIAL_API_URL` (default `http://127.0.0.1:8000`). The viewer works without the backend (built-in dataset only).
+
+Disk (splat scenes, Lab 8): an upload needs about 2× its size while uploading; a .zip also keeps its extracted scene next to the original (≈ 2× the zip on disk).
 
 Disk: an import needs roughly 2.3× the LAS size free while uploading (upload buffer + stored original) plus ~15 bytes × 3.5M points for the budgets.
 
@@ -147,6 +154,10 @@ components/
     CompositingScene.tsx         Lab 7B <Canvas> (transparent clear), OrbitControls, background grid, probe marker
     CompositedGaussians.tsx      Lab 7B frame loop: animate → Σ3D → project → sort → instance buffers; 2 instanced meshes
     CompositingPanel.tsx         Lab 7B controls, probe-pixel table, explanations, stats
+app/gaussian-viewer/page.tsx       Lab 8 client page: splat scene list, catalog, selection, start view; SplatViewer + SplatPanel
+components/splat/                  Lab 8 only (no React Three Fiber on this page)
+  SplatViewer.tsx       embeds the official SuperSplat Viewer (createViewer in a <div>), one instance per scene, destroy on change
+  SplatPanel.tsx        scene picker (standalone / per capture), facts, start view, performance, capture assignment, delete, import form
 app/gaussian-projection/page.tsx   Lab 6 client page: controls state, Σ3D via useMemo
 app/gaussian-compositing/page.tsx  Lab 7B client page: controls state, scene via useMemo(count), report state
 lib/gaussian/
@@ -163,6 +174,7 @@ lib/
   worldFrame.ts         LIDAR_TO_THREE_ROTATION (Z-up → Y-up)
   importPlan.ts         folder/files → import plan: role detection, ambiguity flags, preview summary
   catalog.ts            Property/Capture/Catalog types, helpers, catalog API calls (Lab 7C)
+  splats.ts             Lab 8: SplatScene type, splat API calls, selection checks, start camera (robust box, 180° Z)
   datasets.ts           Dataset type (= backend metadata), BUILTIN_DATASET (map.las offset/bounds),
                         asset URLs, pickBudget(), backend API calls, client-side file checks
   usefulBounds.ts       1st–99th percentile bounding box (ignores stray points)
@@ -175,11 +187,13 @@ backend/                local FastAPI dataset service (Lab 7A)
   app.py                routes, CORS, worker process pool, restart recovery
   storage.py            dataset folders, id validation, atomic metadata.json, budget table + planned/missing budgets
   catalog.py            properties/captures in catalog.json (references only), atomic writes, lock
+  splats.py             Lab 8: splat scene store, PLY/SOG/zip inspection, safe extraction, served-file whitelist
+  splat_bounds.py       Lab 8: robust bounds + free "inside" viewpoint from the splat centres (PLY, SOG decoding)
   uploads.py            per-role extension/size/content validation
   converter.py          conversion job (progress → metadata), budget backfill job, pose/frame validation
   lidar_conversion.py   shared core: chunked LAS read, offset, sampling, .bin writer
   requirements.txt
-spatial-data/           (gitignored) datasets/<id>/{metadata.json, source/, converted/}, catalog.json
+spatial-data/           (gitignored) datasets/<id>/{metadata.json, source/, converted/}, splats/<id>/{...}, catalog.json
 docs/                   this guide
 ```
 
@@ -314,7 +328,8 @@ Extensibility: new asset types (trained splats, meshes, measurements, annotation
 ```
 Property  (a real-world place: resort, house, gallery)
   Capture   (one scanning / photography session there)
-    representations: [{ kind: "lidar", datasetId }]   → dataset folders (section 5.4)
+    representations: [{ kind: "lidar", datasetId }]            → dataset folders (section 5.4)
+                     [{ kind: "gaussian-splat", datasetId }]   → splat scenes (section 5.7, Lab 8)
 ```
 
 `spatial-data/catalog.json` (atomic writes, one lock in the API process):
@@ -348,6 +363,50 @@ Each dataset has its own local frame: real-world LAS coordinates minus that data
 Conversion LiDAR → three.js is exactly one rotation of −90° about X (`LIDAR_TO_THREE_ROTATION = [-π/2, 0, 0]`), so `(x, y, z)_lidar → (x, z, −y)_three`. Apply it **once**, on the parent group. Children (points, path, marker) use raw LiDAR-frame values. Code outside the group that needs world coordinates (camera framing) must apply the same matrix (`new Matrix4().makeRotationFromEuler(new Euler(...LIDAR_TO_THREE_ROTATION))`).
 
 Quaternions: apply the recorded `(qx, qy, qz, qw)` directly as the marker group's `quaternion` inside the LiDAR group (three.js uses the same xyzw order). Any mismatch between the marker geometry's forward axis and the scanner's convention is fixed by a separate constant child rotation (`MARKER_FORWARD_CORRECTION`), never by editing recorded quaternions.
+
+### 5.7 Gaussian splat scenes (Lab 8)
+
+Trained 3D Gaussian splat scenes are a **separate store** (`spatial-data/splats/spl_<12 hex>/`), never read as LAS:
+
+```
+splats/<id>/
+  metadata.json
+  source/      the original upload, never modified: scene.ply | scene.compressed.ply | scene.sog | original.zip | package/<relative paths>
+  converted/   only for .zip uploads: the scene extracted from it (scene.ply | scene.sog | package/<relative paths>)
+```
+
+Supported inputs (exactly these; all are opened by the viewer directly, so no format conversion happens):
+
+| Import | Detected by | `format` | Viewer opens |
+| --- | --- | --- | --- |
+| Trained Gaussian `.ply` | PLY header: `format binary_little_endian`, `element vertex` with `x y z f_dc_0..2 opacity scale_0..2 rot_0..3` (+ `f_rest_*`: 9/24/45 → 1/2/3 SH bands); file length = header + Σ count × stride | `ply` | `scene.ply` |
+| SuperSplat compressed PLY | `element chunk` + vertex `packed_position` (the header decides, not the extension) | `compressed-ply` | `scene.compressed.ply` |
+| Bundled `.sog` | a zip with `meta.json` at its root + the WebP images it lists (inspected without extracting) | `sog` | `scene.sog` |
+| SOG folder | `meta.json` (`count`, `means/scales/quats/sh0[/shN]` each with `files`) + those WebP images | `sog-folder` | `package/…/meta.json` |
+| SOG with levels of detail | `lod-meta.json` (`count`, `lodLevels`, `filenames` → chunk `N_M/meta.json`, optional `environment`) + every chunk's WebP images | `sog-lod` | `package/…/lod-meta.json` |
+| `.zip` of any of these (e.g. SuperSplat downloads: "Ceramic Studio.zip" = SOG LOD, "Ceramic Studio (1).zip" = PLY, the "-vite" project export = SOG LOD under `public/splat/`) | the shallowest `lod-meta.json`, else `meta.json`, else exactly one `.sog` or `.ply` | as above | extracted copy in `converted/` |
+
+Package rules (folder and zip): the package root is the folder of the shallowest `lod-meta.json` (chunk folders contain `meta.json` too), else of the shallowest `meta.json`; every referenced file must exist ("incomplete SOG package: 1 referenced file(s) missing: 0_1/quats.webp"); WebP signatures (`RIFF….WEBP`) checked; the folder structure and relative paths are preserved exactly (the viewer fetches WebP images and chunks relative to the manifest URL). Each path segment must match `[A-Za-z0-9_][A-Za-z0-9 ._()+-]*`, at most 6 deep, no `..`/absolute paths; hidden files and `__MACOSX` are skipped; only `.json .webp .sog .txt` are stored from folders (other files are reported as ignored). Zip extraction re-validates every name, refuses encrypted entries, caps total size (4 GiB) and file count (2,000), and stops if an entry yields more bytes than it declares. Nothing uploaded is executed. `license.txt` (attribution, e.g. CC BY-NC) is kept and shown.
+
+Rejected with explanations: ordinary point-cloud/mesh PLY ("vertex properties: x, y, z, red… not a trained Gaussian splat… LiDAR point clouds are imported as .las"), ASCII/big-endian PLY, truncated PLY ("header declares 3,701,324 splats (873,513,942 bytes) but it has 50,000,000"), `.las/.laz` (→ LiDAR viewer), a lone `meta.json`/`.webp` (→ choose the folder), `.splat/.ksplat/.spz/.lcc` (→ SplatTransform, below), `.html` exports, zips without exactly one scene.
+
+**Conversion with SplatTransform** (only for formats the viewer can't open, or to shrink a big PLY):
+
+```bash
+npx @playcanvas/splat-transform scene.splat scene.sog          # .splat / .ksplat / .spz / .lcc → bundled SOG
+npx @playcanvas/splat-transform scene.ply scene.sog            # optional: shrink a PLY, much faster loading
+npx @playcanvas/splat-transform scene.ply out/lod-meta.json    # optional: streaming LOD package (import the out/ folder)
+```
+
+Tested: Ceramic Studio `scene.ply` (236 MB, 999,986 splats) → `scene.sog` 16.6 MB in ~3.5 min on an M-series Mac (GPU k-means); it imports and renders like the SuperSplat download. The LOD command failed there in GPU k-means (`readBuffer`); `-g cpu` works around GPU failures but took over 15 min, so prefer the LOD package SuperSplat exports.
+
+Import the result as usual; the original stays wherever it was.
+
+Metadata (`metadata.json`): `id, name, kind: "gaussian-scene", createdAt, format, formatLabel, splatCount, shBands, lodLevels, source {kind: file|folder|zip, filename (display only), bytes, fileCount}, servedFrom (source|converted), entry, files [{path, bytes}], sceneBytes, conversion (zip extraction note or null), license, robustBounds, warnings, frame {units, upAxis, alignedTo: null}`. Only paths listed in `files` are served (`GET /splats/{id}/files/{path}`, resolved inside `servedFrom`); `original.zip`, `license.txt` and `metadata.json` are not.
+
+**Frames.** A trained scene has its own arbitrary frame (often the camera solver's, Y-down, unknown scale). It is **never** assumed to match a LiDAR capture, even inside the same capture of the catalog; `frame.alignedTo` stays null. The viewer rotates every scene 180° about Z (Y-down → Y-up); code that computes viewer-space positions from file values applies `(x, y, z) → (−x, −y, z)` (`startCamera` in `lib/splats.ts`).
+
+**Robust bounds and start view** (`splat_bounds.py`, computed at import, never fails the import): centres are read per format (PLY `x y z` memory-mapped; compressed PLY: chunk box centres; SOG: `means_u << 8 | means_l` / 65535 → lerp(`mins`, `maxs`) → `sign(v)·(exp|v| − 1)`); the 2nd–98th percentile box per axis frames the scene (Ceramic Studio: core 10.9 × 3.8 × 3.3 inside a ±200 floater box; PLY and SOG versions give the same box to 4 decimals). `centralFraction` (share of centres in the middle half of the box: rooms 0.04–0.17, a compact object ~0.8) picks the default start view (> 0.35 → outside). `insideViewpoint`: the box in 16³ cells; a cell is free if it and its 26 neighbours are (almost) empty; the free cell at mid height nearest the centre, looking along the horizontal direction (of 16) with the longest clear run; the orbit target sits half that run ahead.
 
 ## 6. Rendering pipeline
 
@@ -454,6 +513,34 @@ dst.a   += (1 − dst.a) · α       // T ← T·(1 − α)
 The browser composites the premultiplied canvas over the page's `#1a1a1a`, adding `T_final·background`. The probe in the panel evaluates the same sum on the CPU at the screen centre (`compositePixel`); rendered and predicted pixels agree within 1/255. Anything drawn later with this blending appears *behind* everything before it, which is how the reference grid is drawn (`renderOrder` 2, after the Gaussians at 1): it is always the farthest layer. Footprint outlines are a second instanced mesh over the same geometry (`renderOrder` 3, normal premultiplied blending, on top). Total: 3 draw calls regardless of count.
 
 Approximations: sorting by centre gives one order per frame for all pixels; overlapping or intersecting Gaussians whose per-pixel order differs from their centre order are composited in the wrong order there, and the order "pops" when centres swap during an orbit. Exact visibility needs per-pixel ordering (ray marching or per-pixel fragment lists). The grid is always behind every Gaussian, even when it is physically in front (seen from below).
+
+### 6.9 Embedding the official SuperSplat Viewer (Lab 8)
+
+`components/splat/SplatViewer.tsx` uses the package's documented in-page API, not its internals:
+
+```ts
+const { createViewer } = await import("@playcanvas/supersplat-viewer/viewer");   // client only
+import "@playcanvas/supersplat-viewer/viewer.css";
+const viewer = await createViewer({
+  container,                 // a sized <div> (position: fixed; inset: 0); the viewer builds canvas + UI inside
+  contentUrl,                // http://127.0.0.1:8000/splats/<id>/files/<entry>; format chosen by the file name
+  settings: { ...defaultSettings("object"), cameras: [{ initial: startCamera }] },
+  noanim: true,              // otherwise it starts with its own camera animation
+  ministats,                 // optional engine CPU/GPU graphs (a creation option → recreates the viewer)
+});
+viewer.events.on("progress:changed", …); viewer.events.on("loaded:changed", …);   // loading indicator
+state.cameraMode = "orbit";  // once loaded: orbit + zoom around the start view's target
+viewer.resetCamera();        // back to settings.cameras[0].initial
+viewer.destroy();            // engine app, GPU device/context, listeners, DOM
+```
+
+- **Isolation:** its own route with no `<Canvas>` from React Three Fiber; the viewer owns a separate canvas, PlayCanvas `AppBase` and WebGPU device (WebGL 2 fallback). Nothing is shared with three.js, so there are no renderer conflicts.
+- **Lifecycle:** one viewer per scene. The effect depends on the content URL, a JSON key of the start camera and `ministats`; cleanup calls `destroy()`, and a viewer that finishes creating after cleanup is destroyed immediately. Browsers cap live WebGL contexts at ~16, so leaking instances eventually breaks rendering.
+- **Errors:** the viewer has no public load-error event (it rejects internally and logs). The page fetches one byte of the scene first (`Range: bytes=0-0`) and listens to `viewer.app.assets.on("error")`, which also covers LOD chunks streamed later.
+- **Performance figures:** every 500 ms from `viewer.app.stats.frame` (`fps`, `ms`, `gsplats` = splats submitted) and `app.stats.vram` (`tex + vb + ib + ub + sb`), plus `graphicsDevice.isWebGPU`. The viewer renders on demand, so fps falls towards 0 while nothing moves.
+- **Built-in UI kept:** orbit/fly mode buttons, controls help (H), settings, fullscreen, frame (F), reset (R); our panel only adds what the viewer doesn't show (format, splat count, sizes, license, organisation).
+
+**For direct R3F interaction later** (overlaying LiDAR, annotations, measurements in one scene) the embed must be replaced, because two engines can't share a depth buffer or camera: either (a) render splats inside three.js (e.g. a three.js splat renderer, or a custom one growing out of Labs 6/7B: GPU projection, GPU sort, SH colour) so R3F owns one canvas and camera; or (b) keep PlayCanvas and draw the other content in it via `viewer.app` (its scene graph), syncing the camera to React state through `events`. Either way a registration transform between the splat frame and the LiDAR frame (catalog `alignment`) is needed first; until then overlays would be visually "hacked" alignment, which section 2 forbids.
 
 ## 7. Lab-by-lab build specification
 
@@ -615,6 +702,25 @@ Accept:
 
 Limitations to state: captures are not aligned or merged (one capture viewed at a time; `alignment`/`frame` reserved); only LiDAR representations exist; a dataset belongs to at most one capture; the backfill holds the whole LAS in memory like a conversion; renaming uses browser prompts; no multi-user or cloud storage.
 
+### Lab 8 — Real Gaussian splat viewer
+
+Requirements:
+
+- Route `/gaussian-viewer` (linked from the LiDAR panel), the official SuperSplat Viewer embedded per section 6.9; the LiDAR viewer and Labs 6/7B unchanged.
+- Backend: `GET /splats`, `GET /splats/{id}`, `POST /splats` (multipart: `name` + one `files` part for .ply/.compressed.ply/.sog/.zip, or several `files` + matching `paths` for a folder), `DELETE /splats/{id}` (also drops the catalog reference), `GET /splats/{id}/files/{path}` (whitelist). Validation, storage and extraction per section 5.7, done during the upload request (in a thread); failed imports leave no folder.
+- Catalog: representations of kind `"gaussian-splat"` (ids `spl_…`) next to `"lidar"`; `POST /captures/{id}/datasets` accepts splat ids; the LiDAR panel counts them ("October capture (0 datasets, 1 splat)") and its delete confirmations say splats become standalone. Scenes are **standalone** unless the user assigns them; nothing assumes a downloaded scene belongs to a LiDAR capture, and nothing is aligned.
+- Panel: scene picker grouped "Standalone scenes" / "Property › Capture"; format, splats (+ SH bands, LOD levels), scene file size and file count, source (file/folder/zip + name + size), conversion note, frame note, core extent, warnings, license; loading % with progress bar, "Loaded in N s", errors; Reset camera; Start view Inside / Outside (default from `centralFraction`, switching recreates the viewer); performance (renderer, fps, ms per frame, splats drawn, GPU memory, optional ministats graphs); capture select; "Delete scene files" with a confirm; import form (Choose file… / Choose folder…, client pre-check, editable name, upload %, server message).
+
+Accept (verified with the Ceramic Studio sample in three forms, plus a 3.7M-splat apartment as .sog and as an 874 MB .ply):
+
+1. Every import route succeeds with the right format, count (999,986 / 3,701,324), SH bands 3 and license; folder upload strips the browser's top folder and ignores `.DS_Store`/`index.html`.
+2. Error imports give the messages in section 5.7; incomplete package names the missing file; no folders left behind. File endpoint: manifest files 200 (range requests 206), `license.txt` / `original.zip` / `metadata.json` / `../` → 404.
+3. Ceramic Studio loads completely (all 999,986 splats drawn, WebGPU, ~1–3 s for SOG LOD, ~12–19 s for the 236 MB PLY); starts inside the studio, upright, natural colours; drag orbits (image changes), wheel zooms, Reset camera → 0.0% image diff to the start view.
+4. Switching scenes 6× (WebGPU): one canvas; every previous GPU device destroyed; GPU memory follows the scene (111 → 172 → 386 → 111 MB). 20× on WebGL 2 (navigator.gpu hidden): 20 contexts created, 1 live, still rendering.
+5. Capture assign / standalone round trip; delete via the UI removes the folder; backend offline → clear message; `/`, `/gaussian-projection`, `/gaussian-compositing` load; `tsc`, `next build`, pyflakes clean; no console errors except the deliberate 400s of error imports; production build checked in the browser.
+
+Limitations to state: viewing only (no training, editing, deformation effects); authored SuperSplat cameras/annotations (`settings.json`) aren't imported, the start view is computed; the inside/outside default is a heuristic; splat frames are not aligned with LiDAR and units are unknown; `.splat/.ksplat/.spz` need a manual SplatTransform step; imports are synchronous (a big PLY is validated and measured in seconds, but the request waits); the official viewer's own UI and keyboard shortcuts are active on this page.
+
 ## 8. Pitfalls we hit and how they were fixed
 
 | Symptom | Cause | Fix |
@@ -644,6 +750,14 @@ Limitations to state: captures are not aligned or merged (one capture viewed at 
 | Front-to-back blending shows nothing / Gaussians vanish over the grid | "under" blending needs destination alpha = accumulated opacity; a `<color attach="background">` clear (alpha 1) or an opaque object drawn first already reads as fully covered | clear to alpha 0, let the page background show through, and draw everything that should be behind *after* the Gaussians with the same blending |
 | Test uploads land in the user's real dataset store | the user's own backend was already listening on :8000, so the test server failed to bind and requests went to theirs | check `lsof -iTCP:8000` first; run test backends on another port with a temp `SPATIAL_LAB_DATA_DIR` |
 | After pulling new backend code the panel says the backend has no properties support / 5M is missing for old datasets | `uvicorn` was started without `--reload` and still runs the old code | restart the backend: new endpoints appear and missing budgets are backfilled at startup |
+| Splat scene shows as a tiny blur far away | the viewer frames the full bounding box, which a few floaters stretch to ±200 units | robust 2nd–98th percentile box from the splat centres (`splat_bounds.py`) → `settings.cameras[0].initial` |
+| Interior scenes look like fog from the start view | an outside view of a room sees the back of its walls and the floaters around it | start inside: free-space viewpoint from a 16³ occupancy grid; Inside/Outside switch |
+| Viewer starts with an auto-moving camera | without authored animation it creates a rotate/figure-8 track and starts in `anim` mode | `noanim: true`, then `state.cameraMode = "orbit"` once loaded |
+| A missing scene leaves a blank viewer | the viewer has no public load-error event | one-byte range request before creating it + `app.assets.on("error")` |
+| Second Playwright tab reads the user's real backend | `page.route` applies to one page only | use `context.route` for redirects in multi-tab tests |
+| Production check on another port says "backend not reachable" | CORS allows only :3000 by default | start the test backend with `SPATIAL_LAB_ALLOWED_ORIGINS` including the extra port |
+| WebGL path untested in headless Chrome | `--disable-features=WebGPU` doesn't hide `navigator.gpu` | `addInitScript`: `Object.defineProperty(Navigator.prototype, "gpu", { get: () => undefined })` |
+| Restarted test backend dies immediately | a `pkill -f uvicorn…` issued in parallel matched the new process too | stop, wait, then start (sequentially) |
 | Killing a background `uvicorn` leaves it listening | the shell wrapper was killed, not the server | `lsof -ti tcp:8000 -sTCP:LISTEN \| xargs kill` |
 
 ## 9. Validation playbook
@@ -683,6 +797,7 @@ Techniques used:
 - **GPU leak check**: `page.addInitScript` wrapping `createBuffer/deleteBuffer/bufferData/createTexture/createProgram` on both WebGL prototypes to count live objects and bytes, grouped by `ctx.canvas` size (to separate the r3f-perf chart canvas from the scene). Compare the same state before and after N round trips.
 - **Projected-footprint measurement** (Lab 6): weight only pixels with the Gaussian's hue (`(G−B)/(R−B) ≈ 0.47` for the orange), and keep only the half of the screen away from the axis lines (the footprint is centrally symmetric) — otherwise axes blended into the faint tail bias the moments. Compare to a *simulated measurement* of the predicted Σ2D (same opacity, 8-bit rounding, threshold and 3σ cut), not to raw Σ2D: truncation and thresholding make the measured σ ~6% smaller.
 - **Compositing** (Lab 7B): unit-test `compositing.ts` against `gaussianMath.ts` with `npx tsx` (run with `NODE_PATH=<repo>/node_modules` so `three` resolves). In the browser, average the 2×2 pixels around the canvas centre and compare with the panel's predicted probe colour (the canvas uses `linear`, so screenshot values are the shader's values); count draw calls per frame by wrapping `draw*` on `WebGL2RenderingContext.prototype` (only the scene canvas, width > 400); orbit with `page.mouse` drags (≈ viewport height / 2 px of horizontal drag = 180°); exclude the panel and the Perf overlay from pause/reset image diffs (both change while the scene doesn't).
+- **Splat scenes** (Lab 8): import real scenes with `curl -F files=@…` into a test backend (folder uploads: one `-F files=@path -F paths=path` pair per file); cross-check `robust_bounds` between the PLY and SOG versions of the same scene (identical to 4 decimals → the SOG decoder is right). In Playwright, use real GPU flags (`--use-angle=metal --enable-unsafe-webgpu`; SwiftShader is too slow for millions of splats); count WebGPU devices by wrapping `adapter.requestDevice` / `device.destroy` and WebGL contexts by wrapping `getContext` + `isContextLost()`; orbit/zoom/reset with image diffs (scene clip without the panel); folder import via `setInputFiles(<dir>)` on the folder input.
 - Note: FPS numbers from SwiftShader are meaningless; use real hardware for performance conclusions.
 
 ## 10. Adapting Spatial Lab for different web purposes
@@ -705,13 +820,13 @@ General scaling rules: raw LAS is never loaded directly; convert offline to a ty
 
 ## 11. Not built yet / roadmap
 
-Explicitly out of scope so far (each would be its own lab): cross-capture alignment (Lab 7C organises captures per property; registration into a property frame via `alignment`/`frame`, using control points/GNSS/CRS, is not built), trained splat and mesh assets per dataset (metadata keys reserved, section 5.4), LAZ/E57 import, LiDAR intensity visualisation, pose animation, clipping/cropping, measurement tools, annotations/hotspots, full Gaussian splatting (Lab 6 projects one Gaussian; Lab 7B composites up to 1,000 with CPU projection, centre sorting and instanced quads; still missing: projection and sorting on the GPU for millions of Gaussians, tile-based rasterisation, spherical-harmonic colour, loading `.ply`/`.splat` files, training), ordinary meshes, WebXR, LOD/octrees, workers.
+Explicitly out of scope so far (each would be its own lab): cross-capture alignment (Lab 7C organises captures per property; registration into a property frame via `alignment`/`frame`, using control points/GNSS/CRS, is not built), meshes and photographs as capture representations (splat scenes exist since Lab 8, section 5.7), splat ↔ LiDAR registration, importing SuperSplat `settings.json` (authored cameras/annotations), splat editing/cropping, background import jobs for very large splat files, LAZ/E57 import, LiDAR intensity visualisation, pose animation, clipping/cropping, measurement tools, annotations/hotspots, full Gaussian splatting (Lab 6 projects one Gaussian; Lab 7B composites up to 1,000 with CPU projection, centre sorting and instanced quads; still missing: projection and sorting on the GPU for millions of Gaussians, tile-based rasterisation, spherical-harmonic colour in our own renderer (Lab 8 views real trained scenes with the official viewer instead), training), ordinary meshes, WebXR, LOD/octrees, workers.
 
 ## 12. Prompt templates
 
 **Rebuild the whole app:**
 
-> Build "Spatial Lab" exactly as specified in `docs/SPATIAL_LAB_REBUILD_GUIDE.md`. Follow the principles in section 2, the versions and config in section 3, the architecture in section 4, and implement Labs 1 through 7C in order (section 7). The built-in dataset is in `public/data/` (`pointcloud-500k.bin`, `pointcloud-1m.bin`, `pointcloud-2m.bin`, `pointcloud-5m.bin`, `poses.csv`); its offset is in section 5.2. Start the backend as in section 3.1. After each lab run the validation playbook (section 9) and report results. Do not generate fake data.
+> Build "Spatial Lab" exactly as specified in `docs/SPATIAL_LAB_REBUILD_GUIDE.md`. Follow the principles in section 2, the versions and config in section 3, the architecture in section 4, and implement Labs 1 through 8 in order (section 7). The built-in dataset is in `public/data/` (`pointcloud-500k.bin`, `pointcloud-1m.bin`, `pointcloud-2m.bin`, `pointcloud-5m.bin`, `poses.csv`); its offset is in section 5.2. Start the backend as in section 3.1. For Lab 8, use a downloaded SuperSplat scene (e.g. Ceramic Studio) as the test scene. After each lab run the validation playbook (section 9) and report results. Do not generate fake data.
 
 **Variant for another purpose:**
 
@@ -746,3 +861,4 @@ Explicitly out of scope so far (each would be its own lab): cross-capture alignm
 | 7A.2 | Sparse datasets: empty optional files (poses, control points, GNSS, project) are skipped with warnings instead of failing the import; missing/empty project.json → metadata inferred from the LAS header with explicit unknown-CRS warnings; new metadata keys `warnings`, `skippedFiles`, `projectInferred`; warnings shown in the import preview and the dataset panel |
 | 7B | Separate `/gaussian-compositing` page: 3 / 100 / 500 / 1,000 Gaussians in three depth layers; allocation-free projection (same math as Lab 6, unit-tested); per-frame centre-depth sort; one instanced draw call with front-to-back ("under") blending on a transparent canvas; correct/reversed ordering; Breathing/Wave/Dreamscape presets, speed, pause, reset; probe-pixel transmittance table; explanations; links from the viewer and Lab 6; Lab 6's `CameraReset` exported |
 | 7C | 5M point budget (`BUDGETS`, built-in `pointcloud-5m.bin`, startup backfill of missing budgets from stored LAS with offset/count verification, `budgetJob`, load size/time in the panel); Properties → Captures → representations in `spatial-data/catalog.json` (references only, one capture per dataset, no file deletion except Delete files, `alignment`/`frame`/`environment` reserved); catalog API; Datasets panel reorganised as "Properties"; no migration needed (missing catalog = all unassigned) |
+| 8 | Separate `/gaussian-viewer` page with the official SuperSplat Viewer (`@playcanvas/supersplat-viewer` 1.37.0 + `playcanvas` 2.23.0, `createViewer` in a div, destroyed per scene); backend splat store `spatial-data/splats/` (`splats.py`: PLY/compressed PLY/SOG/SOG folder/SOG LOD/zip detection and validation, safe extraction, whitelist file endpoint; `splat_bounds.py`: robust bounds, free inside viewpoint; `pillow` added); catalog representation kind `gaussian-splat`; LiDAR panel counts splats; importer hints point `.ply/.sog` to Lab 8; SplatTransform conversion documented |

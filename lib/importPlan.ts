@@ -49,9 +49,10 @@ const ROLES_BY_EXTENSION: Record<string, UploadRole[]> = {
 
 const UNSUPPORTED: Record<string, string> = {
   ".laz": "LAZ isn't supported yet; decompress it to .las first.",
-  ".ply": "Meshes / trained Gaussian splats aren't supported in this lab.",
-  ".splat": "Trained Gaussian splats aren't supported yet.",
-  ".ksplat": "Trained Gaussian splats aren't supported yet.",
+  ".ply": "Trained Gaussian splats (.ply) are imported in the Gaussian viewer (Lab 8); meshes aren't supported.",
+  ".sog": "Trained Gaussian splats (.sog) are imported in the Gaussian viewer (Lab 8).",
+  ".splat": "Trained Gaussian splats: convert to .sog with SplatTransform and import in the Gaussian viewer (Lab 8).",
+  ".ksplat": "Trained Gaussian splats: convert to .sog with SplatTransform and import in the Gaussian viewer (Lab 8).",
   ".e57": "E57 isn't supported yet; export the scan as .las.",
 };
 

@@ -109,6 +109,9 @@ export function Controls({
       <Link href="/gaussian-compositing" className="lab-link">
         Lab 7B: Gaussian Compositing →
       </Link>
+      <Link href="/gaussian-viewer" className="lab-link">
+        Lab 8: Gaussian Splat Viewer →
+      </Link>
 
       {datasetPanel}
 

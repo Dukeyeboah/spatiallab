@@ -21,7 +21,15 @@ Properties and captures (catalog.py; every change returns the whole catalog):
     PATCH  /captures/{id}                    {"name"} rename
     DELETE /captures/{id}                    capture only (datasets become unassigned)
     POST   /captures/{id}/datasets           {"datasetId"} assign (moves it from another capture)
-    DELETE /captures/{id}/datasets/{dsId}    unassign
+    DELETE /captures/{id}/datasets/{dsId}    unassign (dsId may be a LiDAR dataset or a splat scene)
+
+Gaussian splat scenes (splats.py, Lab 8):
+    GET    /splats                           list of scene metadata
+    POST   /splats                           multipart: name + one file (.ply/.sog/.zip),
+                                             or a SOG folder (files + matching relative paths)
+    GET    /splats/{id}                      one scene's metadata
+    DELETE /splats/{id}                      delete the scene's files
+    GET    /splats/{id}/files/{path}         a file the scene's manifest references (whitelist)
 
 Only converted assets are served; original uploads never leave spatial-data/.
 Conversions run one at a time in a separate worker process; budgets added
@@ -39,9 +47,12 @@ from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
+from starlette.concurrency import run_in_threadpool
 
 import catalog
+import splats
 import storage
+from splat_bounds import robust_bounds
 from catalog import CatalogError
 from converter import NORMALISED_POSES_FILE, backfill_budgets, convert_dataset
 from uploads import (
@@ -51,6 +62,7 @@ from uploads import (
     inspect_las,
     inspect_text_csv,
     is_blank,
+    save_stream,
     save_upload,
 )
 
@@ -293,7 +305,9 @@ def assign_dataset(capture_id: str, body: DatasetRefBody) -> dict:
     dataset_id = body.datasetId
     if not catalog.is_dataset_reference(dataset_id):
         raise HTTPException(400, "Invalid dataset id.")
-    if dataset_id != catalog.BUILTIN_DATASET_ID:
+    if catalog.is_splat_reference(dataset_id):
+        get_splat_or_404(dataset_id)  # must exist
+    elif dataset_id != catalog.BUILTIN_DATASET_ID:
         get_metadata_or_404(dataset_id)  # must exist
     return catalog_change(lambda c: catalog.assign_dataset(c, capture_id, dataset_id))
 
@@ -306,3 +320,124 @@ def unassign_dataset(capture_id: str, dataset_id: str) -> dict:
             raise CatalogError("That dataset is not in this capture.", 404)
         catalog.unassign_dataset(c, dataset_id)
     return catalog_change(unassign)
+
+
+# ---------------------------------------------------------------------------
+# Gaussian splat scenes (see splats.py). Validated and, for zips, extracted
+# during the upload request; the viewer then loads them directly.
+
+SPLAT_MEDIA_TYPES = {".json": "application/json", ".webp": "image/webp"}
+
+
+def get_splat_or_404(splat_id: str) -> dict:
+    try:
+        metadata = splats.read_metadata(splat_id)
+    except ValueError:
+        metadata = None
+    if metadata is None:
+        raise HTTPException(404, "Gaussian scene not found.")
+    return metadata
+
+
+@app.get("/splats")
+def list_splats() -> list[dict]:
+    return splats.list_metadata()
+
+
+@app.get("/splats/{splat_id}")
+def get_splat(splat_id: str) -> dict:
+    return get_splat_or_404(splat_id)
+
+
+@app.post("/splats", status_code=201)
+async def create_splat(
+    name: Annotated[str, Form()],
+    files: Annotated[list[UploadFile], File()],
+    paths: Annotated[Optional[list[str]], Form()] = None,
+) -> dict:
+    """One file (.ply / .compressed.ply / .sog / .zip), or a SOG folder: files + their relative paths."""
+    name = " ".join(name.split())
+    if not 1 <= len(name) <= MAX_NAME_LENGTH:
+        raise HTTPException(400, f"Name must be 1–{MAX_NAME_LENGTH} characters.")
+
+    splat_id = splats.new_splat_id()
+    folder = splats.splat_dir(splat_id)
+    source = folder / "source"
+    source.mkdir(parents=True)
+    metadata = splats.new_metadata(splat_id, name)
+    try:
+        if paths is None:
+            if len(files) != 1:
+                raise UploadError("Choose one scene file, or a SOG folder.")
+            upload = files[0]
+            filename = os.path.basename(upload.filename or "")[:200]
+            kind = splats.single_file_kind(filename)
+            size = await save_stream(upload, source / splats.SINGLE_FILE_NAMES[kind], splats.MAX_SINGLE_FILE, filename)
+            metadata["source"] = {"kind": "zip" if kind == ".zip" else "file", "filename": filename,
+                                  "bytes": size, "fileCount": 1}
+            result, served_from = await run_in_threadpool(splats.inspect_single_file, folder, kind, filename)
+        else:
+            if len(paths) != len(files):
+                raise UploadError("Each uploaded file needs its relative path.")
+            # Relative paths are validated segment by segment and only package
+            # file types are kept; the folder the browser prefixes is stripped.
+            kept: list[tuple[str, UploadFile]] = []
+            ignored = 0
+            for upload, raw in zip(files, paths):
+                relative = splats.clean_relative_path(raw)
+                if relative is None:
+                    continue
+                if os.path.splitext(relative)[1].lower() not in splats.PACKAGE_EXTENSIONS:
+                    ignored += 1
+                    continue
+                kept.append((relative, upload))
+            if not kept:
+                raise UploadError("The folder contains no SOG files (meta.json or lod-meta.json and .webp images).")
+            if len(kept) > splats.MAX_PACKAGE_FILES:
+                raise UploadError(f"More than {splats.MAX_PACKAGE_FILES} files in the folder.")
+            root = splats.common_root([relative for relative, _ in kept])
+            strip = len(root) + 1 if root else 0
+            if len({relative for relative, _ in kept}) != len(kept):
+                raise UploadError("The folder lists the same file twice.")
+            label = root or "folder"
+            total = 0
+            for relative, upload in kept:
+                destination = source / "package" / relative[strip:]
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                total += await save_stream(upload, destination, splats.MAX_PACKAGE_BYTES - total, f"{label}/{relative[strip:]}")
+            metadata["source"] = {"kind": "folder", "filename": label, "bytes": total, "fileCount": len(kept)}
+            if ignored:
+                metadata["warnings"].append(f"Ignored {ignored} file(s) that aren't part of a SOG package (e.g. .html, .js).")
+            result, served_from = await run_in_threadpool(splats.inspect_uploaded_folder, folder, label)
+        splats.apply_inspection(metadata, result, served_from)
+        try:
+            metadata["robustBounds"] = await run_in_threadpool(robust_bounds, folder / served_from, metadata)
+        except Exception as error:  # a viewing aid only: never fails the import
+            metadata["warnings"].append(f"Couldn't measure the scene's extent ({error}); the viewer frames everything.")
+    except UploadError as error:
+        shutil.rmtree(folder, ignore_errors=True)
+        raise HTTPException(400, str(error)) from error
+    except Exception:
+        shutil.rmtree(folder, ignore_errors=True)
+        raise
+
+    splats.write_metadata(splat_id, metadata)
+    return metadata
+
+
+@app.delete("/splats/{splat_id}", status_code=204)
+def delete_splat(splat_id: str) -> None:
+    get_splat_or_404(splat_id)
+    splats.delete_splat(splat_id)
+    with catalog.editing() as current:
+        catalog.unassign_dataset(current, splat_id)
+
+
+@app.get("/splats/{splat_id}/files/{relative:path}")
+def get_splat_file(splat_id: str, relative: str) -> FileResponse:
+    metadata = get_splat_or_404(splat_id)
+    path = splats.served_file(metadata, relative)
+    if path is None:
+        raise HTTPException(404, "File not found in this scene.")
+    media_type = SPLAT_MEDIA_TYPES.get(path.suffix.lower(), "application/octet-stream")
+    return FileResponse(path, media_type=media_type)

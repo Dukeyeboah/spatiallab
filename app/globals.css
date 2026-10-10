@@ -351,6 +351,24 @@ body {
   font-size: 12px;
 }
 
+/* Lab 8: the SuperSplat Viewer fills the window under the panel (it builds its own canvas inside). */
+.splat-viewer {
+  position: fixed;
+  inset: 0;
+}
+
+.controls .title-row button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.controls .license {
+  margin: 4px 0 0;
+  white-space: pre-wrap;
+  font-family: inherit;
+  font-size: 11px;
+}
+
 .segmented button.selected {
   background: #4a6fa5;
   border-color: #4a6fa5;

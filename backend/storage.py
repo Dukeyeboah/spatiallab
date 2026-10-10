@@ -13,6 +13,7 @@ The local dataset store. One folder per dataset:
             pointcloud-500k.bin, -1m, -2m, -5m (or pointcloud-all.bin for smaller clouds)
 
     spatial-data/catalog.json   properties and captures that reference datasets (see catalog.py)
+    spatial-data/splats/<id>/   trained Gaussian splat scenes, a separate store (see splats.py)
 
 Paths are never built from user input: dataset ids are generated here and
 checked against DATASET_ID_PATTERN, and file names come from fixed tables.
