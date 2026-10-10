@@ -41,6 +41,7 @@ A deliberately small Next.js + React Three Fiber app that renders a **real** LiD
 | 6 | 3D Gaussian projection (separate page `/gaussian-projection`) | Σ3D = R S Sᵀ Rᵀ, Jacobian projection Σ2D = J W Σ3D Wᵀ Jᵀ, screen-space quads |
 | 7A | Multi-dataset import (local FastAPI backend) | per-dataset offsets and metadata, background conversion, pose/frame validation, safe local storage, GPU disposal on switch |
 | 7B | Gaussian compositing (separate page `/gaussian-compositing`) | many Gaussians in one instanced draw call, depth sorting, front-to-back alpha compositing, transmittance, animation |
+| 7C | 5M budget + Properties → Captures | budgets added later are backfilled from stored originals in the same frame; organising datasets by place and session without merging frames |
 
 The dataset used: a handheld/SLAM LiDAR scan (`map.las`, 5,242,880 points, 178 MB, local metric frame, RGB) plus `poses.csv` (208 poses, 5 Hz, 41.4 s).
 
@@ -131,7 +132,7 @@ app/
 components/
   SpatialScene.tsx      <Canvas>, background, Perf, OrbitControls, grid, LiDAR group
   CameraFraming.tsx     camera + OrbitControls target framed once per dataset, Reset View (renders nothing)
-  DatasetManager.tsx    collapsible Datasets section: select, metadata/status, import form, delete
+  DatasetManager.tsx    collapsible Properties section: property → capture → dataset pickers, catalog actions, metadata/status, import form, delete
   PointCloud.tsx        BufferGeometry from typed arrays; picks Standard or Shader material
   ShaderPointsMaterial.tsx  RawShaderMaterial; shader table per experiment; uniforms; blending
   Trajectory.tsx        THREE.Line + <points> sharing one geometry of pose positions
@@ -161,6 +162,7 @@ lib/
   loadPoses.ts          poses.csv parser, subtracts the dataset's offset
   worldFrame.ts         LIDAR_TO_THREE_ROTATION (Z-up → Y-up)
   importPlan.ts         folder/files → import plan: role detection, ambiguity flags, preview summary
+  catalog.ts            Property/Capture/Catalog types, helpers, catalog API calls (Lab 7C)
   datasets.ts           Dataset type (= backend metadata), BUILTIN_DATASET (map.las offset/bounds),
                         asset URLs, pickBudget(), backend API calls, client-side file checks
   usefulBounds.ts       1st–99th percentile bounding box (ignores stray points)
@@ -168,21 +170,22 @@ lib/
   viewSettings.ts       ViewSettings type + defaults; shader experiment types/params
 shaders/                GLSL as exported TS template strings (no bundler loader needed)
 scripts/convert_las.py  LAS → browser binary converter (CLI; uses backend/lidar_conversion.py)
-public/data/            built-in dataset: pointcloud-500k/1m/2m.bin (gitignored), poses.csv
+public/data/            built-in dataset: pointcloud-500k/1m/2m/5m.bin (gitignored), poses.csv
 backend/                local FastAPI dataset service (Lab 7A)
   app.py                routes, CORS, worker process pool, restart recovery
-  storage.py            dataset folders, id validation, atomic metadata.json, budget table
+  storage.py            dataset folders, id validation, atomic metadata.json, budget table + planned/missing budgets
+  catalog.py            properties/captures in catalog.json (references only), atomic writes, lock
   uploads.py            per-role extension/size/content validation
-  converter.py          conversion job (progress → metadata) + pose/frame validation
+  converter.py          conversion job (progress → metadata), budget backfill job, pose/frame validation
   lidar_conversion.py   shared core: chunked LAS read, offset, sampling, .bin writer
   requirements.txt
-spatial-data/           (gitignored) datasets/<id>/{metadata.json, source/, converted/}
+spatial-data/           (gitignored) datasets/<id>/{metadata.json, source/, converted/}, catalog.json
 docs/                   this guide
 ```
 
 Data and state flow:
 
-- `page.tsx` owns state: dataset list (built-in + backend), selected dataset id, preferred budget key, loaded point cloud and poses (each tagged with its dataset id), selected pose index, `ViewSettings`, `viewResetRequest` counter, status/error strings. The dataset list is polled every 1.5 s only while a conversion runs.
+- `page.tsx` owns state: dataset list (built-in + backend), catalog (properties/captures), selected dataset id, preferred budget key, loaded point cloud and poses (each tagged with its dataset id), selected pose index, `ViewSettings`, `viewResetRequest` counter, status/error strings. The dataset list is polled every 1.5 s only while a conversion runs.
 - Loaded data is stored as `{ datasetId, data }` and only passed to the scene when `datasetId` matches the selection, so the scene never sees the previous dataset's data together with the new dataset's id (which would frame the camera on the wrong scene).
 - Effects depend on primitive keys (URL strings, ids), not on dataset objects, because polling replaces the objects every 1.5 s.
 - Data flows **down** as props: `page → SpatialScene → PointCloud/Trajectory/ScannerMarker`, and `page → Controls`.
@@ -225,6 +228,7 @@ Total size = `4 + 15 N` bytes. The loader validates the size and creates `Float3
 python3 scripts/convert_las.py source-data/map.las public/data/pointcloud-500k.bin --max-points 500000
 python3 scripts/convert_las.py source-data/map.las public/data/pointcloud-1m.bin  --max-points 1000000
 python3 scripts/convert_las.py source-data/map.las public/data/pointcloud-2m.bin  --max-points 2000000
+python3 scripts/convert_las.py source-data/map.las public/data/pointcloud-5m.bin  --max-points 5000000
 ```
 
 The logic lives in `backend/lidar_conversion.py`, shared by this CLI and the backend (Lab 7A). Steps, in this exact order:
@@ -299,9 +303,35 @@ One JSON per dataset, also the frontend's `Dataset` type (`lib/datasets.ts`; `BU
 
 `warnings`, `skippedFiles` and `projectInferred` are optional on the frontend type (datasets imported before 7A.2 lack them). `projectInferred` is set only when `project.json` is missing, empty or `{}`/`[]`; it records only what the LAS header actually says (blank header fields → `null`), never a guessed CRS.
 
-Budgets: 500K, 1M, 2M; the first budget ≥ the dataset size is replaced by one `"all"` budget labelled `All (N)` and larger budgets are skipped (a 300K scan has only `All (300K)`; a 1.5M scan has 500K, 1M, All (1.5M)).
+Budgets: 500K, 1M, 2M, 5M (`storage.BUDGETS`); the first budget ≥ the dataset size is replaced by one `"all"` budget labelled `All (N)` and larger budgets are skipped (a 300K scan has only `All (300K)`; a 4.2M scan has 500K, 1M, 2M, All (4.2M)) — points are never duplicated. `storage.planned_budgets(total)` is the single rule used by both the conversion and the backfill.
 
-Extensibility: new asset types (trained splats, meshes, measurements, annotations) become new optional top-level keys next to `budgets`/`poses`, each with its own status; multiple captures of one space and coordinate alignment become a `frame` transform relative to another dataset on top of `offset`. Bump `schemaVersion` when an existing key changes meaning.
+**Backfill (7C):** adding a budget to `BUDGETS` is enough for existing datasets. On backend start, every ready dataset with `missing_budgets()` gets a `budgetJob` and `converter.backfill_budgets` runs in the worker: it re-reads `source/pointcloud.las`, recomputes the offset and point count and **refuses** (job `failed`, nothing written) if either differs from `metadata.json`; otherwise it writes only the missing files with the *stored* offset and appends them to `budgets`. Existing budget files are never rewritten. The dataset stays viewable (the panel shows the job's stage and progress); `DELETE` is refused while it runs. `budgetJob`: `{status: queued|running|failed, progress, stage, error}` or `null`.
+
+Extensibility: new asset types (trained splats, meshes, measurements, annotations) become new optional top-level keys next to `budgets`/`poses`, each with its own status, or their own datasets referenced from a capture (section 5.6). Bump `schemaVersion` when an existing key changes meaning.
+
+### 5.6 Properties and captures (`catalog.json`, Lab 7C)
+
+```
+Property  (a real-world place: resort, house, gallery)
+  Capture   (one scanning / photography session there)
+    representations: [{ kind: "lidar", datasetId }]   → dataset folders (section 5.4)
+```
+
+`spatial-data/catalog.json` (atomic writes, one lock in the API process):
+
+```jsonc
+{
+  "schemaVersion": 1,
+  "properties": [{ "id": "prop_<12 hex>", "name", "createdAt", "frame": null }],
+  "captures": [{ "id": "cap_<12 hex>", "propertyId", "name", "createdAt", "environment": null,
+                 "representations": [{ "kind": "lidar", "datasetId": "ds_… | builtin-map" }],
+                 "alignment": { "status": "unaligned", "method": null, "reference": null, "transform": null } }]
+}
+```
+
+Rules: the catalog only **references** datasets (never copies, moves or edits their files, metadata or offsets); a dataset is in at most one capture (assigning it elsewhere moves the reference); datasets in no capture are "unassigned"; deleting a property or capture never deletes files (its datasets become unassigned); only `DELETE /datasets/{id}` removes files, and it also drops the reference. Captures are **never merged** and not assumed to share a frame: each keeps its dataset's offset. `alignment` (capture → property transform, method such as registration or control points, reference) and the property's `frame` are reserved for future registration and are not applied anywhere; `environment` is reserved for indoor/outdoor organisation. Future representation kinds: photos, trained splats, meshes.
+
+**Migration:** none needed. No `catalog.json` = empty catalog = every existing dataset (and the built-in one) under "Unassigned datasets". Dataset folders are untouched; an older backend simply ignores `catalog.json`.
 
 ### 5.5 Coordinate frames
 
@@ -437,7 +467,7 @@ Accept: real scan renders; count matches file; all toggles work; missing file sh
 
 ### Lab 1b — Point budgets and performance
 
-Requirements: `<Perf position="top-right" />` inside the canvas; "Point Budget" selector 500K | 1M | 2M; show selected budget, actual loaded count, point size; loading message; only one dataset in memory (clear old data before fetching new; abort in-flight fetch on switch with `AbortController`); camera must not reset when switching.
+Requirements: `<Perf position="top-right" />` inside the canvas; "Point Budget" selector 500K | 1M | 2M (| 5M since Lab 7C); show selected budget, actual loaded count, point size; loading message; only one dataset in memory (clear old data before fetching new; abort in-flight fetch on switch with `AbortController`); camera must not reset when switching.
 
 Accept: switching budgets keeps the exact same view (pixel-identical after a round trip); the scan's dense-region centre is identical across budgets (within mm).
 
@@ -504,7 +534,7 @@ Requirements:
 - Security: ids generated server-side (`ds_` + 12 hex) and matched against a strict regex before any path is built, and the resolved path must stay inside the store; budget keys served only if listed in the metadata; client file names are display text only; per-role extension + size limit (LAS 4 GiB, CSV 200 MiB, JSON 10 MiB) + content check (`LASF` signature and a laspy header read, uncompressed only; UTF-8 text without NUL for CSV; `json.loads` for JSON); nothing uploaded is executed; helpful messages for `.laz`, `.ply`, `.splat`, `.e57`, … (also checked client-side before uploading).
 - Conversion in a `ProcessPoolExecutor(max_workers=1, spawn)` worker; progress (reading 0–60%, budgets 60–90%, poses 90–100%) written to metadata; the page polls every 1.5 s while anything converts. Interrupted conversions are re-queued on backend start. On failure, partial `converted/` output is deleted, sources are kept, and the error is shown.
 - Pose validation per section 5.3; control points/GNSS stored with rows/first line only (schema not assumed); project JSON parsed, top-level keys recorded. None of these are treated as splat data.
-- Frontend: built-in dataset (`BUILTIN_DATASET`, served from `public/data`, works without the backend) + backend datasets in one list; collapsible "Datasets" section (`<details>`): select (status in the option label), metadata (original points, size, offset with full precision in the tooltip, budgets, poses count + status, source file, attachments, import date), progress bar, "Import dataset…" form (see the importer below), "Delete" with `window.confirm`. Global `WORLD_OFFSET` and `pointBudgets.ts` removed.
+- Frontend: built-in dataset (`BUILTIN_DATASET`, served from `public/data`, works without the backend) + backend datasets in one list; collapsible "Datasets" section (renamed "Properties" and reorganised in Lab 7C) (`<details>`): select (status in the option label), metadata (original points, size, offset with full precision in the tooltip, budgets, poses count + status, source file, attachments, import date), progress bar, "Import dataset…" form (see the importer below), "Delete" with `window.confirm`. Global `WORLD_OFFSET` and `pointBudgets.ts` removed.
 - Importer (`lib/importPlan.ts` + `ImportForm`): "Choose folder…" (`<input type=file webkitdirectory>`, recursive; the attribute is set through a ref because React's types lack it) or "Choose files…" (`multiple`). Nothing is uploaded until "Upload and convert". Detection by extension and name only (contents are checked by the backend):
 
   | File | Detected as |
@@ -561,6 +591,30 @@ Accept:
 
 Limitations to state: centre-based sorting (section 6.8); CPU projection and sorting (fine for ~1,000, not for millions — real splatting projects in the vertex/compute stage and sorts on the GPU, per screen tile); first-order projection as Lab 6; no spherical harmonics (one colour per Gaussian); not a trained splat and no file loading.
 
+### Lab 7C — 5M budget + Properties and Captures
+
+Requirements (5M budget):
+
+- `BUDGETS` gains `("5m", "5M", 5_000_000)`; budgets per section 5.4 (never duplicate points: smaller clouds get "All (N)"). Built-in: `public/data/pointcloud-5m.bin` from `source-data/map.las` (same offset, printed by the CLI) and a 5M entry in `BUILTIN_DATASET.budgets`; `pickBudget` knows `5m`.
+- Existing imported datasets get the new budget by the startup backfill (section 5.4), without re-upload; the other budgets stay usable meanwhile; the page also polls while a `budgetJob` is queued/running.
+- Panel: "Loaded points: N" plus "Loaded 75.0 MB in 0.3 s"; loading errors read "Couldn't load the 5M budget: … Try a smaller budget."; the old cloud is still dropped before the new one loads (one cloud in memory; GPU buffers disposed by `<PointCloud>`); the camera doesn't move on budget changes.
+
+Requirements (Properties → Captures, section 5.6):
+
+- Backend endpoints: `GET /catalog`; `POST /properties`, `PATCH`/`DELETE /properties/{id}`; `POST /properties/{id}/captures`, `PATCH`/`DELETE /captures/{id}`; `POST /captures/{id}/datasets` `{datasetId}` (moves it from another capture), `DELETE /captures/{id}/datasets/{datasetId}`. Every change returns the whole catalog. Names: whitespace collapsed, 1–80 characters. Ids regex-checked; dataset ids must exist (or be `builtin-map`). CORS allows `PATCH`.
+- Panel ("Properties", `<details>`): Property picker ("Unassigned datasets (N)" + properties with capture counts) with New / Rename / Delete; Capture picker (with dataset counts) with Add / Rename / Delete; Dataset picker (the capture's datasets, or the unassigned ones); "Add a dataset to this capture…" select (other captures' datasets labelled "(moves from …)"); metadata; buttons Import… / Unassign (catalog only) / Delete files (permanent). Names via `window.prompt`; deletes via `window.confirm` that say exactly what happens to files ("No files are deleted: its N dataset(s) stay available under Unassigned datasets" vs "files will be permanently removed … removed from capture X"). Choosing a property/capture views its first dataset. The import form offers "Add to capture "X"" (checked) when a capture is selected. Note under a capture: each capture keeps its own coordinate frame.
+- Graceful degradation: backend offline → only the built-in dataset, catalog buttons disabled; backend reachable but older (no `/catalog`) → datasets work, catalog buttons disabled with "restart it to organise datasets".
+
+Accept:
+
+1. Built-in: buttons 500K | 1M | 2M | 5M; 5M loads 5,000,000 points; 500K → 5M → 500K after an orbit: 0% image diff; live scene-canvas buffer bytes return to the 500K value (7.5 MB → 75 MB → 7.5 MB).
+2. Backfill on copies of real datasets: a 14.7M-point dataset gains 5M; a 4.2M one gains "All (4.2M)"; existing budget files unchanged (checksums); new files byte-identical to a fresh conversion with the stored offset; a tampered offset → job failed, no file.
+3. Fresh import of map.las → 500K/1M/2M/5M byte-identical to `public/data`.
+4. Without `catalog.json`: every dataset under "Unassigned"; create property + captures, assign, move, rename, unassign, delete capture/property (datasets remain, files untouched), import into a capture, delete a dataset in a capture (reference removed). API error cases return 400/404 with messages.
+5. No TypeScript, pyflakes or console errors (except deliberately blocked requests in the offline test).
+
+Limitations to state: captures are not aligned or merged (one capture viewed at a time; `alignment`/`frame` reserved); only LiDAR representations exist; a dataset belongs to at most one capture; the backfill holds the whole LAS in memory like a conversion; renaming uses browser prompts; no multi-user or cloud storage.
+
 ## 8. Pitfalls we hit and how they were fixed
 
 | Symptom | Cause | Fix |
@@ -589,6 +643,7 @@ Limitations to state: centre-based sorting (section 6.8); CPU projection and sor
 | `[Errno 28] No space left on device` during conversion | each conversion writes ~52 MB of budgets; uploads need ~2.3× the LAS size | failed jobs delete partial output; free disk before importing large files |
 | Front-to-back blending shows nothing / Gaussians vanish over the grid | "under" blending needs destination alpha = accumulated opacity; a `<color attach="background">` clear (alpha 1) or an opaque object drawn first already reads as fully covered | clear to alpha 0, let the page background show through, and draw everything that should be behind *after* the Gaussians with the same blending |
 | Test uploads land in the user's real dataset store | the user's own backend was already listening on :8000, so the test server failed to bind and requests went to theirs | check `lsof -iTCP:8000` first; run test backends on another port with a temp `SPATIAL_LAB_DATA_DIR` |
+| After pulling new backend code the panel says the backend has no properties support / 5M is missing for old datasets | `uvicorn` was started without `--reload` and still runs the old code | restart the backend: new endpoints appear and missing budgets are backfilled at startup |
 | Killing a background `uvicorn` leaves it listening | the shell wrapper was killed, not the server | `lsof -ti tcp:8000 -sTCP:LISTEN \| xargs kill` |
 
 ## 9. Validation playbook
@@ -619,7 +674,9 @@ Techniques used:
 - **Shape measurement**: crop around an isolated point, weight pixels by luminance above background, compute second moments → elongation `sqrt(λ1/λ2)` and major-axis angle `½·atan2(2σxy, σxx − σyy)` (flip image y to get counter-clockwise angles).
 - **Data checks** (Python): offsets identical across conversions; 1st–99th percentile centre identical across budget files.
 - **Pure-math unit tests** (Lab 6): import `lib/gaussian/gaussianMath.ts` from a script run with `npx tsx` (outside the project); check circle/ratio/angle/distance cases, symmetry + positive-definiteness for thousands of random inputs, and a Monte Carlo comparison (sample points from N(0, Σ3D), push through T = J·W, compare sample covariance to Σ2D).
-- **Backend without copying big files** (Lab 7A): create a dataset folder whose `source/pointcloud.las` is a *symlink* to the original, write `new_metadata()`, call `converter.convert_dataset(id)` directly; use `SPATIAL_LAB_DATA_DIR=/tmp/...` so tests don't touch the real store. Patch `converter.BUDGETS` (e.g. a 10M budget) to exercise the "All (N)" path with real data. `cmp` the budgets against `public/data`.
+- **Budget backfill** (Lab 7C): copy a real dataset's `metadata.json` + `converted/` into a temp store and *hard-link* its `source/*` (read-only use); start a test backend on another port with that `SPATIAL_LAB_DATA_DIR`; checksum the existing budgets before/after (must be unchanged); compare each new budget byte-for-byte with a fresh `write_bin` using the stored offset; check that old-budget points are members of the offset-subtracted full cloud (same frame); a copy with a tampered `offset` must end with `budgetJob.status = failed` and no file. A fresh import of map.las must give 500K/1M/2M/5M byte-identical to `public/data`.
+- **Catalog** (Lab 7C): `curl` every endpoint incl. errors (blank/81-char names, unknown/malformed ids, `../` dataset ids, unknown dataset, unassign of a dataset not in the capture); after deleting a capture/property the dataset folders must still exist. In Playwright, answer `window.prompt`/`confirm` with `page.on("dialog")`; locate the pickers by label text anchored at the start (`/^Dataset/`), since "Unassigned datasets" also contains "dataset".
+- **Backend without copying big files** (Lab 7A): create a dataset folder whose `source/pointcloud.las` is a *symlink* to the original, write `new_metadata()`, call `converter.convert_dataset(id)` directly; use `SPATIAL_LAB_DATA_DIR=/tmp/...` so tests don't touch the real store. Patch `storage.BUDGETS` (e.g. a 10M budget; `planned_budgets` reads it) to exercise the "All (N)" path with real data. `cmp` the budgets against `public/data`.
 - **API checks** with `curl -F`: wrong extension, fake content, empty name, invalid ids (`..%2F`), delete.
 - **Importer**: unit-test `planImport`/`describePlan` with `npx tsx` (Node's `File`, `webkitRelativePath` set via `Object.defineProperty`): complete folder, two LAS files, several pose candidates, user resolution, two files on one role, unknown CSV + unsupported formats, no LAS, only system files. In the browser, `setInputFiles(<folder path>)` on the folder input; placeholder files are enough for the preview, and uploading a placeholder `.las` must return the backend's "LASF signature" error. End to end: a folder with a hard link to `map.las` + `poses.csv` + `project.json` → 5,242,880 points, same offset, poses aligned, 0% pixel diff vs the built-in dataset.
 - **Sparse imports** (7A.2), against a backend with `SPATIAL_LAB_DATA_DIR=/tmp/...` on a spare port (never the user's running backend on 8000 — it writes to the real store; in Playwright, `page.route` can redirect `:8000` to the test port): `map.las` + empty `poses.csv`/`control_points.csv` + whitespace/BOM `gnss.csv` → 201, three skip warnings, `projectInferred` with CRS unknown, conversion ready, poses none; empty `project.json` and `{}` → inferred metadata; full set → no warnings, poses aligned (unchanged); empty LAS → 400; invalid non-empty JSON → 400.
@@ -648,13 +705,13 @@ General scaling rules: raw LAS is never loaded directly; convert offline to a ty
 
 ## 11. Not built yet / roadmap
 
-Explicitly out of scope so far (each would be its own lab): cross-dataset alignment (multiple captures of one space in one frame, using control points/GNSS/CRS), trained splat and mesh assets per dataset (metadata keys reserved, section 5.4), LAZ/E57 import, LiDAR intensity visualisation, pose animation, clipping/cropping, measurement tools, annotations/hotspots, full Gaussian splatting (Lab 6 projects one Gaussian; Lab 7B composites up to 1,000 with CPU projection, centre sorting and instanced quads; still missing: projection and sorting on the GPU for millions of Gaussians, tile-based rasterisation, spherical-harmonic colour, loading `.ply`/`.splat` files, training), ordinary meshes, WebXR, LOD/octrees, workers.
+Explicitly out of scope so far (each would be its own lab): cross-capture alignment (Lab 7C organises captures per property; registration into a property frame via `alignment`/`frame`, using control points/GNSS/CRS, is not built), trained splat and mesh assets per dataset (metadata keys reserved, section 5.4), LAZ/E57 import, LiDAR intensity visualisation, pose animation, clipping/cropping, measurement tools, annotations/hotspots, full Gaussian splatting (Lab 6 projects one Gaussian; Lab 7B composites up to 1,000 with CPU projection, centre sorting and instanced quads; still missing: projection and sorting on the GPU for millions of Gaussians, tile-based rasterisation, spherical-harmonic colour, loading `.ply`/`.splat` files, training), ordinary meshes, WebXR, LOD/octrees, workers.
 
 ## 12. Prompt templates
 
 **Rebuild the whole app:**
 
-> Build "Spatial Lab" exactly as specified in `docs/SPATIAL_LAB_REBUILD_GUIDE.md`. Follow the principles in section 2, the versions and config in section 3, the architecture in section 4, and implement Labs 1 through 7B in order (section 7). The built-in dataset is in `public/data/` (`pointcloud-500k.bin`, `pointcloud-1m.bin`, `pointcloud-2m.bin`, `poses.csv`); its offset is in section 5.2. Start the backend as in section 3.1. After each lab run the validation playbook (section 9) and report results. Do not generate fake data.
+> Build "Spatial Lab" exactly as specified in `docs/SPATIAL_LAB_REBUILD_GUIDE.md`. Follow the principles in section 2, the versions and config in section 3, the architecture in section 4, and implement Labs 1 through 7C in order (section 7). The built-in dataset is in `public/data/` (`pointcloud-500k.bin`, `pointcloud-1m.bin`, `pointcloud-2m.bin`, `pointcloud-5m.bin`, `poses.csv`); its offset is in section 5.2. Start the backend as in section 3.1. After each lab run the validation playbook (section 9) and report results. Do not generate fake data.
 
 **Variant for another purpose:**
 
@@ -666,7 +723,7 @@ Explicitly out of scope so far (each would be its own lab): cross-dataset alignm
 
 **New dataset:**
 
-> Start the backend (section 3.1) and import `[file.las]` (+ `poses.csv`) through the Datasets panel. Check the metadata: offset, bounds and point count from the full cloud, budgets, pose status. If poses are `suspect`, read the reason and diagnose the frames instead of adjusting. (Offline alternative: `scripts/convert_las.py` per budget, confirm identical offsets, and add a dataset record like `BUILTIN_DATASET`.)
+> Start the backend (section 3.1) and import `[file.las]` (+ `poses.csv`) through the Properties panel ("Import…"). Check the metadata: offset, bounds and point count from the full cloud, budgets, pose status. If poses are `suspect`, read the reason and diagnose the frames instead of adjusting. (Offline alternative: `scripts/convert_las.py` per budget, confirm identical offsets, and add a dataset record like `BUILTIN_DATASET`.)
 
 ## 13. Changelog
 
@@ -688,3 +745,4 @@ Explicitly out of scope so far (each would be its own lab): cross-dataset alignm
 | 7A.1 | Importer: folder or individual files, preview summary, per-file role selection, ambiguity flags instead of guessing (`lib/importPlan.ts`); verified end to end with the real map.las |
 | 7A.2 | Sparse datasets: empty optional files (poses, control points, GNSS, project) are skipped with warnings instead of failing the import; missing/empty project.json → metadata inferred from the LAS header with explicit unknown-CRS warnings; new metadata keys `warnings`, `skippedFiles`, `projectInferred`; warnings shown in the import preview and the dataset panel |
 | 7B | Separate `/gaussian-compositing` page: 3 / 100 / 500 / 1,000 Gaussians in three depth layers; allocation-free projection (same math as Lab 6, unit-tested); per-frame centre-depth sort; one instanced draw call with front-to-back ("under") blending on a transparent canvas; correct/reversed ordering; Breathing/Wave/Dreamscape presets, speed, pause, reset; probe-pixel transmittance table; explanations; links from the viewer and Lab 6; Lab 6's `CameraReset` exported |
+| 7C | 5M point budget (`BUDGETS`, built-in `pointcloud-5m.bin`, startup backfill of missing budgets from stored LAS with offset/count verification, `budgetJob`, load size/time in the panel); Properties → Captures → representations in `spatial-data/catalog.json` (references only, one capture per dataset, no file deletion except Delete files, `alignment`/`frame`/`environment` reserved); catalog API; Datasets panel reorganised as "Properties"; no migration needed (missing catalog = all unassigned) |

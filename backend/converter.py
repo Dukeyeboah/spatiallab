@@ -21,7 +21,17 @@ from typing import Any, Optional
 import numpy as np
 
 from lidar_conversion import BYTES_PER_POINT, HEADER_BYTES, compute_offset, read_las, sample_indices, write_bin
-from storage import BUDGETS, SOURCE_FILES, budget_file, dataset_dir, now_iso, update_metadata
+from storage import (
+    BUDGETS,
+    SOURCE_FILES,
+    budget_file,
+    dataset_dir,
+    missing_budgets,
+    now_iso,
+    planned_budgets,
+    read_metadata,
+    update_metadata,
+)
 
 POSE_COLUMNS = 8  # timestamp, x, y, z, qx, qy, qz, qw
 NORMALISED_POSES_FILE = "poses.csv"
@@ -75,19 +85,11 @@ def _convert(dataset_id: str) -> None:
         hasRgb=cloud.rgb is not None,
     )
 
-    # 3. Point budgets.
+    # 3. Point budgets (smaller-than-cloud budgets, or one "All (N)").
     budgets = []
-    for i, (key, label, max_points) in enumerate(BUDGETS):
-        keep = sample_indices(total, max_points)
-        if keep is None:
-            key, label = "all", f"All ({_compact(total)})"
+    for i, (key, label, max_points) in enumerate(planned_budgets(total)):
         _progress(dataset_id, 0.6 + 0.3 * i / len(BUDGETS), f"Writing {label} budget")
-        count = write_bin(converted / budget_file(key), cloud.xyz, cloud.rgb, offset, keep)
-        budgets.append(
-            {"key": key, "label": label, "pointCount": count, "bytes": HEADER_BYTES + BYTES_PER_POINT * count}
-        )
-        if keep is None:
-            break  # larger budgets would repeat exactly the same points
+        budgets.append(_write_budget(converted, key, label, max_points, cloud, offset))
     update_metadata(dataset_id, budgets=budgets)
 
     # 4. Poses.
@@ -98,6 +100,66 @@ def _convert(dataset_id: str) -> None:
         update_metadata(dataset_id, poses=poses)
 
     update_metadata(dataset_id, status="ready", progress=1.0, stage="Ready", error=None, convertedAt=now_iso())
+
+
+def _write_budget(converted: Path, key: str, label: str, max_points: Optional[int], cloud, offset) -> dict[str, Any]:
+    """One budget file + its metadata entry. max_points None = every point ("all")."""
+    keep = None if max_points is None else sample_indices(len(cloud.xyz), max_points)
+    count = write_bin(converted / budget_file(key), cloud.xyz, cloud.rgb, offset, keep)
+    return {"key": key, "label": label, "pointCount": count, "bytes": HEADER_BYTES + BYTES_PER_POINT * count}
+
+
+def backfill_budgets(dataset_id: str) -> None:
+    """
+    Worker job: generate budgets that were added to BUDGETS after this dataset
+    was converted (e.g. 5M), from the stored original LAS. No re-upload needed.
+
+    Existing budget files are never rewritten. The new ones use the offset
+    already in metadata.json; if re-reading the LAS gives a different offset
+    or point count, the job stops instead of writing a budget in another frame.
+    The dataset stays viewable throughout. Never raises.
+    """
+    written: list[Path] = []
+    try:
+        metadata = read_metadata(dataset_id)
+        missing = missing_budgets(metadata or {})
+        if not missing:
+            update_metadata(dataset_id, budgetJob=None)
+            return
+        labels = ", ".join(label for _, label, _ in missing)
+
+        def job(progress: float, stage: str) -> None:
+            update_metadata(dataset_id, budgetJob={"status": "running", "progress": round(progress, 3),
+                                                   "stage": stage, "error": None})
+
+        job(0.0, f"Generating {labels} budget: reading points")
+        folder = dataset_dir(dataset_id)
+        cloud = read_las(
+            folder / "source" / SOURCE_FILES["pointcloud"],
+            on_progress=lambda f: job(0.8 * f, f"Generating {labels} budget: reading points {f:.0%}"),
+        )
+        stored_offset = np.array(metadata["offset"], dtype=np.float64)
+        offset, _, _ = compute_offset(cloud.xyz)
+        if len(cloud.xyz) != metadata["originalPointCount"] or not np.allclose(offset, stored_offset, rtol=0, atol=1e-9):
+            raise ValueError(
+                "The stored LAS no longer matches this dataset's metadata (point count or offset differs); "
+                "no new budget was written."
+            )
+
+        budgets = list(metadata["budgets"])
+        for key, label, max_points in missing:
+            job(0.8 + 0.2 * len(written) / len(missing), f"Writing {label} budget")
+            written.append(folder / "converted" / budget_file(key))
+            budgets.append(_write_budget(folder / "converted", key, label, max_points, cloud, stored_offset))
+        # Keep the BUDGETS order ("all" last).
+        order = [key for key, _, _ in BUDGETS] + ["all"]
+        budgets.sort(key=lambda b: order.index(b["key"]))
+        update_metadata(dataset_id, budgets=budgets, budgetJob=None)
+    except Exception as error:  # noqa: BLE001 - report every failure to the UI
+        for path in written:  # only files this job created
+            path.unlink(missing_ok=True)
+        update_metadata(dataset_id, budgetJob={"status": "failed", "progress": 0.0,
+                                               "stage": "Generating new budgets failed", "error": str(error)})
 
 
 def validate_poses(
@@ -214,11 +276,3 @@ def _nearest_point_distances(positions: np.ndarray, xyz: np.ndarray) -> np.ndarr
     for i, p in enumerate(positions):
         nearest[i] = np.sqrt(np.min(np.sum((points - p) ** 2, axis=1)))
     return nearest
-
-
-def _compact(n: int) -> str:
-    if n >= 1_000_000:
-        return f"{n / 1_000_000:.1f}".rstrip("0").rstrip(".") + "M"
-    if n >= 1_000:
-        return f"{round(n / 1_000)}K"
-    return str(n)

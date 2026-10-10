@@ -23,10 +23,18 @@ export type PoseStatus = "aligned" | "suspect" | "invalid";
 export type UploadRole = "pointcloud" | "poses" | "project" | "control_points" | "gnss";
 
 export type DatasetBudget = {
-  /** "500k" | "1m" | "2m" | "all" */
+  /** "500k" | "1m" | "2m" | "5m" | "all" */
   key: string;
   label: string;
   pointCount: number;
+};
+
+/** Generating budgets added after a dataset was converted (e.g. 5M); the dataset stays viewable. */
+export type BudgetJob = {
+  status: "queued" | "running" | "failed";
+  progress: number;
+  stage: string;
+  error: string | null;
 };
 
 export type DatasetPoses = {
@@ -63,6 +71,7 @@ export type Dataset = {
   offset: Vec3 | null;
   hasRgb: boolean | null;
   budgets: DatasetBudget[];
+  budgetJob?: BudgetJob | null;
   poses: DatasetPoses | null;
   /** control_points.csv / gnss.csv: preserved for later, schema not assumed. */
   attachments: (SourceFileInfo & { role: UploadRole })[];
@@ -101,6 +110,7 @@ export const BUILTIN_DATASET: Dataset = {
     { key: "500k", label: "500K", pointCount: 500_000 },
     { key: "1m", label: "1M", pointCount: 1_000_000 },
     { key: "2m", label: "2M", pointCount: 2_000_000 },
+    { key: "5m", label: "5M", pointCount: 5_000_000 },
   ],
   poses: {
     status: "aligned",
@@ -125,7 +135,7 @@ export function posesUrl(dataset: Dataset): string {
   return dataset.origin === "builtin" ? "/data/poses.csv" : `${API_URL}/datasets/${dataset.id}/poses`;
 }
 
-const NOMINAL_POINTS: Record<string, number> = { "500k": 5e5, "1m": 1e6, "2m": 2e6, all: Infinity };
+const NOMINAL_POINTS: Record<string, number> = { "500k": 5e5, "1m": 1e6, "2m": 2e6, "5m": 5e6, all: Infinity };
 
 /**
  * The budget to show for a preferred budget key. Same key if the dataset has
@@ -143,7 +153,7 @@ export function pickBudget(budgets: DatasetBudget[], preferredKey: string): Data
 // ---------------------------------------------------------------------------
 // Backend API
 
-async function errorMessage(response: Response): Promise<string> {
+export async function errorMessage(response: Response): Promise<string> {
   try {
     const body = await response.json();
     if (typeof body.detail === "string") return body.detail;

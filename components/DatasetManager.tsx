@@ -2,70 +2,311 @@
 
 import { useState, type FormEvent } from "react";
 import { deleteDataset, uploadDataset, type Dataset } from "@/lib/datasets";
+import {
+  captureOfDataset,
+  capturesOfProperty,
+  catalogApi,
+  lidarDatasetIds,
+  type Capture,
+  type Catalog,
+} from "@/lib/catalog";
 import { describePlan, planImport, type ImportCandidate, type ImportRole } from "@/lib/importPlan";
 
 type DatasetManagerProps = {
   datasets: Dataset[];
+  catalog: Catalog;
+  /** Every catalog change returns the whole new catalog. */
+  onCatalogChange: (catalog: Catalog) => void;
+  /** Set when the backend is reachable but has no catalog endpoints (started with older code). */
+  catalogError: string | null;
+  /** The dataset being viewed. */
   selected: Dataset;
   onSelect: (id: string) => void;
   /** Set when the local backend can't be reached. */
   backendError: string | null;
-  /** Re-read the dataset list (after an import or delete). */
+  /** Re-read the dataset list and catalog (after an import or delete). */
   onChanged: () => Promise<void>;
 };
 
+/** Value of the property picker for "datasets that are in no capture". */
+const UNASSIGNED = "";
+
 /**
- * Collapsible "Datasets" section: pick a dataset, see its metadata and
- * conversion status, delete it, or import a new one.
+ * Collapsible "Properties" section: Property -> Capture -> Dataset.
  *
- * Importing uploads the files to the local backend, which converts them in a
+ * Pick a property (or "Unassigned datasets"), one of its captures, and the
+ * capture's dataset to view. Properties and captures only reference datasets
+ * (lib/catalog.ts): creating, renaming or deleting them never touches dataset
+ * files. Only "Delete dataset" removes files.
+ *
+ * Importing uploads files to the local backend, which converts them in a
  * worker process; the page polls the dataset list to show progress.
  */
-export function DatasetManager({ datasets, selected, onSelect, backendError, onChanged }: DatasetManagerProps) {
+export function DatasetManager({
+  datasets,
+  catalog,
+  onCatalogChange,
+  catalogError,
+  selected,
+  onSelect,
+  backendError,
+  onChanged,
+}: DatasetManagerProps) {
   const [importing, setImporting] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
+  // null = follow the viewed dataset (e.g. on first load).
+  const [propertyChoice, setPropertyChoice] = useState<string | null>(null);
+  const [captureChoice, setCaptureChoice] = useState<string | null>(null);
 
-  async function remove() {
-    if (!window.confirm(`Delete "${selected.name}"? Its uploaded and converted files will be removed.`)) return;
+  const selectedCapture = captureOfDataset(catalog, selected.id);
+  const propertyId = propertyChoice ?? selectedCapture?.propertyId ?? UNASSIGNED;
+  const property = catalog.properties.find((p) => p.id === propertyId) ?? null;
+  const captures = property ? capturesOfProperty(catalog, property.id) : [];
+  const capture =
+    captures.find((c) => c.id === (captureChoice ?? selectedCapture?.id)) ?? captures[0] ?? null;
+
+  const byId = new Map(datasets.map((d) => [d.id, d]));
+  const datasetsOf = (c: Capture) => lidarDatasetIds(c).flatMap((id) => byId.get(id) ?? []);
+  const unassigned = datasets.filter((d) => !captureOfDataset(catalog, d.id));
+  // The datasets offered in the Dataset picker.
+  const listed = property ? (capture ? datasetsOf(capture) : []) : unassigned;
+  const viewingListed = listed.some((d) => d.id === selected.id);
+
+  /** Run a catalog/API action; show its error in the panel instead of throwing. */
+  async function run(action: () => Promise<void>) {
     try {
-      await deleteDataset(selected.id);
+      await action();
       setActionError(null);
-      await onChanged();
     } catch (err) {
       setActionError((err as Error).message);
     }
   }
 
+  function chooseProperty(id: string) {
+    setPropertyChoice(id);
+    setCaptureChoice(null);
+    const first = id === UNASSIGNED ? null : capturesOfProperty(catalog, id)[0];
+    const firstDataset = first ? datasetsOf(first)[0] : unassigned[0];
+    if (firstDataset) onSelect(firstDataset.id);
+  }
+
+  function chooseCapture(id: string) {
+    setCaptureChoice(id);
+    const chosen = captures.find((c) => c.id === id);
+    const firstDataset = chosen ? datasetsOf(chosen)[0] : undefined;
+    if (firstDataset) onSelect(firstDataset.id);
+  }
+
+  const ask = (question: string, current = "") => window.prompt(question, current)?.trim() || null;
+
+  const newProperty = () =>
+    run(async () => {
+      const name = ask("Name of the new property (a real-world place, e.g. Hawaii Resort):");
+      if (!name) return;
+      const next = await catalogApi.createProperty(name);
+      onCatalogChange(next);
+      setPropertyChoice(next.properties.at(-1)!.id);
+      setCaptureChoice(null);
+    });
+
+  const renameProperty = () =>
+    run(async () => {
+      const name = property && ask("New name for this property:", property.name);
+      if (property && name) onCatalogChange(await catalogApi.renameProperty(property.id, name));
+    });
+
+  const deleteProperty = () =>
+    run(async () => {
+      if (!property) return;
+      const datasetCount = captures.reduce((n, c) => n + lidarDatasetIds(c).length, 0);
+      const ok = window.confirm(
+        `Delete property "${property.name}" and its ${captures.length} capture(s)?\n\n` +
+          `No files are deleted: its ${datasetCount} dataset(s) stay available under "Unassigned datasets".`,
+      );
+      if (!ok) return;
+      onCatalogChange(await catalogApi.deleteProperty(property.id));
+      setPropertyChoice(UNASSIGNED);
+      setCaptureChoice(null);
+    });
+
+  const newCapture = () =>
+    run(async () => {
+      const name = property && ask(`Name of the new capture at ${property.name} (e.g. Reception Capture):`);
+      if (!property || !name) return;
+      const next = await catalogApi.createCapture(property.id, name);
+      onCatalogChange(next);
+      setCaptureChoice(next.captures.at(-1)!.id);
+    });
+
+  const renameCapture = () =>
+    run(async () => {
+      const name = capture && ask("New name for this capture:", capture.name);
+      if (capture && name) onCatalogChange(await catalogApi.renameCapture(capture.id, name));
+    });
+
+  const deleteCapture = () =>
+    run(async () => {
+      if (!capture) return;
+      const ok = window.confirm(
+        `Delete capture "${capture.name}"?\n\nNo files are deleted: its ${lidarDatasetIds(capture).length} ` +
+          `dataset(s) stay available under "Unassigned datasets".`,
+      );
+      if (!ok) return;
+      onCatalogChange(await catalogApi.deleteCapture(capture.id));
+      setCaptureChoice(null);
+    });
+
+  const addToCapture = (datasetId: string) =>
+    run(async () => {
+      if (!capture || !datasetId) return;
+      onCatalogChange(await catalogApi.assignDataset(capture.id, datasetId));
+      setCaptureChoice(capture.id);
+      onSelect(datasetId);
+    });
+
+  const removeFromCapture = () =>
+    run(async () => {
+      if (capture) onCatalogChange(await catalogApi.unassignDataset(capture.id, selected.id));
+    });
+
+  const removeDataset = () =>
+    run(async () => {
+      const inCapture = selectedCapture
+        ? `\n\nIt is part of capture "${selectedCapture.name}" and will be removed from it.`
+        : "";
+      const ok = window.confirm(
+        `Delete dataset "${selected.name}"? Its uploaded and converted files will be permanently removed.${inCapture}`,
+      );
+      if (!ok) return;
+      await deleteDataset(selected.id);
+      await onChanged();
+    });
+
+  const offline = !!backendError;
+  // Property/capture editing needs the catalog endpoints as well.
+  const noCatalog = offline || !!catalogError;
+  const busy = (d: Dataset) =>
+    d.status === "queued" ||
+    d.status === "converting" ||
+    d.budgetJob?.status === "queued" ||
+    d.budgetJob?.status === "running";
+
   return (
     <details className="section datasets" open>
-      <summary>Datasets</summary>
+      <summary>Properties</summary>
 
-      <select value={selected.id} onChange={(e) => onSelect(e.target.value)}>
-        {datasets.map((d) => (
-          <option key={d.id} value={d.id}>
-            {d.name}
-            {d.status !== "ready" && ` (${statusText(d)})`}
-          </option>
-        ))}
-      </select>
+      <label className="stacked">
+        Property
+        <select value={propertyId} onChange={(e) => chooseProperty(e.target.value)}>
+          <option value={UNASSIGNED}>Unassigned datasets ({unassigned.length})</option>
+          {catalog.properties.map((p) => (
+            <option key={p.id} value={p.id}>
+              {p.name} ({plural(capturesOfProperty(catalog, p.id).length, "capture")})
+            </option>
+          ))}
+        </select>
+      </label>
+      <div className="mini-actions">
+        <button onClick={newProperty} disabled={noCatalog}>New</button>
+        <button onClick={renameProperty} disabled={noCatalog || !property}>Rename</button>
+        <button onClick={deleteProperty} disabled={noCatalog || !property}>Delete</button>
+      </div>
 
+      {property && (
+        <>
+          <label className="stacked">
+            Capture
+            {captures.length > 0 ? (
+              <select value={capture?.id} onChange={(e) => chooseCapture(e.target.value)}>
+                {captures.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.name} ({plural(lidarDatasetIds(c).length, "dataset")})
+                  </option>
+                ))}
+              </select>
+            ) : (
+              <span className="note">No captures yet. Add one for each scanning session.</span>
+            )}
+          </label>
+          <div className="mini-actions">
+            <button onClick={newCapture} disabled={noCatalog}>Add</button>
+            <button onClick={renameCapture} disabled={noCatalog || !capture}>Rename</button>
+            <button onClick={deleteCapture} disabled={noCatalog || !capture}>Delete</button>
+          </div>
+        </>
+      )}
+
+      {listed.length > 0 && (
+        <label className="stacked">
+          Dataset
+          <select value={viewingListed ? selected.id : ""} onChange={(e) => onSelect(e.target.value)}>
+            {!viewingListed && <option value="">Choose…</option>}
+            {listed.map((d) => (
+              <option key={d.id} value={d.id}>
+                {d.name}
+                {d.status !== "ready" && ` (${statusText(d)})`}
+              </option>
+            ))}
+          </select>
+        </label>
+      )}
+      {capture && listed.length === 0 && <div className="note">No datasets in this capture yet.</div>}
+
+      {capture && (
+        <select className="assign" value="" disabled={noCatalog} onChange={(e) => addToCapture(e.target.value)}>
+          <option value="">Add a dataset to this capture…</option>
+          {datasets
+            .filter((d) => !listed.includes(d))
+            .map((d) => {
+              const other = captureOfDataset(catalog, d.id);
+              return (
+                <option key={d.id} value={d.id}>
+                  {d.name}
+                  {other ? ` (moves from ${other.name})` : ""}
+                </option>
+              );
+            })}
+        </select>
+      )}
+
+      {!viewingListed && <div className="note">Viewing {selected.name} (not in this list).</div>}
       <DatasetInfo dataset={selected} />
+      {capture && (
+        <div className="note">
+          Each capture keeps its own coordinate frame; captures are not aligned to each other yet.
+        </div>
+      )}
 
       <div className="dataset-actions">
-        <button onClick={() => setImporting((open) => !open)} disabled={!!backendError}>
-          {importing ? "Cancel import" : "Import dataset…"}
+        <button onClick={() => setImporting((open) => !open)} disabled={offline} title="Import a new dataset">
+          {importing ? "Cancel import" : "Import…"}
         </button>
+        {capture && viewingListed && (
+          <button
+            onClick={removeFromCapture}
+            disabled={noCatalog}
+            title="Remove this dataset from the capture; the dataset and its files are kept"
+          >
+            Unassign
+          </button>
+        )}
         {selected.origin === "local-backend" && (
-          <button onClick={remove} disabled={selected.status === "queued" || selected.status === "converting"}>
-            Delete
+          <button
+            onClick={removeDataset}
+            disabled={busy(selected)}
+            title="Delete this dataset and permanently remove its uploaded and converted files"
+          >
+            Delete files
           </button>
         )}
       </div>
 
       {importing && (
         <ImportForm
-          onImported={async (dataset) => {
+          capture={capture}
+          onImported={async (dataset, addTo) => {
             setImporting(false);
+            if (addTo) onCatalogChange(await catalogApi.assignDataset(addTo.id, dataset.id));
             await onChanged();
             onSelect(dataset.id);
           }}
@@ -74,8 +315,13 @@ export function DatasetManager({ datasets, selected, onSelect, backendError, onC
 
       {actionError && <div className="error">{actionError}</div>}
       {backendError && <div className="note">{backendError}</div>}
+      {!backendError && catalogError && <div className="status">{catalogError}</div>}
     </details>
   );
+}
+
+function plural(n: number, word: string): string {
+  return `${n} ${word}${n === 1 ? "" : "s"}`;
 }
 
 function statusText(dataset: Dataset): string {
@@ -109,6 +355,17 @@ function DatasetInfo({ dataset }: { dataset: Dataset }) {
         </div>
       )}
       {dataset.budgets.length > 0 && <div>Budgets: {dataset.budgets.map((b) => b.label).join(", ")}</div>}
+      {dataset.budgetJob &&
+        (dataset.budgetJob.status === "failed" ? (
+          <div className="error">
+            {dataset.budgetJob.stage}: {dataset.budgetJob.error}
+          </div>
+        ) : (
+          <div className="status">
+            {dataset.budgetJob.stage} (the other budgets stay usable)
+            <progress value={dataset.budgetJob.progress} max={1} />
+          </div>
+        ))}
       <div>
         Poses:{" "}
         {poses ? `${poses.count.toLocaleString()} (${poses.status})` : dataset.source.poses ? "pending" : "none"}
@@ -160,8 +417,16 @@ const ROLE_LABELS: Record<ImportRole, string> = {
  * Pick a folder or individual files, review what was detected, fix any
  * ambiguous roles, then upload. Nothing is sent before "Upload and convert".
  */
-function ImportForm({ onImported }: { onImported: (dataset: Dataset) => Promise<void> }) {
+function ImportForm({
+  capture,
+  onImported,
+}: {
+  /** The capture selected in the panel, offered as the new dataset's capture. */
+  capture: Capture | null;
+  onImported: (dataset: Dataset, addTo: Capture | null) => Promise<void>;
+}) {
   const [name, setName] = useState("");
+  const [addToCapture, setAddToCapture] = useState(true);
   const [candidates, setCandidates] = useState<ImportCandidate[] | null>(null);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [uploadProgress, setUploadProgress] = useState<number | null>(null);
@@ -198,7 +463,7 @@ function ImportForm({ onImported }: { onImported: (dataset: Dataset) => Promise<
     setUploadProgress(0);
     try {
       const dataset = await uploadDataset(form, setUploadProgress);
-      await onImported(dataset);
+      await onImported(dataset, capture && addToCapture ? capture : null);
     } catch (err) {
       setUploadError((err as Error).message);
     } finally {
@@ -274,6 +539,17 @@ function ImportForm({ onImported }: { onImported: (dataset: Dataset) => Promise<
             Name
             <input type="text" value={name} maxLength={80} onChange={(e) => setName(e.target.value)} />
           </label>
+          {capture && (
+            <label>
+              <input
+                type="checkbox"
+                checked={addToCapture}
+                disabled={uploading}
+                onChange={(e) => setAddToCapture(e.target.checked)}
+              />
+              Add to capture &quot;{capture.name}&quot;
+            </label>
+          )}
           <div className="note">
             Control points and GNSS files are stored for later analysis; their columns aren&apos;t interpreted yet.
           </div>

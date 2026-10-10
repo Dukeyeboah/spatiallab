@@ -196,7 +196,31 @@ body {
 
 .controls .dataset-actions {
   display: flex;
+  flex-wrap: wrap;
   gap: 4px;
+}
+
+/* Small New / Rename / Delete row under the property and capture pickers. */
+.controls .mini-actions {
+  display: flex;
+  gap: 4px;
+}
+
+.controls .mini-actions button {
+  flex: 1;
+  padding: 2px 0;
+  border: 1px solid #444;
+  border-radius: 4px;
+  background: #1c1c1c;
+  color: #bbb;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.controls .mini-actions button:disabled,
+.controls .dataset-actions button:disabled {
+  opacity: 0.45;
+  cursor: default;
 }
 
 .controls .dataset-actions button,

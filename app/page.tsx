@@ -15,6 +15,7 @@ import {
   posesUrl,
   type Dataset,
 } from "@/lib/datasets";
+import { EMPTY_CATALOG, catalogApi, type Catalog } from "@/lib/catalog";
 import { defaultViewSettings, withDefaults, type ViewSettings } from "@/lib/viewSettings";
 
 /** How often the dataset list is refreshed while a conversion is running. */
@@ -24,6 +25,9 @@ export default function Home() {
   // Datasets: the built-in scan + whatever the local backend has.
   const [backendDatasets, setBackendDatasets] = useState<Dataset[]>([]);
   const [backendError, setBackendError] = useState<string | null>(null);
+  // Properties and captures that organise the datasets (empty without the backend).
+  const [catalog, setCatalog] = useState<Catalog>(EMPTY_CATALOG);
+  const [catalogError, setCatalogError] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState(BUILTIN_DATASET.id);
   const datasets = [BUILTIN_DATASET, ...backendDatasets];
   // Falls back to the built-in scan if the selected dataset was deleted.
@@ -34,10 +38,17 @@ export default function Home() {
   const [budgetKey, setBudgetKey] = useState("500k");
   const budget = pickBudget(dataset.budgets, budgetKey);
   const cloudUrl = dataset.status === "ready" && budget ? pointsUrl(dataset, budget.key) : null;
+  const budgetLabel = budget?.label ?? "";
 
   // Loaded data is tagged with its dataset, so a scene never mixes the old
   // dataset's data with the new dataset's id while the new one loads.
-  const [loaded, setLoaded] = useState<{ datasetId: string; data: PointCloudData } | null>(null);
+  const [loaded, setLoaded] = useState<{
+    datasetId: string;
+    data: PointCloudData;
+    /** Download + parse time and size of the budget file, shown in the panel. */
+    seconds: number;
+    bytes: number;
+  } | null>(null);
   const [loadedPoses, setLoadedPoses] = useState<{ datasetId: string; poses: PoseData } | null>(null);
   const data = loaded?.datasetId === dataset.id ? loaded.data : null;
   const poses = loadedPoses?.datasetId === dataset.id ? loadedPoses.poses : null;
@@ -59,6 +70,13 @@ export default function Home() {
     try {
       setBackendDatasets(await fetchDatasets());
       setBackendError(null);
+      try {
+        setCatalog(await catalogApi.fetch());
+        setCatalogError(null);
+      } catch {
+        // An older backend (started before properties existed): datasets still work.
+        setCatalogError("This backend has no properties support yet: restart it to organise datasets.");
+      }
     } catch {
       setBackendError(
         `Local backend not reachable at ${API_URL}. Only the built-in dataset is available ` +
@@ -67,8 +85,15 @@ export default function Home() {
     }
   }, []);
 
-  // Load the dataset list once, then poll while anything is converting.
-  const converting = backendDatasets.some((d) => d.status === "queued" || d.status === "converting");
+  // Load the dataset list once, then poll while anything is converting or a
+  // new budget (e.g. 5M) is being generated for an existing dataset.
+  const converting = backendDatasets.some(
+    (d) =>
+      d.status === "queued" ||
+      d.status === "converting" ||
+      d.budgetJob?.status === "queued" ||
+      d.budgetJob?.status === "running",
+  );
   useEffect(() => {
     refreshDatasets();
     if (!converting) return;
@@ -86,22 +111,29 @@ export default function Home() {
     if (!cloudUrl) return;
 
     const controller = new AbortController();
-    setStatus("Loading points…");
+    setStatus(`Loading ${budgetLabel} points…`);
+    const started = performance.now();
 
     loadPointCloud(cloudUrl, controller.signal)
       .then((loadedData) => {
-        setLoaded({ datasetId, data: loadedData });
+        setLoaded({
+          datasetId,
+          data: loadedData,
+          seconds: (performance.now() - started) / 1000,
+          bytes: loadedData.positions.byteLength + loadedData.colors.byteLength + 4,
+        });
         setStatus(null);
       })
       .catch((err: Error) => {
         // Switching mid-download cancels the old request; that's not an error.
         if (controller.signal.aborted) return;
-        setError(err.message);
+        // e.g. the backend stopped, or the browser couldn't allocate memory for a large budget.
+        setError(`Couldn't load the ${budgetLabel} budget: ${err.message}. Try a smaller budget.`);
         setStatus(null);
       });
 
     return () => controller.abort();
-  }, [cloudUrl, datasetId]);
+  }, [cloudUrl, datasetId, budgetLabel]);
 
   // Poses: only if the dataset has poses that passed the frame checks.
   const posesSource =
@@ -146,6 +178,9 @@ export default function Home() {
         datasetPanel={
           <DatasetManager
             datasets={datasets}
+            catalog={catalog}
+            onCatalogChange={setCatalog}
+            catalogError={catalogError}
             selected={dataset}
             onSelect={setSelectedId}
             backendError={backendError}
@@ -156,6 +191,7 @@ export default function Home() {
         budget={budget}
         onBudgetChange={setBudgetKey}
         pointCount={data?.count ?? 0}
+        loadInfo={data && loaded ? `${(loaded.bytes / 1e6).toFixed(1)} MB in ${loaded.seconds.toFixed(1)} s` : null}
         poseCount={poses?.count ?? 0}
         poseError={poseError}
         poseNote={poseNote}

@@ -37,6 +37,8 @@ type ControlsProps = {
   budget: DatasetBudget | null;
   onBudgetChange: (budgetKey: string) => void;
   pointCount: number;
+  /** Size and load time of the current budget, e.g. "75.0 MB in 1.8 s". */
+  loadInfo: string | null;
   poseCount: number;
   poseError: string | null;
   /** Why the dataset's poses aren't shown (none uploaded, failed checks). */
@@ -59,6 +61,7 @@ export function Controls({
   budget,
   onBudgetChange,
   pointCount,
+  loadInfo,
   poseCount,
   poseError,
   poseNote,
@@ -289,6 +292,7 @@ export function Controls({
       <div>
         <div>Budget: {budget?.label ?? "—"}</div>
         <div>Loaded points: {pointCount.toLocaleString()}</div>
+        {loadInfo && <div className="note">Loaded {loadInfo}</div>}
         <div>Point size: {settings.pointSize}px</div>
         <div>Poses loaded: {poseCount.toLocaleString()}</div>
       </div>

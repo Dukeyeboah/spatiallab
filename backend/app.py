@@ -12,8 +12,20 @@ Endpoints (all JSON unless noted):
     GET    /datasets/{id}/points/{budget}    converted point budget (binary, see lidar_conversion.py)
     GET    /datasets/{id}/poses              validated, header-less poses CSV (text)
 
+Properties and captures (catalog.py; every change returns the whole catalog):
+    GET    /catalog
+    POST   /properties                       {"name"} -> new property
+    PATCH  /properties/{id}                  {"name"} rename
+    DELETE /properties/{id}                  property + its captures (datasets become unassigned)
+    POST   /properties/{id}/captures         {"name"} -> new capture
+    PATCH  /captures/{id}                    {"name"} rename
+    DELETE /captures/{id}                    capture only (datasets become unassigned)
+    POST   /captures/{id}/datasets           {"datasetId"} assign (moves it from another capture)
+    DELETE /captures/{id}/datasets/{dsId}    unassign
+
 Only converted assets are served; original uploads never leave spatial-data/.
-Conversions run one at a time in a separate worker process.
+Conversions run one at a time in a separate worker process; budgets added
+after a dataset was converted (e.g. 5M) are generated there at startup.
 """
 
 import os
@@ -26,9 +38,12 @@ from typing import Annotated, Optional
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
+from pydantic import BaseModel
 
+import catalog
 import storage
-from converter import NORMALISED_POSES_FILE, convert_dataset
+from catalog import CatalogError
+from converter import NORMALISED_POSES_FILE, backfill_budgets, convert_dataset
 from uploads import (
     UploadError,
     infer_project_metadata,
@@ -64,6 +79,14 @@ async def lifespan(_: FastAPI):
         if metadata.get("status") in ("queued", "converting"):
             storage.update_metadata(metadata["id"], status="queued", progress=0.0, stage="Restarted after a backend restart")
             start_conversion(metadata["id"])
+        elif missing := storage.missing_budgets(metadata):
+            # A budget was added to BUDGETS after this dataset was converted:
+            # generate it from the stored LAS (queued behind other jobs).
+            labels = ", ".join(label for _, label, _ in missing)
+            storage.update_metadata(metadata["id"], budgetJob={
+                "status": "queued", "progress": 0.0, "stage": f"Waiting to generate {labels} budget", "error": None})
+            assert executor is not None
+            executor.submit(backfill_budgets, metadata["id"])
     yield
     executor.shutdown(cancel_futures=True)
 
@@ -72,7 +95,7 @@ app = FastAPI(title="Spatial Lab datasets", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
-    allow_methods=["GET", "POST", "DELETE"],
+    allow_methods=["GET", "POST", "PATCH", "DELETE"],
     allow_headers=["*"],
 )
 
@@ -175,7 +198,12 @@ def delete_dataset(dataset_id: str) -> None:
     metadata = get_metadata_or_404(dataset_id)
     if metadata.get("status") in ("queued", "converting"):
         raise HTTPException(409, "This dataset is still converting. Delete it when conversion has finished.")
+    if (metadata.get("budgetJob") or {}).get("status") in ("queued", "running"):
+        raise HTTPException(409, "A new point budget is being generated for this dataset. Delete it when that has finished.")
     storage.delete_dataset(dataset_id)
+    # Drop the capture's reference too (the files are gone).
+    with catalog.editing() as current:
+        catalog.unassign_dataset(current, dataset_id)
 
 
 @app.get("/datasets/{dataset_id}/points/{budget_key}")
@@ -196,3 +224,85 @@ def get_poses(dataset_id: str) -> FileResponse:
     if not poses or poses.get("status") == "invalid" or not path.is_file():
         raise HTTPException(404, "No valid poses for this dataset.")
     return FileResponse(path, media_type="text/csv")
+
+
+# ---------------------------------------------------------------------------
+# Properties and captures (see catalog.py). Only catalog.json changes here;
+# no dataset file is ever created, moved or deleted by these endpoints.
+
+
+class NameBody(BaseModel):
+    name: str
+
+
+class DatasetRefBody(BaseModel):
+    datasetId: str
+
+
+def catalog_change(change) -> dict:
+    """Apply `change(catalog)` and return the updated catalog; CatalogError -> HTTP error."""
+    try:
+        with catalog.editing() as current:
+            change(current)
+    except CatalogError as error:
+        raise HTTPException(error.status, str(error)) from error
+    return catalog.load()
+
+
+@app.get("/catalog")
+def get_catalog() -> dict:
+    return catalog.load()
+
+
+@app.post("/properties", status_code=201)
+def create_property(body: NameBody) -> dict:
+    return catalog_change(lambda c: catalog.add_property(c, body.name))
+
+
+@app.patch("/properties/{property_id}")
+def rename_property(property_id: str, body: NameBody) -> dict:
+    def rename(c: dict) -> None:
+        catalog.find_property(c, property_id)["name"] = catalog.clean_name(body.name)
+    return catalog_change(rename)
+
+
+@app.delete("/properties/{property_id}")
+def delete_property(property_id: str) -> dict:
+    return catalog_change(lambda c: catalog.delete_property(c, property_id))
+
+
+@app.post("/properties/{property_id}/captures", status_code=201)
+def create_capture(property_id: str, body: NameBody) -> dict:
+    return catalog_change(lambda c: catalog.add_capture(c, property_id, body.name))
+
+
+@app.patch("/captures/{capture_id}")
+def rename_capture(capture_id: str, body: NameBody) -> dict:
+    def rename(c: dict) -> None:
+        catalog.find_capture(c, capture_id)["name"] = catalog.clean_name(body.name)
+    return catalog_change(rename)
+
+
+@app.delete("/captures/{capture_id}")
+def delete_capture(capture_id: str) -> dict:
+    return catalog_change(lambda c: catalog.delete_capture(c, capture_id))
+
+
+@app.post("/captures/{capture_id}/datasets")
+def assign_dataset(capture_id: str, body: DatasetRefBody) -> dict:
+    dataset_id = body.datasetId
+    if not catalog.is_dataset_reference(dataset_id):
+        raise HTTPException(400, "Invalid dataset id.")
+    if dataset_id != catalog.BUILTIN_DATASET_ID:
+        get_metadata_or_404(dataset_id)  # must exist
+    return catalog_change(lambda c: catalog.assign_dataset(c, capture_id, dataset_id))
+
+
+@app.delete("/captures/{capture_id}/datasets/{dataset_id}")
+def unassign_dataset(capture_id: str, dataset_id: str) -> dict:
+    def unassign(c: dict) -> None:
+        capture = catalog.find_capture(c, capture_id)
+        if not any(r.get("datasetId") == dataset_id for r in capture["representations"]):
+            raise CatalogError("That dataset is not in this capture.", 404)
+        catalog.unassign_dataset(c, dataset_id)
+    return catalog_change(unassign)
