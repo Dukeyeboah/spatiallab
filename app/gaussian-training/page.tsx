@@ -1,5 +1,6 @@
 "use client";
 
+import dynamic from "next/dynamic";
 import { useEffect, useState } from "react";
 import { PhotoGrid } from "@/components/training/PhotoGrid";
 import { TrainingPanel } from "@/components/training/TrainingPanel";
@@ -9,15 +10,23 @@ import {
   trainingApi,
   uploadPhotos,
   type Environment,
+  type PosePreview,
   type ProjectSummary,
   type TrainingProject,
 } from "@/lib/training";
 
+// WebGL only in the browser, and only loaded once someone opens the 3D view.
+const PoseScene = dynamic(() => import("@/components/training/PoseScene").then((m) => m.PoseScene), { ssr: false });
+
+const POLL_MS = 2000;
+
 /**
  * Lab 10A: photographs for Gaussian training. The backend stores and checks
- * them; this page lists, previews and removes them, and shows the planned
- * training stages and what this machine can do. No R3F here: nothing 3D exists
- * until camera poses are estimated (Lab 10B).
+ * them; this page lists, previews and removes them, and shows the training
+ * stages and what this machine can do.
+ * Lab 10B (step 1): camera pose estimation with COLMAP as a background job;
+ * the page polls its progress and shows the result as photos (placed or not)
+ * or in 3D (sparse points and solved cameras).
  */
 export default function GaussianTrainingPage() {
   const [projects, setProjects] = useState<ProjectSummary[]>([]);
@@ -27,6 +36,10 @@ export default function GaussianTrainingPage() {
   const [lastUpload, setLastUpload] = useState<{ accepted: number; refused: number } | null>(null);
   const [skipped, setSkipped] = useState<{ filename: string; reason: string }[]>([]);
   const [onlyWarnings, setOnlyWarnings] = useState(false);
+  const [onlyUnplaced, setOnlyUnplaced] = useState(false);
+  const [view, setView] = useState<"photos" | "poses">("photos");
+  /** Tagged with the job it belongs to, so a re-run never shows the previous result. */
+  const [preview, setPreview] = useState<{ key: string; data: PosePreview } | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -51,7 +64,34 @@ export default function GaussianTrainingPage() {
     setSkipped([]);
     setLastUpload(null);
     setOnlyWarnings(false);
+    setOnlyUnplaced(false);
+    setView("photos");
   }
+
+  const job = project?.poses ?? null;
+  const jobActive = job?.status === "queued" || job?.status === "running";
+  const previewKey = project && job?.status === "done" ? `${project.id}:${job.finishedAt}` : null;
+
+  // While COLMAP runs, refresh the project (its job carries stage and progress). Keyed on the id and
+  // the active flag only: each refresh replaces `project`, which must not restart the timer.
+  useEffect(() => {
+    if (!project || !jobActive) return;
+    const timer = window.setInterval(() => {
+      trainingApi
+        .get(project.id)
+        .then(setProject)
+        .catch(() => {});
+    }, POLL_MS);
+    return () => window.clearInterval(timer);
+  }, [project?.id, jobActive]);
+
+  // The 3D data (about 1 MB) is fetched once per finished job, when the 3D view is opened.
+  useEffect(() => {
+    if (view !== "poses" || !project || !previewKey || preview?.key === previewKey) return;
+    run(async () => setPreview({ key: previewKey, data: await trainingApi.posePreview(project.id) }));
+  }, [view, previewKey]);
+
+  const showPoses = view === "poses" && !!project && preview?.key === previewKey && !!preview;
 
   useEffect(() => {
     run(async () => {
@@ -67,11 +107,19 @@ export default function GaussianTrainingPage() {
 
   return (
     <>
-      {project && (
+      {showPoses && project && preview && (
+        <PoseScene
+          projectId={project.id}
+          preview={preview.data}
+          unplaced={job?.summary?.notRegistered.length ?? 0}
+        />
+      )}
+      {project && !showPoses && (
         <PhotoGrid
           project={project}
           onlyWarnings={onlyWarnings}
-          disabled={busy || progress !== null}
+          onlyUnplaced={onlyUnplaced}
+          disabled={busy || progress !== null || jobActive}
           onRemove={(imageId, filename) => {
             if (!window.confirm(`Remove "${filename}" from this project? The stored copy is deleted.`)) return;
             run(async () => {
@@ -135,6 +183,21 @@ export default function GaussianTrainingPage() {
         onlyWarnings={onlyWarnings}
         onOnlyWarnings={setOnlyWarnings}
         environment={environment}
+        onStartPoses={() => {
+          if (!project) return;
+          setView("photos");
+          run(async () => setProject(await trainingApi.startPoses(project.id)));
+        }}
+        onCancelPoses={() => {
+          if (project) run(async () => setProject(await trainingApi.cancelPoses(project.id)));
+        }}
+        view={view}
+        onView={(next) => {
+          setView(next);
+          setOnlyUnplaced(false);
+        }}
+        onlyUnplaced={onlyUnplaced}
+        onOnlyUnplaced={setOnlyUnplaced}
         busy={busy}
         error={error}
       />

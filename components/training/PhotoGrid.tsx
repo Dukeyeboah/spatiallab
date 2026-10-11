@@ -6,14 +6,20 @@ import { thumbnailUrl, WARNING_LABELS, type TrainingProject } from "@/lib/traini
 type PhotoGridProps = {
   project: TrainingProject;
   onlyWarnings: boolean;
+  onlyUnplaced: boolean;
   onRemove: (imageId: string, filename: string) => void;
   disabled: boolean;
 };
 
-/** Thumbnails (served by the backend, 320 px) with each photo's facts and warnings. */
-export function PhotoGrid({ project, onlyWarnings, onRemove, disabled }: PhotoGridProps) {
+/** Thumbnails (served by the backend, 320 px) with each photo's facts, warnings and, once estimated, its pose status. */
+export function PhotoGrid({ project, onlyWarnings, onlyUnplaced, onRemove, disabled }: PhotoGridProps) {
   const warnings = project.analysis.warnings;
-  const images = onlyWarnings ? project.images.filter((i) => warnings[i.id]?.length) : project.images;
+  const job = project.poses?.status === "done" ? project.poses : null;
+  const unplaced = new Set(job?.summary?.notRegistered ?? []);
+  const inJob = new Set(job?.imageIds ?? []);
+  const images = project.images
+    .filter((i) => !onlyWarnings || warnings[i.id]?.length)
+    .filter((i) => !onlyUnplaced || unplaced.has(i.id));
 
   if (project.images.length === 0) {
     return (
@@ -48,6 +54,14 @@ export function PhotoGrid({ project, onlyWarnings, onRemove, disabled }: PhotoGr
                     {n}
                   </div>
                 ))}
+                {job &&
+                  (!inJob.has(image.id) ? (
+                    <div className="photo-facts">Added after poses were estimated</div>
+                  ) : unplaced.has(image.id) ? (
+                    <div className="photo-unplaced">Not placed by COLMAP</div>
+                  ) : (
+                    <div className="photo-placed">Placed · {job.summary?.observations[image.id] ?? 0} points</div>
+                  ))}
                 <button
                   onClick={() => onRemove(image.id, image.filename)}
                   disabled={disabled}

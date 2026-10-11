@@ -7,7 +7,8 @@ trained Gaussian scenes:
         project.json            name, images (validated facts), rejected files, planned stages
         source/<img_id>.jpg|png|heic   the photographs as uploaded (never served, never modified)
         thumbs/<img_id>.jpg     320 px previews (the only image files served)
-        work/, output/          reserved for Lab 10B (preprocessed images, COLMAP model, training, PLY/SOG)
+        work/                   Lab 10B jobs: poses.json + poses/ (training_poses.py)
+        output/                 reserved for Lab 10B training (PLY/SOG)
 
 Photographs are only inspected here. The checks (resolution, a blur
 heuristic, duplicates, dimensions) are warnings, never reasons to reject a
@@ -79,7 +80,7 @@ STAGES = [
                   "downscale to the training resolution (e.g. 1600 px), leave out the photos you removed; "
                   "optional masks for moving objects.",
         "tools": ["Pillow", "pillow-heif"],
-        "output": "work/images/",
+        "output": "work/poses/images/",
     },
     {
         "key": "poses",
@@ -87,8 +88,8 @@ STAGES = [
         "detail": "Find matching features between photos and solve every camera's position, "
                   "orientation and lens, plus a sparse point cloud. Fails or drops photos when "
                   "overlap is insufficient; this is where coverage is actually tested.",
-        "tools": ["COLMAP", "GLOMAP"],
-        "output": "work/sparse/0/ (cameras, images, points3D)",
+        "tools": ["COLMAP"],
+        "output": "work/poses/sparse/<n>/ (cameras, images, points3D)",
     },
     {
         "key": "train",
@@ -513,10 +514,28 @@ def analyse(project: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def project_view(project: dict[str, Any]) -> dict[str, Any]:
-    """What the API returns: the stored project, its analysis and the planned stages."""
+def stage_statuses(poses: Optional[dict[str, Any]]) -> dict[str, str]:
+    """Preprocessing and pose estimation run as one job (training_poses.py); the later stages are still planned."""
+    if poses is None:
+        return {}
+    status, step = poses["status"], poses.get("step")
+    if status == "queued":
+        return {"preprocess": "queued", "poses": "queued"}
+    if status == "done":
+        return {"preprocess": "done", "poses": "outdated" if poses.get("outdated") else "done"}
+    in_preprocess = step in (None, "preprocess")
+    if status == "running":
+        return {"preprocess": "running", "poses": "queued"} if in_preprocess else {"preprocess": "done", "poses": "running"}
+    # failed / cancelled: attribute it to the step it stopped in.
+    return {"preprocess": status} if in_preprocess else {"preprocess": "done", "poses": status}
+
+
+def project_view(project: dict[str, Any], poses: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+    """What the API returns: the stored project, its analysis, the pose job and the stages with their status."""
     view = {k: v for k, v in project.items() if k != "images"}
     view["images"] = [{k: v for k, v in i.items() if k != "storedAs"} for i in project["images"]]
     view["analysis"] = analyse(project)
-    view["stages"] = [{**stage, "status": "planned"} for stage in STAGES]
+    view["poses"] = poses
+    statuses = stage_statuses(poses)
+    view["stages"] = [{**stage, "status": statuses.get(stage["key"], "planned")} for stage in STAGES]
     return view

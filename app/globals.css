@@ -587,6 +587,90 @@ body {
   font-size: 10px;
 }
 
+.controls .badge.done {
+  border-color: #3a7a3a;
+  color: #8d8;
+}
+
+.controls .badge.running,
+.controls .badge.queued {
+  border-color: #4a6fa5;
+  color: #9bd;
+}
+
+.controls .badge.failed,
+.controls .badge.cancelled,
+.controls .badge.outdated {
+  border-color: #7a6020;
+  color: #fc6;
+}
+
+.controls .log-tail {
+  max-height: 140px;
+  overflow: auto;
+  margin: 0;
+  padding: 4px;
+  background: #000;
+  font-size: 9px;
+  white-space: pre-wrap;
+  color: #bbb;
+}
+
+.photo-unplaced {
+  color: #f88;
+}
+
+.photo-placed {
+  color: #8d8;
+}
+
+/* Lab 10B: sparse points and solved cameras, beside the panel. */
+.pose-area {
+  position: fixed;
+  inset: 0 0 0 388px; /* same as .photo-area */
+}
+
+.pose-overlay {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  width: 260px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px;
+  border-radius: 8px;
+  background: rgba(10, 10, 10, 0.85);
+  color: #ddd;
+  font-size: 12px;
+}
+
+.pose-overlay .note {
+  color: #999;
+  font-size: 11px;
+}
+
+.pose-overlay button {
+  align-self: flex-start;
+  padding: 3px 8px;
+  border: 1px solid #555;
+  border-radius: 4px;
+  background: #222;
+  color: #ddd;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.pose-selected {
+  margin: 0;
+}
+
+.pose-selected img {
+  display: block;
+  width: 100%;
+  border-radius: 4px;
+}
+
 .controls code {
   font-size: 10px;
 }

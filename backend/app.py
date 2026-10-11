@@ -46,6 +46,9 @@ Training projects (training.py, Lab 10A; photographs prepared for Gaussian train
     DELETE /training/{id}/images/{imageId}   remove one photo before processing
     DELETE /training/{id}/rejected           clear the list of refused files
     GET    /training/{id}/images/{imageId}/thumbnail   320 px JPEG (originals are never served)
+    POST   /training/{id}/poses              start camera pose estimation (COLMAP, worker process) -> 202
+    POST   /training/{id}/poses/cancel       stop it
+    GET    /training/{id}/poses/preview      cameras + sampled points of the result (JSON)
 
 Only converted assets are served; original uploads never leave spatial-data/.
 Conversions run one at a time in a separate worker process; budgets added
@@ -72,6 +75,7 @@ import splats
 import storage
 import training
 import training_env
+import training_poses
 from splat_bounds import robust_bounds
 from catalog import CatalogError
 from converter import NORMALISED_POSES_FILE, backfill_budgets, convert_dataset
@@ -93,6 +97,8 @@ ALLOWED_ORIGINS = os.environ.get(
 ).split(",")
 
 executor: Optional[ProcessPoolExecutor] = None
+# Pose estimation runs for minutes: its own worker, so LiDAR conversions don't wait behind it.
+training_executor: Optional[ProcessPoolExecutor] = None
 
 
 def start_conversion(dataset_id: str) -> None:
@@ -102,10 +108,14 @@ def start_conversion(dataset_id: str) -> None:
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    global executor
+    global executor, training_executor
     storage.DATASETS_DIR.mkdir(parents=True, exist_ok=True)
     # "spawn": a clean worker process (no copy of the server's state).
     executor = ProcessPoolExecutor(max_workers=1, mp_context=get_context("spawn"))
+    training_executor = ProcessPoolExecutor(max_workers=1, mp_context=get_context("spawn"))
+    # Pose jobs cut off by a restart are reported as interrupted, not silently re-run.
+    for summary in training.list_projects():
+        training_poses.recover_interrupted(summary["id"])
     # Conversions interrupted by a restart are simply run again.
     for metadata in storage.list_metadata():
         if metadata.get("status") in ("queued", "converting"):
@@ -120,6 +130,10 @@ async def lifespan(_: FastAPI):
             assert executor is not None
             executor.submit(backfill_budgets, metadata["id"])
     yield
+    # A running pose job stops its COLMAP process within a second when asked.
+    for summary in training.list_projects():
+        training_poses.request_cancel(summary["id"])
+    training_executor.shutdown(cancel_futures=True)
     executor.shutdown(cancel_futures=True)
 
 
@@ -523,7 +537,14 @@ def get_project_or_404(project_id: str) -> dict:
 
 
 def project_view(project_id: str) -> dict:
-    return training.project_view(get_project_or_404(project_id))
+    project = get_project_or_404(project_id)
+    return training.project_view(project, training_poses.view(project))
+
+
+def refuse_while_estimating(project_id: str) -> None:
+    """Photos are read by a running pose job: changing them mid-run would break or silently skew it."""
+    if training_poses.is_running(project_id):
+        raise HTTPException(409, "Camera poses are being estimated for this project. Wait for it to finish, or cancel it first.")
 
 
 @app.get("/training")
@@ -547,6 +568,7 @@ def get_training_project(project_id: str) -> dict:
 @app.delete("/training/{project_id}", status_code=204)
 def delete_training_project(project_id: str) -> None:
     get_project_or_404(project_id)
+    refuse_while_estimating(project_id)
     training.delete_project(project_id)
 
 
@@ -554,6 +576,7 @@ def delete_training_project(project_id: str) -> None:
 async def add_training_images(project_id: str, files: Annotated[list[UploadFile], File()]) -> dict:
     """Each file is checked on its own: readable JPG/PNG/HEIC photos are added, the rest are listed with a reason."""
     get_project_or_404(project_id)
+    refuse_while_estimating(project_id)
     folder = training.project_dir(project_id)
     accepted: list[str] = []
     rejected: list[dict[str, str]] = []
@@ -581,6 +604,7 @@ async def add_training_images(project_id: str, files: Annotated[list[UploadFile]
 @app.delete("/training/{project_id}/images/{image_id}")
 def remove_training_image(project_id: str, image_id: str) -> dict:
     get_project_or_404(project_id)
+    refuse_while_estimating(project_id)
     if not training.remove_image(project_id, image_id):
         raise HTTPException(404, "Photo not found in this project.")
     return project_view(project_id)
@@ -599,3 +623,35 @@ def get_training_thumbnail(project_id: str, image_id: str) -> FileResponse:
     if path is None:
         raise HTTPException(404, "Thumbnail not found.")
     return FileResponse(path, media_type="image/jpeg")
+
+
+# Camera pose estimation (training_poses.py, Lab 10B step 1): COLMAP in a worker process.
+
+
+@app.post("/training/{project_id}/poses", status_code=202)
+def start_pose_estimation(project_id: str) -> dict:
+    project = get_project_or_404(project_id)
+    try:
+        training_poses.queue(project)
+    except (training_poses.PoseError, training.TrainingError) as error:
+        raise HTTPException(409 if training_poses.is_running(project_id) else 400, str(error)) from error
+    assert training_executor is not None
+    training_executor.submit(training_poses.run, project_id)
+    return project_view(project_id)
+
+
+@app.post("/training/{project_id}/poses/cancel")
+def cancel_pose_estimation(project_id: str) -> dict:
+    get_project_or_404(project_id)
+    if not training_poses.request_cancel(project_id):
+        raise HTTPException(409, "No pose estimation is running for this project.")
+    return project_view(project_id)
+
+
+@app.get("/training/{project_id}/poses/preview")
+def get_pose_preview(project_id: str) -> FileResponse:
+    get_project_or_404(project_id)
+    path = training_poses.preview_path(project_id)
+    if path is None:
+        raise HTTPException(404, "No camera poses for this project yet.")
+    return FileResponse(path, media_type="application/json")

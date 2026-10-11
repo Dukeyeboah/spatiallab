@@ -33,7 +33,63 @@ export type TrainingImage = {
   notes: string[];
 };
 
-export type Stage = { key: string; title: string; detail: string; tools: string[]; output: string; status: "planned" };
+export type StageStatus = "planned" | "queued" | "running" | "done" | "failed" | "cancelled" | "outdated";
+
+export type Stage = { key: string; title: string; detail: string; tools: string[]; output: string; status: StageStatus };
+
+/** Lab 10B step 1: the COLMAP job (backend/training_poses.py). Every number comes from COLMAP's result. */
+export type PoseSummary = {
+  modelPath: string;
+  /** Photos per reconstructed model; more than one = groups of photos COLMAP couldn't connect. */
+  models: number[];
+  imageCount: number;
+  registered: number;
+  notRegistered: string[];
+  /** Image id -> matched 3D points seen in it. */
+  observations: Record<string, number>;
+  points: number;
+  meanReprojectionErrorPx: number | null;
+  meanTrackLength: number | null;
+  cameraCount: number;
+  camera: { model: string; width: number; height: number; focalPx: number[] };
+  seconds: Record<string, number>;
+};
+
+export type PoseJob = {
+  kind: "poses";
+  status: "queued" | "running" | "done" | "failed" | "cancelled";
+  step: "preprocess" | "features" | "matching" | "mapping" | null;
+  stage: string;
+  progress: number;
+  queuedAt: string;
+  startedAt: string | null;
+  finishedAt: string | null;
+  error: string | null;
+  logTail: string | null;
+  imageIds: string[];
+  settings: { maxSide: number; cameraModel: string; features: string; matching: string; mapper: string };
+  summary: PoseSummary | null;
+  /** Photos were added or removed after it ran. */
+  outdated: boolean;
+};
+
+export type PosePreview = {
+  frame: string;
+  cameras: Record<string, { model: string; width: number; height: number; params: number[] }>;
+  images: {
+    imageId: string;
+    filename: string;
+    cameraId: number;
+    center: [number, number, number];
+    /** Columns: the camera's right (x), down (y) and viewing (z) axes in COLMAP's world frame. */
+    cameraToWorld: number[][];
+    points: number;
+  }[];
+  pointCount: number;
+  /** Flat xyz of a sample of the points (up to 60,000), and their 0–255 sRGB colours. */
+  positions: number[];
+  colors: number[];
+};
 
 export type TrainingProject = {
   id: string;
@@ -43,6 +99,7 @@ export type TrainingProject = {
   rejected: { filename: string; reason: string; at: string }[];
   association: { propertyId: string | null; captureId: string | null };
   jobs: unknown[];
+  poses: PoseJob | null;
   analysis: {
     imageCount: number;
     totalBytes: number;
@@ -134,6 +191,12 @@ export const trainingApi = {
   clearRejected: (projectId: string) =>
     fetch(`${base}/${id(projectId)}/rejected`, { method: "DELETE" }).then((r) => json<TrainingProject>(r)),
   environment: () => fetch(`${base}/environment`, { cache: "no-store" }).then((r) => json<Environment>(r)),
+  startPoses: (projectId: string) =>
+    fetch(`${base}/${id(projectId)}/poses`, { method: "POST" }).then((r) => json<TrainingProject>(r)),
+  cancelPoses: (projectId: string) =>
+    fetch(`${base}/${id(projectId)}/poses/cancel`, { method: "POST" }).then((r) => json<TrainingProject>(r)),
+  posePreview: (projectId: string) =>
+    fetch(`${base}/${id(projectId)}/poses/preview`, { cache: "no-store" }).then((r) => json<PosePreview>(r)),
 };
 
 export const thumbnailUrl = (projectId: string, imageId: string) =>

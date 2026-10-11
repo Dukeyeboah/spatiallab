@@ -30,6 +30,12 @@ TOOLS = {
     "docker": "Docker",
 }
 PYTHON_PACKAGES = ["torch", "gsplat", "pycolmap", "cv2"]
+# Homebrew's folders: a backend started outside a login shell may not have them on PATH.
+EXTRA_TOOL_DIRS = ["/opt/homebrew/bin", "/usr/local/bin"]
+
+
+def find_tool(name: str) -> Optional[str]:
+    return shutil.which(name) or shutil.which(name, path=os.pathsep.join(EXTRA_TOOL_DIRS))
 
 
 def run(command: list[str], timeout: float = 10) -> Optional[str]:
@@ -93,7 +99,7 @@ def static_report() -> dict[str, Any]:
         "cpuCores": os.cpu_count(),
         "memoryBytes": memory_bytes(),
         "gpus": gpus(),
-        "tools": {name: {"label": label, "path": shutil.which(name)} for name, label in TOOLS.items()},
+        "tools": {name: {"label": label, "path": find_tool(name)} for name, label in TOOLS.items()},
         "pythonPackages": {name: importlib.util.find_spec(name) is not None for name in PYTHON_PACKAGES},
     }
 

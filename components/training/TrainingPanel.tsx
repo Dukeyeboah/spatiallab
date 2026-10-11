@@ -25,6 +25,12 @@ type TrainingPanelProps = {
   onlyWarnings: boolean;
   onOnlyWarnings: (value: boolean) => void;
   environment: Environment | null;
+  onStartPoses: () => void;
+  onCancelPoses: () => void;
+  view: "photos" | "poses";
+  onView: (view: "photos" | "poses") => void;
+  onlyUnplaced: boolean;
+  onOnlyUnplaced: (value: boolean) => void;
   busy: boolean;
   error: string | null;
 };
@@ -32,7 +38,9 @@ type TrainingPanelProps = {
 export function TrainingPanel(props: TrainingPanelProps) {
   const { projects, project, busy, progress } = props;
   const [newName, setNewName] = useState("");
-  const uploading = progress !== null;
+  // Photos can't change while COLMAP reads them (the backend refuses it too).
+  const estimating = project?.poses?.status === "queued" || project?.poses?.status === "running";
+  const uploading = progress !== null || estimating;
 
   return (
     <div className="controls inspector">
@@ -49,8 +57,8 @@ export function TrainingPanel(props: TrainingPanelProps) {
         ← Lab 9: Gaussian Inspector
       </Link>
       <div className="note">
-        Lab 10A: collect photographs of a space and check them before Gaussian training. Nothing is trained yet;
-        the photos are stored by the local backend and never modified.
+        Lab 10A: collect photographs of a space and check them. Lab 10B (step 1): estimate where each photo was taken
+        from with COLMAP. Nothing is trained yet; the photos are stored by the local backend and never modified.
       </div>
       {props.error && <div className="error">{props.error}</div>}
 
@@ -131,7 +139,7 @@ export function TrainingPanel(props: TrainingPanelProps) {
                 />
               </label>
             </div>
-            {uploading && (
+            {progress !== null && (
               <div className="dataset-info">
                 Uploading and checking… {Math.round(progress * 100)}%
                 <progress value={progress} max={1} />
@@ -151,6 +159,17 @@ export function TrainingPanel(props: TrainingPanelProps) {
             onOnlyWarnings={props.onOnlyWarnings}
           />
           <Refused project={project} skipped={props.skipped} onClear={props.onClearRefused} disabled={busy || uploading} />
+          <Poses
+            project={project}
+            colmapInstalled={!!props.environment?.tools.colmap?.path}
+            busy={busy || progress !== null}
+            onStart={props.onStartPoses}
+            onCancel={props.onCancelPoses}
+            view={props.view}
+            onView={props.onView}
+            onlyUnplaced={props.onlyUnplaced}
+            onOnlyUnplaced={props.onOnlyUnplaced}
+          />
           <Stages project={project} />
         </>
       )}
@@ -276,19 +295,169 @@ function Refused({
   );
 }
 
+function Poses({
+  project,
+  colmapInstalled,
+  busy,
+  onStart,
+  onCancel,
+  view,
+  onView,
+  onlyUnplaced,
+  onOnlyUnplaced,
+}: {
+  project: TrainingProject;
+  colmapInstalled: boolean;
+  busy: boolean;
+  onStart: () => void;
+  onCancel: () => void;
+  view: "photos" | "poses";
+  onView: (view: "photos" | "poses") => void;
+  onlyUnplaced: boolean;
+  onOnlyUnplaced: (value: boolean) => void;
+}) {
+  const job = project.poses;
+  const active = job?.status === "queued" || job?.status === "running";
+  const tooFew = project.images.length < 3;
+  const s = job?.status === "done" ? job.summary : null;
+  const names = new Map(project.images.map((i) => [i.id, i.filename]));
+  const startLabel = job ? "Run again" : "Estimate camera poses";
+
+  return (
+    <div className="section">
+      <b>Camera poses (Lab 10B, step 1)</b>
+      <div className="note">
+        COLMAP finds the same features in overlapping photos and solves where each photo was taken from, plus a sparse
+        point cloud. This is where coverage is really tested. It runs on the CPU in the background (192 photos took
+        about 4 minutes on an M2).
+      </div>
+
+      {!active && (
+        <div className="dataset-actions">
+          <button onClick={onStart} disabled={busy || !colmapInstalled || tooFew}>
+            {startLabel}
+          </button>
+          {s && (
+            <button onClick={() => onView(view === "poses" ? "photos" : "poses")}>
+              {view === "poses" ? "Show photos" : "Show cameras in 3D"}
+            </button>
+          )}
+        </div>
+      )}
+      {!colmapInstalled && !job && (
+        <div className="status">COLMAP isn&apos;t installed: run brew install colmap, then restart the backend.</div>
+      )}
+      {tooFew && <div className="note">Needs at least 3 photos.</div>}
+
+      {active && job && (
+        <div className="dataset-info">
+          {job.stage} · {Math.round(job.progress * 100)}%
+          <progress value={job.progress} max={1} />
+          <div className="dataset-actions">
+            <button onClick={onCancel}>Cancel</button>
+          </div>
+          <span className="note">Adding or removing photos is paused until it finishes.</span>
+        </div>
+      )}
+
+      {job?.status === "failed" && (
+        <>
+          <div className="error">{job.error}</div>
+          {job.logTail && <pre className="log-tail">{job.logTail}</pre>}
+        </>
+      )}
+      {job?.status === "cancelled" && <div className="note">Cancelled. Nothing was kept from that run.</div>}
+
+      {s && (
+        <>
+          {job?.outdated && (
+            <div className="status">
+              Photos were added or removed after this ran: the result describes the earlier set. Run it again.
+            </div>
+          )}
+          <table className="attr-table">
+            <tbody>
+              <tr>
+                <th>Placed</th>
+                <td>
+                  {s.registered} of {s.imageCount} photos ({Math.round((100 * s.registered) / s.imageCount)}%)
+                </td>
+              </tr>
+              <tr>
+                <th>Points</th>
+                <td>
+                  {s.points.toLocaleString()}, each seen in {s.meanTrackLength} photos on average
+                </td>
+              </tr>
+              <tr>
+                <th>Reprojection</th>
+                <td>{s.meanReprojectionErrorPx} px mean error</td>
+              </tr>
+              <tr>
+                <th>Lens</th>
+                <td>
+                  {s.camera.model}, {s.camera.width}×{s.camera.height}, focal {s.camera.focalPx.join(" / ")} px
+                  {s.cameraCount === 1 ? " (one lens for all photos)" : ` (${s.cameraCount} lenses)`}
+                </td>
+              </tr>
+              <tr>
+                <th>Time</th>
+                <td>
+                  {Object.entries(s.seconds)
+                    .map(([k, v]) => `${k} ${Math.round(v)} s`)
+                    .join(" · ")}
+                </td>
+              </tr>
+            </tbody>
+          </table>
+          <div className="note">
+            Reprojection error: how far, on average, the solved 3D points land from where they were seen in the
+            photos. Around 1 px or less means the cameras and points agree well. The model has no real-world scale or
+            up direction.
+          </div>
+          {s.models.length > 1 && (
+            <div className="status">
+              The photos formed {s.models.length} separate groups ({s.models.join(", ")} photos) that COLMAP couldn&apos;t
+              connect; only the largest is used. More overlapping photos between the areas would join them.
+            </div>
+          )}
+          {s.notRegistered.length > 0 && (
+            <>
+              <div className="note">
+                <b>{s.notRegistered.length} not placed</b>: too few matches with the other photos (plain surfaces,
+                close-ups, or views that overlap nothing else). They are left out, never given a guessed pose.
+              </div>
+              <details className="explain">
+                <summary>Which photos</summary>
+                <div className="note">{s.notRegistered.map((id) => names.get(id) ?? id).join(", ")}</div>
+              </details>
+              <label>
+                <input type="checkbox" checked={onlyUnplaced} onChange={(e) => onOnlyUnplaced(e.target.checked)} />
+                Show only photos not placed
+              </label>
+            </>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
 function Stages({ project }: { project: TrainingProject }) {
+  const anyRun = project.stages.some((s) => s.status !== "planned");
   return (
     <div className="section">
       <b>Training stages</b>
       <div className="note">
-        The plan for Lab 10B. None of these has run: there are no camera poses and no trained Gaussians for this
-        project yet.
+        {anyRun
+          ? "Preprocessing and camera poses run together (above). Training, export and SOG are still planned: there are no trained Gaussians for this project yet."
+          : "The plan for Lab 10B. None of these has run yet: there are no camera poses and no trained Gaussians for this project."}
       </div>
       <ol className="stage-list">
         {project.stages.map((stage) => (
           <li key={stage.key}>
             <div>
-              <b>{stage.title}</b> <span className="badge">{stage.status}</span>
+              <b>{stage.title}</b> <span className={`badge ${stage.status}`}>{stage.status}</span>
             </div>
             <div className="note">{stage.detail}</div>
             <div className="note">
