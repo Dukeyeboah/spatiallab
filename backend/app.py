@@ -36,12 +36,24 @@ Individual Gaussians of a trained PLY scene (gaussian_records.py, Lab 9; read-on
     GET    /splats/{id}/gaussians/sample?seed=42&count=12   reproducible random sample
     GET    /splats/{id}/gaussians/summary?seed=1            statistics over 20,000 sampled Gaussians
 
+Training projects (training.py, Lab 10A; photographs prepared for Gaussian training):
+    GET    /training/environment             OS, hardware, GPUs, tools + a training assessment
+    GET    /training                         list of projects (id, name, photo count, size)
+    POST   /training                         {"name"} -> new project
+    GET    /training/{id}                    project + analysis (warnings per photo) + planned stages
+    DELETE /training/{id}                    delete the project and its photos
+    POST   /training/{id}/images             multipart files (JPG/PNG): accepted + rejected (with reasons) + project
+    DELETE /training/{id}/images/{imageId}   remove one photo before processing
+    DELETE /training/{id}/rejected           clear the list of refused files
+    GET    /training/{id}/images/{imageId}/thumbnail   320 px JPEG (originals are never served)
+
 Only converted assets are served; original uploads never leave spatial-data/.
 Conversions run one at a time in a separate worker process; budgets added
 after a dataset was converted (e.g. 5M) are generated there at startup.
 """
 
 import os
+import secrets
 import shutil
 from concurrent.futures import ProcessPoolExecutor
 from contextlib import asynccontextmanager
@@ -58,6 +70,8 @@ import catalog
 import gaussian_records
 import splats
 import storage
+import training
+import training_env
 from splat_bounds import robust_bounds
 from catalog import CatalogError
 from converter import NORMALISED_POSES_FILE, backfill_budgets, convert_dataset
@@ -486,3 +500,102 @@ def summarise_gaussians(splat_id: str, seed: int = 1) -> dict:
     if not 0 <= seed <= MAX_SEED:
         raise HTTPException(400, f"Seed must be 0–{MAX_SEED}.")
     return gaussian_call(splat_id, gaussian_records.summarise, seed)
+
+
+# ---------------------------------------------------------------------------
+# Training projects (training.py, Lab 10A): photographs prepared for Gaussian
+# training. Only thumbnails are served; the photos stay in spatial-data/.
+
+
+@app.get("/training/environment")
+def training_environment() -> dict:
+    return training_env.report()
+
+
+def get_project_or_404(project_id: str) -> dict:
+    try:
+        project = training.read_project(project_id)
+    except ValueError:
+        project = None
+    if project is None:
+        raise HTTPException(404, "Training project not found.")
+    return project
+
+
+def project_view(project_id: str) -> dict:
+    return training.project_view(get_project_or_404(project_id))
+
+
+@app.get("/training")
+def list_training_projects() -> list[dict]:
+    return training.list_projects()
+
+
+@app.post("/training", status_code=201)
+def create_training_project(body: NameBody) -> dict:
+    name = " ".join(body.name.split())
+    if not 1 <= len(name) <= MAX_NAME_LENGTH:
+        raise HTTPException(400, f"Name must be 1–{MAX_NAME_LENGTH} characters.")
+    return training.project_view(training.create_project(name))
+
+
+@app.get("/training/{project_id}")
+def get_training_project(project_id: str) -> dict:
+    return project_view(project_id)
+
+
+@app.delete("/training/{project_id}", status_code=204)
+def delete_training_project(project_id: str) -> None:
+    get_project_or_404(project_id)
+    training.delete_project(project_id)
+
+
+@app.post("/training/{project_id}/images")
+async def add_training_images(project_id: str, files: Annotated[list[UploadFile], File()]) -> dict:
+    """Each file is checked on its own: readable JPG/PNG photos are added, the rest are listed with a reason."""
+    get_project_or_404(project_id)
+    folder = training.project_dir(project_id)
+    accepted: list[str] = []
+    rejected: list[dict[str, str]] = []
+    try:
+        for upload in files:
+            filename = training.display_name(upload.filename)
+            incoming = folder / f".incoming-{secrets.token_hex(6)}"
+            try:
+                training.check_extension(filename)
+                training.check_disk(upload.size or 0)
+                size = await save_stream(upload, incoming, training.MAX_IMAGE_BYTES, filename)
+                await run_in_threadpool(training.add_image, project_id, incoming, filename, size)
+                accepted.append(filename)
+            except (training.ImageRejected, UploadError) as error:
+                rejected.append({"filename": filename, "reason": str(error), "at": storage.now_iso()})
+            finally:
+                incoming.unlink(missing_ok=True)
+    except training.TrainingError as error:
+        raise HTTPException(400, f"{error} ({len(accepted)} photo(s) were added before stopping.)") from error
+    finally:
+        training.record_rejections(project_id, rejected)
+    return {"accepted": accepted, "rejected": rejected, "project": project_view(project_id)}
+
+
+@app.delete("/training/{project_id}/images/{image_id}")
+def remove_training_image(project_id: str, image_id: str) -> dict:
+    get_project_or_404(project_id)
+    if not training.remove_image(project_id, image_id):
+        raise HTTPException(404, "Photo not found in this project.")
+    return project_view(project_id)
+
+
+@app.delete("/training/{project_id}/rejected")
+def clear_training_rejections(project_id: str) -> dict:
+    get_project_or_404(project_id)
+    training.clear_rejections(project_id)
+    return project_view(project_id)
+
+
+@app.get("/training/{project_id}/images/{image_id}/thumbnail")
+def get_training_thumbnail(project_id: str, image_id: str) -> FileResponse:
+    path = training.thumbnail_path(get_project_or_404(project_id), image_id)
+    if path is None:
+        raise HTTPException(404, "Thumbnail not found.")
+    return FileResponse(path, media_type="image/jpeg")

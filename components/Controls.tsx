@@ -115,6 +115,9 @@ export function Controls({
       <Link href="/gaussian-inspector" className="lab-link">
         Lab 9: Gaussian Inspector →
       </Link>
+      <Link href="/gaussian-training" className="lab-link">
+        Lab 10A: Photos for Gaussian training →
+      </Link>
 
       {datasetPanel}
 

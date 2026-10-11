@@ -44,6 +44,7 @@ A deliberately small Next.js + React Three Fiber app that renders a **real** LiD
 | 7C | 5M budget + Properties → Captures | budgets added later are backfilled from stored originals in the same frame; organising datasets by place and session without merging frames |
 | 8 | Real Gaussian splat viewer (separate page `/gaussian-viewer`) | real trained splats (PLY / SOG) imported locally and shown with the official SuperSplat Viewer; formats, packages, robust framing, renderer isolation and teardown |
 | 9 | Gaussian Inspector (separate page `/gaussian-inspector`) | single Gaussians of a real trained PLY: stored vs decoded values (log scale, logit opacity, quaternion, SH colour), isolated preview through Lab 6's projection, experiments, view-dependent colour, reproducible samples |
+| 10A | Photos for Gaussian training (separate page `/gaussian-training`) | training projects of real photographs: validated upload, thumbnails, per-photo checks (resolution, blur heuristic, duplicates, sizes) as warnings, planned pipeline stages, local training-environment assessment; nothing is trained yet |
 
 The dataset used: a handheld/SLAM LiDAR scan (`map.las`, 5,242,880 points, 178 MB, local metric frame, RGB) plus `poses.csv` (208 poses, 5 Hz, 41.4 s).
 
@@ -158,6 +159,10 @@ components/
     InspectorScene.tsx           Lab 9 <Canvas> (Lab 6 camera/reset), 1σ ellipsoid + own axes, gizmo, quad with SH colour, view reporter
     InspectorPanel.tsx           Lab 9 scene/index/sample pickers, stored → decoded table, experiments, Σ3D/Σ2D, scene statistics
 app/gaussian-inspector/page.tsx    Lab 9 client page: scenes, layout, record + edits, sample, summary; preview Gaussian via useMemo
+app/gaussian-training/page.tsx     Lab 10A client page: projects, current project, uploads with progress, environment report
+components/training/               Lab 10A only (no 3D on this page)
+  TrainingPanel.tsx     project picker/creation, facts, add photos (files/folder), checks, refused files, planned stages, environment
+  PhotoGrid.tsx         thumbnail grid: size, bytes, format, warnings, notes, Remove
 app/gaussian-viewer/page.tsx       Lab 8 client page: splat scene list, catalog, selection, start view; SplatViewer + SplatPanel
 components/splat/                  Lab 8 only (no React Three Fiber on this page)
   SplatViewer.tsx       embeds the official SuperSplat Viewer (createViewer in a <div>), one instance per scene, destroy on change
@@ -181,6 +186,7 @@ lib/
   importPlan.ts         folder/files → import plan: role detection, ambiguity flags, preview summary
   catalog.ts            Property/Capture/Catalog types, helpers, catalog API calls (Lab 7C)
   splats.ts             Lab 8: SplatScene type, splat API calls, selection checks, start camera (robust box, 180° Z)
+  training.ts           Lab 10A: training project/environment types, API calls, warning explanations, file partition, batched XHR upload with progress
   datasets.ts           Dataset type (= backend metadata), BUILTIN_DATASET (map.las offset/bounds),
                         asset URLs, pickBudget(), backend API calls, client-side file checks
   usefulBounds.ts       1st–99th percentile bounding box (ignores stray points)
@@ -196,11 +202,14 @@ backend/                local FastAPI dataset service (Lab 7A)
   splats.py             Lab 8: splat scene store, PLY/SOG/zip inspection, safe extraction, served-file whitelist
   splat_bounds.py       Lab 8: robust bounds + free "inside" viewpoint from the splat centres (PLY, SOG decoding)
   gaussian_records.py   Lab 9: memory-mapped, read-only access to single Gaussians of a PLY; decoding; SplitMix64 samples; statistics
+  training.py           Lab 10A: training-photo store, Pillow validation, thumbnails, checks (resolution, blur, duplicates, sizes), planned stages
+  training_env.py       Lab 10A: read-only report of OS/CPU/memory/GPU/disk/tools/packages and a local-training verdict
   uploads.py            per-role extension/size/content validation
   converter.py          conversion job (progress → metadata), budget backfill job, pose/frame validation
   lidar_conversion.py   shared core: chunked LAS read, offset, sampling, .bin writer
   requirements.txt
-spatial-data/           (gitignored) datasets/<id>/{metadata.json, source/, converted/}, splats/<id>/{...}, catalog.json
+spatial-data/           (gitignored) datasets/<id>/{metadata.json, source/, converted/}, splats/<id>/{...},
+                        training/<id>/{project.json, source/, thumbs/, work/, output/}, catalog.json
 docs/                   this guide
 ```
 
@@ -433,6 +442,37 @@ SH basis and constants are the reference implementation's (`sh_utils.py`), ident
 **Reading** (`backend/gaussian_records.py`): `np.memmap` of the vertex records (structured dtype from the header), so a request reads only the requested records' pages (~16 ms for 3 records of a 236 MB file); read-only, nothing written back. Non-finite values become `null` in JSON and are flagged in `checks` (with zero-length quaternions, scales > 1 km and base colours outside 0..1). Samples use **SplitMix64** (seed → the same indices on any machine/NumPy version; duplicates skipped; modulo bias < 2⁻⁴⁰); the summary reads 20,000 sampled records in sorted order.
 
 **Ceramic Studio facts** (20,000 sampled, seed 1): no non-finite values or zero quaternions; quaternions already unit length (1 ± 4·10⁻⁸); largest σ median 11.4 mm (5%: 1.7 mm, 95%: 69 mm); smallest σ median 1.4 mm and ~0 for 5% (flat discs: largest ÷ smallest median 6.6, 95th percentile 10⁸); opacity median 0.21; every opacity is a multiple of 1/255 and every base colour inside 0..1 → this PLY was saved from compressed data (SuperSplat export), not straight from training. Cross-check: decoding 128 sampled PLY Gaussians and matching them by position to the same scene's SOG package (decoded independently: means, `scales` codebook → exp, `sh0` codebook + alpha/255, smallest-three quaternions) agrees to 3·10⁻⁷ m, exact scales and colours, opacity within 10⁻⁸, identical rotations.
+
+### 5.9 Training photographs (Lab 10A)
+
+Photographs for Gaussian training are a **third separate store**, `spatial-data/training/trn_<12 hex>/` (never mixed with LiDAR datasets or splat scenes):
+
+```
+project.json     name, createdAt, association {propertyId: null, captureId: null} (reserved), images[], rejected[] (last 200), jobs: []
+source/          originals as <img_id>.jpg|png (extension from the detected content; never served)
+thumbs/          <img_id>.jpg, longer side 320 px, EXIF orientation applied (the only image files the API serves)
+work/ output/    reserved for Lab 10B (undistorted images, COLMAP sparse model, training output, PLY/SOG)
+```
+
+`project.json` is written atomically under one lock per project. Each image entry: `id` (`img_<12 hex>`), `filename` (display only, never used as a path), `storedAs`, `bytes`, `format`, `width`/`height` (after EXIF orientation), `orientation`, `camera` (make, model, focal length, 35 mm focal length; **GPS is never read**), `takenAt`, `sha256`, `dhash`, `sharpness`, `notes`, `addedAt`.
+
+**Upload validation** (`POST /training/{id}/images`, multipart `files`): extension `.jpg/.jpeg/.png` (HEIC/HEIF/DNG/MOV/MP4 refused with a specific hint), ≤ 64 MiB streamed to a temp file, free disk ≥ 2 GiB + file size, Pillow `verify()` then a full decode (catches truncation), format from the **content** (a JPEG named `.png` is accepted as JPEG with a note), ≤ 120 megapixels (decompression-bomb guard), ≤ 2,000 photos per project. Refused files are listed with a reason; nothing is executed or trusted by name.
+
+**Checks** (recomputed on every read, so removing a photo updates them; warnings never block):
+
+| Kind | Rule |
+| --- | --- |
+| `low-resolution` | shorter side < 1000 px ("very low" < 480 px) |
+| `blur` | variance of the Laplacian on a ≤ 1024 px grey copy < 30, or (≥ 5 photos) < 0.35 × the project median. A heuristic: plain walls also score low |
+| `duplicate` | same SHA-256 as an earlier photo (exact match is checked before near matches) |
+| `near-duplicate` | 64-bit dHash (9×8 grey) within 4 bits of the closest earlier photo (resized, re-encoded, slightly blurred copies) |
+| `dimensions` / `orientation` | width × height differs from the most common size; a 90°-turned common size is reported as orientation only |
+
+The checks look at each photo on its own: they **cannot** tell whether photos overlap enough or cover the space. That is only known once camera poses are estimated (Lab 10B).
+
+**Planned stages** (returned with every project, status always `planned` in 10A): image preprocessing → camera pose estimation (COLMAP/GLOMAP) → Gaussian training (Brush, OpenSplat, gsplat/splatfacto) → export Gaussian PLY (readable by Labs 8/9) → optional SOG (SplatTransform). No job runs, no poses or Gaussians are invented; `jobs` stays empty.
+
+**Environment** (`GET /training/environment`, `training_env.py`): OS/arch, CPU, memory (`sysctl`), GPUs (`system_profiler SPDisplaysDataType -json` on macOS, `nvidia-smi` elsewhere), free disk, tools on `PATH` (colmap, glomap, brush_app, opensplat, ns-train, ffmpeg, nvidia-smi, docker), Python packages found with `importlib.util.find_spec` (torch, gsplat, pycolmap, cv2; nothing imported). Verdict: `local-cuda`, `local-metal-limited` or `cpu-only` with notes (memory < 16 GB, disk < 30 GiB, missing COLMAP/trainer). Read-only: it never installs anything.
 
 ## 6. Rendering pipeline
 
@@ -775,6 +815,25 @@ Accept (Ceramic Studio PLY, 999,986 Gaussians):
 
 Limitations to state: inspection and preview only (no editing or saving of the reconstruction); PLY only (compressed PLY and SOG are quantised); one Gaussian at a time, without its neighbours; Euler sliders (gimbal lock near ±90° Y, the quaternion is exact); the preview is magnified (stated in the panel); this Ceramic PLY is itself a quantised export, so its values are SuperSplat's 8-bit-rounded ones, not the original training output.
 
+### Lab 10A — Prepare photographs for Gaussian training
+
+Requirements:
+
+- Route `/gaussian-training` (linked from the LiDAR panel), panel + thumbnail grid, no 3D; all other pages unchanged.
+- Backend (section 5.9): `GET /training/environment` (declared before `/training/{id}`), `GET/POST /training` (name 1–80 chars → 201), `GET/DELETE /training/{id}` (204), `POST /training/{id}/images` (multipart `files`, per-file accept/refuse → `{accepted, rejected, project}`), `DELETE /training/{id}/images/{imageId}`, `DELETE /training/{id}/rejected`, `GET /training/{id}/images/{imageId}/thumbnail` (whitelisted ids, `image/jpeg`). Unknown/malformed ids → 404; originals are never served.
+- Panel: project picker + "New project name"/Create; facts (photo count, total size, sizes with counts, cameras, "Linked to a property/capture: not yet (reserved)"), Delete project (confirm); "Choose photos…" (multiple) and "Choose folder…" (hidden files skipped, non-JPG/PNG listed as skipped), byte progress bar (XHR, batches of 8), last upload result; Checks (count per warning kind with a plain explanation, "Show only photos with warnings", the overlap/coverage disclaimer); "Unreadable or unsupported files" with reasons and Clear; Training stages (planned badges, "None of these has run"); Training environment (collapsible facts + verdict + notes).
+- Grid: thumbnail, filename, W×H, size, format, warnings (explanation as tooltip), notes, Remove (confirm).
+- Firestore or any cloud store is not used for images or Gaussian files; associations with a property/capture are reserved fields only.
+
+Accept (fixtures: crops of real renders + generated variants; not committed):
+
+1. 18 files → 14 added, 4 refused with reasons (`.txt` unsupported, `.heic` hint, random bytes named `.jpg` unreadable, truncated JPEG corrupt); a JPEG named `.png` accepted as JPEG with a note; 65 MB → "larger than 64 MiB"; 132 MP PNG → "larger than 120 megapixels".
+2. Checks: the blurred copy (sharpness 1) flagged blurry; the byte copy flagged duplicate; re-encoded/resized/blurred copies flagged near-duplicate (0/64 bits); crops < 1000 px flagged low resolution, 320×281 very low; 4032×3024 vs 980×860 flagged as different size; an EXIF-orientation-6 photo reported 3024×4032. Re-uploading the same folder flags all 14 copies as duplicates (exact wins over near).
+3. Removing a photo updates counts and warnings; files on disk match the project (`source/`, `thumbs/`, no leftover `.incoming-*`); deleting the project removes its folder.
+4. Thumbnails load from the API; the warnings filter, Clear, environment and stages render; `/`, `/gaussian-projection`, `/gaussian-compositing`, `/gaussian-viewer`, `/gaussian-inspector` load; `tsc`, `next build`, pyflakes clean; no console errors.
+
+Limitations to state: preparation only (no pose estimation, training or export yet); the checks judge photos one at a time and say nothing about overlap or coverage; blur is a heuristic (textureless surfaces look blurry); HEIC, RAW and video are not imported (export JPG or extract frames first); uploads are synchronous per batch; no link to a property/capture yet (reserved).
+
 ## 8. Pitfalls we hit and how they were fixed
 
 | Symptom | Cause | Fix |
@@ -819,6 +878,10 @@ Limitations to state: inspection and preview only (no editing or saving of the r
 | `tsx` test with top-level `await` fails ("not supported with the cjs output format"), then "Cannot find package 'three'" | `.ts` outside a module package runs as CommonJS; ESM ignores `NODE_PATH` | name it `.mts` and symlink the project's `node_modules` next to it |
 | Colour picker shifts the colour | `THREE.Color.set("#hex")` converts sRGB → linear | parse hex manually and use `setRGB` with the values as is (Gaussian colours are display values) |
 | A field read by index gives the wrong attribute | PLY property order differs between exporters (SuperSplat puts `rot_*` before `scale_*`, training adds `nx ny nz`) | always read properties by name (structured dtype from the header) |
+| `curl` test sends no files (405 / empty upload) | zsh does not word-split an unquoted `$args` string | build an array and pass `"${args[@]}"` |
+| iPhone photos refused | HEIC isn't decodable by Pillow without a plugin | refuse with a hint (export as JPG / "Most Compatible" camera setting) instead of adding a decoder |
+| Re-uploaded copies flagged only as "near-duplicate" | the duplicate loop stopped at the first earlier photo matching in any way | look for an exact SHA-256 match among all earlier photos first, then the closest dHash |
+| Thumbnails "not loaded" in a headless check | `loading="lazy"` images below the fold load only when scrolled to | scroll the grid and wait before counting |
 
 ## 9. Validation playbook
 
@@ -859,6 +922,7 @@ Techniques used:
 - **Compositing** (Lab 7B): unit-test `compositing.ts` against `gaussianMath.ts` with `npx tsx` (run with `NODE_PATH=<repo>/node_modules` so `three` resolves). In the browser, average the 2×2 pixels around the canvas centre and compare with the panel's predicted probe colour (the canvas uses `linear`, so screenshot values are the shader's values); count draw calls per frame by wrapping `draw*` on `WebGL2RenderingContext.prototype` (only the scene canvas, width > 400); orbit with `page.mouse` drags (≈ viewport height / 2 px of horizontal drag = 180°); exclude the panel and the Perf overlay from pause/reset image diffs (both change while the scene doesn't).
 - **Splat scenes** (Lab 8): import real scenes with `curl -F files=@…` into a test backend (folder uploads: one `-F files=@path -F paths=path` pair per file); cross-check `robust_bounds` between the PLY and SOG versions of the same scene (identical to 4 decimals → the SOG decoder is right). In Playwright, use real GPU flags (`--use-angle=metal --enable-unsafe-webgpu`; SwiftShader is too slow for millions of splats); count WebGPU devices by wrapping `adapter.requestDevice` / `device.destroy` and WebGL contexts by wrapping `getContext` + `isContextLost()`; orbit/zoom/reset with image diffs (scene clip without the panel); folder import via `setInputFiles(<dir>)` on the folder input.
 - **Gaussian Inspector** (Lab 9): `curl` the three endpoints incl. errors; decode-check with an independent decoder (the same scene's SOG package, matched by nearest position); `npx tsx` script (`.mts`, `node_modules` symlinked) importing `lib/gaussian/inspector.ts`, `sphericalHarmonics.ts`, `gaussianMath.ts` with real records from the test backend: SH orthonormality (Fibonacci sphere), degree-0 = base, Euler round trip, preview Σ3D = FΣFᵀ, magnification invariance, Monte Carlo Σ2D (mulberry32), view direction mapping. In Playwright: turn the ellipsoid/outline off, compare the centre 2×2 pixel with `colour·α + bg·(1 − α)` from the panel (bg = 0.0103), orbit by dragging and compare again; set range inputs with the native value setter + `input` event.
+- **Training photos** (Lab 10A): build fixtures outside the repo (crops of real renders, plus a byte copy, a re-encode, a blurred copy, a tiny PNG, a JPEG renamed `.png`, an EXIF-orientation-6 JPEG, a truncated JPEG, random bytes as `.jpg`, a `.txt`, a `.heic`); `curl -F files=@…` (zsh array) into a test backend; check every warning kind, removal, size/pixel limits and that `source/` + `thumbs/` match `project.json`. In Playwright: create a project, `setInputFiles` on the photo input and the folder input, answer `confirm` via `page.on("dialog")`, scroll before counting lazy thumbnails.
 - Note: FPS numbers from SwiftShader are meaningless; use real hardware for performance conclusions.
 
 ## 10. Adapting Spatial Lab for different web purposes
@@ -881,13 +945,13 @@ General scaling rules: raw LAS is never loaded directly; convert offline to a ty
 
 ## 11. Not built yet / roadmap
 
-Explicitly out of scope so far (each would be its own lab): cross-capture alignment (Lab 7C organises captures per property; registration into a property frame via `alignment`/`frame`, using control points/GNSS/CRS, is not built), meshes and photographs as capture representations (splat scenes exist since Lab 8, section 5.7), splat ↔ LiDAR registration, importing SuperSplat `settings.json` (authored cameras/annotations), splat editing/cropping, background import jobs for very large splat files, LAZ/E57 import, LiDAR intensity visualisation, pose animation, clipping/cropping, measurement tools, annotations/hotspots, full Gaussian splatting (Lab 6 projects one Gaussian; Lab 7B composites up to 1,000 with CPU projection, centre sorting and instanced quads; still missing: projection and sorting on the GPU for millions of Gaussians, tile-based rasterisation, spherical-harmonic colour for many Gaussians in our own renderer (Lab 9 evaluates it for one; Lab 8 views real trained scenes with the official viewer), training), editing/saving trained Gaussians (Lab 9 experiments are preview-only), inspecting a Gaussian among its neighbours, ordinary meshes, WebXR, LOD/octrees, workers.
+Explicitly out of scope so far (each would be its own lab): cross-capture alignment (Lab 7C organises captures per property; registration into a property frame via `alignment`/`frame`, using control points/GNSS/CRS, is not built), meshes and photographs as capture representations (splat scenes exist since Lab 8, section 5.7), splat ↔ LiDAR registration, importing SuperSplat `settings.json` (authored cameras/annotations), splat editing/cropping, background import jobs for very large splat files, LAZ/E57 import, LiDAR intensity visualisation, pose animation, clipping/cropping, measurement tools, annotations/hotspots, full Gaussian splatting (Lab 6 projects one Gaussian; Lab 7B composites up to 1,000 with CPU projection, centre sorting and instanced quads; still missing: projection and sorting on the GPU for millions of Gaussians, tile-based rasterisation, spherical-harmonic colour for many Gaussians in our own renderer (Lab 9 evaluates it for one; Lab 8 views real trained scenes with the official viewer), training), camera pose estimation and Gaussian training from the Lab 10A photo projects (Lab 10B: stages are planned only, `work/`/`output/` and `jobs` reserved), linking training projects to a property/capture, HEIC/RAW/video import, editing/saving trained Gaussians (Lab 9 experiments are preview-only), inspecting a Gaussian among its neighbours, ordinary meshes, WebXR, LOD/octrees, workers.
 
 ## 12. Prompt templates
 
 **Rebuild the whole app:**
 
-> Build "Spatial Lab" exactly as specified in `docs/SPATIAL_LAB_REBUILD_GUIDE.md`. Follow the principles in section 2, the versions and config in section 3, the architecture in section 4, and implement Labs 1 through 9 in order (section 7). The built-in dataset is in `public/data/` (`pointcloud-500k.bin`, `pointcloud-1m.bin`, `pointcloud-2m.bin`, `pointcloud-5m.bin`, `poses.csv`); its offset is in section 5.2. Start the backend as in section 3.1. For Labs 8 and 9, use a downloaded SuperSplat scene (e.g. Ceramic Studio; its PLY download for Lab 9) as the test scene. After each lab run the validation playbook (section 9) and report results. Do not generate fake data.
+> Build "Spatial Lab" exactly as specified in `docs/SPATIAL_LAB_REBUILD_GUIDE.md`. Follow the principles in section 2, the versions and config in section 3, the architecture in section 4, and implement Labs 1 through 10A in order (section 7). The built-in dataset is in `public/data/` (`pointcloud-500k.bin`, `pointcloud-1m.bin`, `pointcloud-2m.bin`, `pointcloud-5m.bin`, `poses.csv`); its offset is in section 5.2. Start the backend as in section 3.1. For Labs 8 and 9, use a downloaded SuperSplat scene (e.g. Ceramic Studio; its PLY download for Lab 9) as the test scene. After each lab run the validation playbook (section 9) and report results. Do not generate fake data.
 
 **Variant for another purpose:**
 
@@ -925,3 +989,4 @@ Explicitly out of scope so far (each would be its own lab): cross-capture alignm
 | 8 | Separate `/gaussian-viewer` page with the official SuperSplat Viewer (`@playcanvas/supersplat-viewer` 1.37.0 + `playcanvas` 2.23.0, `createViewer` in a div, destroyed per scene); backend splat store `spatial-data/splats/` (`splats.py`: PLY/compressed PLY/SOG/SOG folder/SOG LOD/zip detection and validation, safe extraction, whitelist file endpoint; `splat_bounds.py`: robust bounds, free inside viewpoint; `pillow` added); catalog representation kind `gaussian-splat`; LiDAR panel counts splats; importer hints point `.ply/.sog` to Lab 8; SplatTransform conversion documented |
 | 8.1 | `/gaussian-viewer` tells "backend not running" (fetch rejects) apart from "backend too old" (`/splats` 404 → restart it after `pip install -r requirements.txt`) |
 | 9 | Separate `/gaussian-inspector` page: backend `gaussian_records.py` (memory-mapped read-only PLY records by name, decoding exp/sigmoid/normalise/SH-DC, channel-major f_rest, validity checks, SplitMix64 samples, 20k-sample statistics incl. 1/255 quantisation) + 3 `GET /splats/{id}/gaussians…` endpoints; `lib/gaussian/inspector.ts` + `sphericalHarmonics.ts` (reference/PlayCanvas SH); `InspectorScene`/`InspectorPanel` reusing Lab 6's projection, quad and reset (quad gains optional `colorForCamera`); 180° Z frame, uniform magnification; links from the LiDAR panel and Lab 8; sections 5.8 and 6.10 |
+| 10A | Separate `/gaussian-training` page: backend `training.py` (store `spatial-data/training/`, Pillow content validation, size/pixel/disk/count limits, EXIF orientation + camera facts without GPS, 320 px thumbnails, checks: resolution, Laplacian-variance blur, SHA-256 duplicates, dHash near-duplicates, dimensions/orientation; planned stages; reserved association/jobs) + `training_env.py` (read-only environment verdict) + 8 `/training…` endpoints; `lib/training.ts`, `TrainingPanel`, `PhotoGrid`; link from the LiDAR panel; section 5.9 |
