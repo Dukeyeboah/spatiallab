@@ -43,7 +43,17 @@ flock -n 9 || { echo "Another train.sh is still running (see nvidia-smi). Wait f
 
 # run.env: KEY=value lines, later lines win. Lets `finish` pick up where a run stopped.
 record() { echo "$1=$2" >> "$RESULT/run.env"; }
-latest_checkpoint() { ls "$RUN_DIR"/nerfstudio_models/step-*.ckpt 2>/dev/null | tail -1; }
+# Nerfstudio names checkpoints step-<step, 9 digits>.ckpt; the highest step number wins.
+latest_checkpoint() {
+  local file step best="" best_step=-1
+  for file in "$RUN_DIR"/nerfstudio_models/step-*.ckpt; do
+    [ -f "$file" ] || continue
+    step="${file##*/step-}"; step="${step%.ckpt}"
+    [[ "$step" =~ ^[0-9]+$ ]] || continue
+    if (( 10#$step > best_step )); then best_step=$((10#$step)); best="$file"; fi
+  done
+  echo "$best"
+}
 
 if [ "$MODE" != finish ]; then
   PRESET="$MODE"
@@ -79,9 +89,12 @@ if [ "$MODE" != finish ]; then
   kill $MONITOR 2>/dev/null || true
 
   # Nerfstudio saves a checkpoint every 2,000 steps and at the end; it stays in $RUN_DIR whatever happens next.
-  if [ "$TRAIN_RC" -eq 0 ] && grep -q "step-0*$((ITERATIONS - 1)).ckpt" <(latest_checkpoint); then
+  # Training ran steps 0..ITERATIONS-1 and saves the last one at the end.
+  FINAL_CHECKPOINT="$(printf 'step-%09d.ckpt' $((ITERATIONS - 1)))"
+  LATEST="$(latest_checkpoint)"
+  if [ "$TRAIN_RC" -eq 0 ] && [ "${LATEST##*/}" = "$FINAL_CHECKPOINT" ]; then
     record TRAIN ok
-  elif [ -n "$(latest_checkpoint)" ]; then
+  elif [ -n "$LATEST" ]; then
     record TRAIN incomplete
     echo "!! Training stopped early (exit code $TRAIN_RC). The last checkpoint is still exported and evaluated."
   else
