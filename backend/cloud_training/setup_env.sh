@@ -1,20 +1,33 @@
 #!/usr/bin/env bash
 # Installs Nerfstudio 1.1.5 (splatfacto) from the pinned lock file into a virtual
-# environment on the persistent volume, then proves the GPU works with gsplat.
+# environment on the persistent volume, checks the installed set with pip check,
+# then proves the GPU works with a small gsplat rasterisation.
 #
-# For a Runpod "PyTorch 2.1" Pod (runpod/pytorch:2.1.0-py3.10-cuda11.8.0-devel-ubuntu22.04)
-# or any Ubuntu 22.04 machine with an NVIDIA driver for CUDA >= 11.8, Python 3.10 and gcc.
-# Skip it inside the official image ghcr.io/nerfstudio-project/nerfstudio:1.1.5 (already installed there).
+# For a Runpod "PyTorch 2.1" Pod (runpod/pytorch:2.1.0-py3.10-cuda11.8.0-devel-ubuntu22.04: Python 3.10
+# with venv, gcc via the CUDA devel packages) or any Ubuntu 22.04 machine with an NVIDIA driver for
+# CUDA >= 11.8, Python 3.10 and gcc. Skip it inside ghcr.io/nerfstudio-project/nerfstudio:1.1.5.
 #
-#   bash setup_env.sh            (about 5-10 minutes; downloads about 3 GB)
+#   bash setup_env.sh            (about 5-10 minutes; downloads about 3.3 GB, installs about 7 GB)
+# Then: bash train.sh smoke      (2-5 minutes: a 300-step training, export, evaluation and report)
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 VENV="${VENV:-/workspace/nerfstudio-venv}"
+export PIP_NO_CACHE_DIR=1   # no 3 GB wheel cache on the container disk; the venv itself is on the volume
 
 echo "== GPU"
 nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv,noheader
 
+mkdir -p "$(dirname "$VENV")"
+FREE_GB=$(df -BG --output=avail "$(dirname "$VENV")" | tail -1 | tr -dc 0-9)
+echo "Free space on $(dirname "$VENV"): ${FREE_GB} GB (install about 7 GB, runs up to about 8 GB more)"
+[ "$FREE_GB" -ge 10 ] || { echo "Less than 10 GB free: give the Pod a bigger volume."; exit 1; }
+
 command -v python3.10 >/dev/null || { echo "Python 3.10 is required: the pinned wheels are built for it."; exit 1; }
+if ! command -v gcc >/dev/null; then
+  # pyliblzfse (a Nerfstudio dependency) is compiled from source.
+  echo "== Installing a C compiler"
+  apt-get update -qq && apt-get install -y -qq build-essential
+fi
 if [ ! -x "$VENV/bin/python" ]; then
   echo "== Creating $VENV"
   python3.10 -m venv "$VENV" || {
@@ -25,10 +38,13 @@ fi
 "$VENV/bin/python" -m pip install --quiet --upgrade "pip==24.3.1"
 
 echo "== Installing the pinned packages (torch 2.1.2+cu118, gsplat 1.4.0, nerfstudio 1.1.5)"
-# --no-deps: the lock already lists every dependency at an exact version.
+# --no-deps: the lock already lists every dependency at an exact version (pip check below proves it).
 "$VENV/bin/pip" install --no-deps -r "$HERE/requirements-nerfstudio.lock.txt" \
   --extra-index-url https://download.pytorch.org/whl/cu118 \
   --find-links https://docs.gsplat.studio/whl/pt21cu118/gsplat/
+
+echo "== pip check (every installed package's requirements are met)"
+"$VENV/bin/pip" check
 
 echo "== Checking the GPU with a small gsplat rasterisation"
 "$VENV/bin/python" - <<'EOF'
@@ -54,4 +70,4 @@ assert float(alpha.mean()) > 0, "gsplat rendered nothing"
 print(f"gsplat OK: rendered {tuple(image.shape)}, mean coverage {float(alpha.mean()):.2f}")
 EOF
 
-"$VENV/bin/ns-train" --help >/dev/null && echo "== Ready. Next: bash train.sh quick"
+"$VENV/bin/ns-train" --help >/dev/null && echo "== Ready. Next: bash train.sh smoke"

@@ -535,15 +535,18 @@ function CloudPackage({
             <ol className="steps">
               <li>
                 Rent one NVIDIA RTX 4090 or 3090 (24 GB). On Runpod: Pods → Deploy, Secure Cloud for private photos,
-                template &quot;PyTorch 2.1&quot;, 30 GB volume. Billing starts here (about $0.34–0.74 per hour).
+                template &quot;PyTorch 2.1&quot;, 20 GB container disk, 30 GB encrypted volume. Billing starts here
+                (about $0.34–0.74 per hour).
               </li>
               <li>Upload the zip (drag it into JupyterLab) and unpack it in /workspace.</li>
               <li>
-                <code>bash setup_env.sh</code> installs Nerfstudio 1.1.5 at pinned versions and tests the GPU.
+                <code>bash setup_env.sh</code> installs Nerfstudio 1.1.5 at pinned versions, runs pip check and tests
+                the GPU.
               </li>
               <li>
-                <code>bash train.sh quick</code> (7,000 steps, minutes) proves the pipeline. Look at the renders of the
-                held-out photos.
+                <code>bash train.sh smoke</code> (300 steps, minutes) proves training, export and evaluation work, then{" "}
+                <code>bash train.sh quick</code> (7,000 steps) gives a first look. Check the renders of the held-out
+                photos.
               </li>
               <li>
                 <code>bash train.sh quality</code> (30,000 steps) makes the first useful scene.

@@ -439,7 +439,8 @@ def manifest(project: dict[str, Any], report: dict[str, Any], checksums: dict[st
         "excluded": report["excluded"],
         "privacy": "EXIF/XMP removed from images/ without re-encoding; original photos are not included.",
         "trainer": {"name": "nerfstudio", "version": "1.1.5", "method": "splatfacto", "gsplat": "1.4.0",
-                    "torch": "2.1.2+cu118", "presets": {"quick": {"iterations": 7000}, "quality": {"iterations": 30000}}},
+                    "torch": "2.1.2+cu118", "presets": {"smoke": {"iterations": 300}, "quick": {"iterations": 7000},
+                                "quality": {"iterations": 30000}}},
         "files": checksums,
     }
 
