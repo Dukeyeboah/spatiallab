@@ -107,12 +107,23 @@ async function json<T>(response: Response): Promise<T> {
 const base = `${API_URL}/training`;
 const id = encodeURIComponent;
 
+/** /training itself answering 404 (or 405 for POST) means a backend started before Lab 10A. */
+function checkTrainingRoute(response: Response): Response {
+  if (response.status === 404 || response.status === 405) {
+    throw new Error(
+      `The backend at ${API_URL} is running but has no /training endpoint: it was started before Lab 10A. ` +
+        "Restart it (Ctrl+C, then uvicorn again) after pip install -r requirements.txt.",
+    );
+  }
+  return response;
+}
+
 export const trainingApi = {
-  list: () => fetch(base, { cache: "no-store" }).then((r) => json<ProjectSummary[]>(r)),
+  list: () => fetch(base, { cache: "no-store" }).then((r) => json<ProjectSummary[]>(checkTrainingRoute(r))),
   get: (projectId: string) => fetch(`${base}/${id(projectId)}`, { cache: "no-store" }).then((r) => json<TrainingProject>(r)),
   create: (name: string) =>
     fetch(base, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name }) }).then(
-      (r) => json<TrainingProject>(r),
+      (r) => json<TrainingProject>(checkTrainingRoute(r)),
     ),
   remove: async (projectId: string) => {
     const response = await fetch(`${base}/${id(projectId)}`, { method: "DELETE" });
