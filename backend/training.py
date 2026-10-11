@@ -8,7 +8,8 @@ trained Gaussian scenes:
         source/<img_id>.jpg|png|heic   the photographs as uploaded (never served, never modified)
         thumbs/<img_id>.jpg     320 px previews (the only image files served)
         work/                   Lab 10B jobs: poses.json + poses/ (training_poses.py)
-        output/                 reserved for Lab 10B training (PLY/SOG)
+        exports/                Lab 10C: the cloud training package zip + package.json (training_package.py)
+        output/                 reserved for trained results (PLY/SOG)
 
 Photographs are only inspected here. The checks (resolution, a blur
 heuristic, duplicates, dimensions) are warnings, never reasons to reject a
@@ -95,16 +96,17 @@ STAGES = [
         "key": "train",
         "title": "Gaussian training",
         "detail": "Optimise millions of Gaussians (position, scale, rotation, opacity, SH colour) "
-                  "until renders from the solved cameras match the photos.",
-        "tools": ["Brush", "OpenSplat", "gsplat / Nerfstudio splatfacto (CUDA)"],
-        "output": "work/train/",
+                  "until renders from the solved cameras match the photos. Needs an NVIDIA GPU: done on a rented "
+                  "one from the exported package (Lab 10C), never on this Mac.",
+        "tools": ["Nerfstudio 1.1.5 splatfacto (gsplat 1.4.0, CUDA 11.8) on a cloud GPU"],
+        "output": "exports/<name>-training-package.zip → the GPU machine's result folder",
     },
     {
         "key": "export",
         "title": "Export to Gaussian PLY",
         "detail": "Write the trained Gaussians in the 3DGS PLY layout read by Labs 8 and 9.",
-        "tools": ["the trainer's exporter"],
-        "output": "output/scene.ply",
+        "tools": ["ns-export gaussian-splat"],
+        "output": "splat.ply (+ run.json, eval.json), imported into the Gaussian scene store",
     },
     {
         "key": "sog",

@@ -1,9 +1,10 @@
 /**
  * Lab 10A: training projects. Photographs of a physical space, uploaded to
  * the local backend (backend/training.py), validated and prepared for
- * Gaussian splatting training. Nothing is trained here: the stages are a
- * plan for Lab 10B, and the checks are warnings that can't tell whether the
- * photos overlap enough (only camera pose estimation can).
+ * Gaussian splatting training. The checks are warnings that can't tell
+ * whether the photos overlap enough (only camera pose estimation can).
+ * Lab 10B: camera poses with COLMAP. Lab 10C: a package for training on a
+ * rented GPU; nothing is trained on this machine.
  */
 
 import { API_URL, errorMessage } from "./datasets";
@@ -89,6 +90,41 @@ export type PosePreview = {
   /** Flat xyz of a sample of the points (up to 60,000), and their 0–255 sRGB colours. */
   positions: number[];
   colors: number[];
+};
+
+/** Lab 10C stage 1: the cloud training package (backend/training_package.py). Built locally; nothing is uploaded. */
+export type PackageCheck = { key: string; label: string; level: "ok" | "warn" | "fail"; detail: string };
+
+export type TrainingPackage = {
+  /** Read from the files that would be shipped (binary model, image files), not from the summary. */
+  checks: PackageCheck[];
+  ready: boolean;
+  estimate: {
+    images: number;
+    model: number;
+    other: number;
+    total: number;
+    files: number;
+    imageCount: number;
+    evalCount: number;
+  } | null;
+  /** Photo ids held out for evaluation (Nerfstudio's every-8th rule). */
+  evalImages: string[];
+  built: {
+    createdAt: string;
+    file: string;
+    folder: string;
+    bytes: number;
+    sha256: string;
+    poseJobFinishedAt: string;
+    imageCount: number;
+    evalCount: number;
+    excludedCount: number;
+    /** The poses were re-estimated (or photos changed) after it was built. */
+    outdated: boolean;
+    available: boolean;
+  } | null;
+  building: boolean;
 };
 
 export type TrainingProject = {
@@ -197,7 +233,14 @@ export const trainingApi = {
     fetch(`${base}/${id(projectId)}/poses/cancel`, { method: "POST" }).then((r) => json<TrainingProject>(r)),
   posePreview: (projectId: string) =>
     fetch(`${base}/${id(projectId)}/poses/preview`, { cache: "no-store" }).then((r) => json<PosePreview>(r)),
+  trainingPackage: (projectId: string) =>
+    fetch(`${base}/${id(projectId)}/package`, { cache: "no-store" }).then((r) => json<TrainingPackage>(r)),
+  buildPackage: (projectId: string) =>
+    fetch(`${base}/${id(projectId)}/package`, { method: "POST" }).then((r) => json<TrainingPackage>(r)),
 };
+
+/** A plain link: the backend sends it as an attachment named <project>-training-package.zip. */
+export const packageDownloadUrl = (projectId: string) => `${base}/${id(projectId)}/package/download`;
 
 export const thumbnailUrl = (projectId: string, imageId: string) =>
   `${base}/${id(projectId)}/images/${id(imageId)}/thumbnail`;

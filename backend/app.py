@@ -49,6 +49,9 @@ Training projects (training.py, Lab 10A; photographs prepared for Gaussian train
     POST   /training/{id}/poses              start camera pose estimation (COLMAP, worker process) -> 202
     POST   /training/{id}/poses/cancel       stop it
     GET    /training/{id}/poses/preview      cameras + sampled points of the result (JSON)
+    GET    /training/{id}/package            cloud training package: checks, size estimate, last build (Lab 10C)
+    POST   /training/{id}/package            build it (registered photos + COLMAP model + scripts, zip)
+    GET    /training/{id}/package/download   the zip (attachment)
 
 Only converted assets are served; original uploads never leave spatial-data/.
 Conversions run one at a time in a separate worker process; budgets added
@@ -75,6 +78,7 @@ import splats
 import storage
 import training
 import training_env
+import training_package
 import training_poses
 from splat_bounds import robust_bounds
 from catalog import CatalogError
@@ -542,9 +546,11 @@ def project_view(project_id: str) -> dict:
 
 
 def refuse_while_estimating(project_id: str) -> None:
-    """Photos are read by a running pose job: changing them mid-run would break or silently skew it."""
+    """Photos are read by a running pose job (or a package build): changing them mid-run would break or silently skew it."""
     if training_poses.is_running(project_id):
         raise HTTPException(409, "Camera poses are being estimated for this project. Wait for it to finish, or cancel it first.")
+    if training_package.is_building(project_id):
+        raise HTTPException(409, "A training package is being built for this project. Wait a few seconds.")
 
 
 @app.get("/training")
@@ -631,6 +637,8 @@ def get_training_thumbnail(project_id: str, image_id: str) -> FileResponse:
 @app.post("/training/{project_id}/poses", status_code=202)
 def start_pose_estimation(project_id: str) -> dict:
     project = get_project_or_404(project_id)
+    if training_package.is_building(project_id):
+        raise HTTPException(409, "A training package is being built from the current poses. Wait a few seconds.")
     try:
         training_poses.queue(project)
     except (training_poses.PoseError, training.TrainingError) as error:
@@ -655,3 +663,40 @@ def get_pose_preview(project_id: str) -> FileResponse:
     if path is None:
         raise HTTPException(404, "No camera poses for this project yet.")
     return FileResponse(path, media_type="application/json")
+
+
+# Cloud training package (training_package.py, Lab 10C stage 1): built locally, nothing is uploaded anywhere.
+
+
+@app.get("/training/{project_id}/package")
+async def get_training_package(project_id: str) -> dict:
+    project = get_project_or_404(project_id)
+    # Reads the model and every packaged photo (about 100 MB for 175 photos): off the event loop.
+    try:
+        return await run_in_threadpool(training_package.view, project)
+    except training_package.PackageError as error:
+        raise HTTPException(400, str(error)) from error
+
+
+@app.post("/training/{project_id}/package")
+async def build_training_package(project_id: str) -> dict:
+    project = get_project_or_404(project_id)
+    if training_poses.is_running(project_id):
+        raise HTTPException(409, "Camera poses are being estimated. Build the package when they are done.")
+    if training_package.is_building(project_id):
+        raise HTTPException(409, "A package is already being built for this project.")
+    try:
+        await run_in_threadpool(training_package.build, project)
+        return await run_in_threadpool(training_package.view, project)
+    except (training_package.PackageError, training.TrainingError) as error:
+        raise HTTPException(400, str(error)) from error
+
+
+@app.get("/training/{project_id}/package/download")
+def download_training_package(project_id: str) -> FileResponse:
+    get_project_or_404(project_id)
+    path = training_package.package_path(project_id)
+    record = training_package.read_record(project_id)
+    if path is None or record is None:
+        raise HTTPException(404, "No training package has been built for this project.")
+    return FileResponse(path, media_type="application/zip", filename=record["file"])

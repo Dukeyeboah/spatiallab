@@ -46,6 +46,7 @@ A deliberately small Next.js + React Three Fiber app that renders a **real** LiD
 | 9 | Gaussian Inspector (separate page `/gaussian-inspector`) | single Gaussians of a real trained PLY: stored vs decoded values (log scale, logit opacity, quaternion, SH colour), isolated preview through Lab 6's projection, experiments, view-dependent colour, reproducible samples |
 | 10A | Photos for Gaussian training (separate page `/gaussian-training`) | training projects of real photographs: validated upload, thumbnails, per-photo checks (resolution, blur heuristic, duplicates, sizes) as warnings, planned pipeline stages, local training-environment assessment; nothing is trained yet |
 | 10B (step 1) | Camera poses (same page) | structure from motion with COLMAP as a cancellable background job: which photos were placed, sparse points, reprojection error, lens; solved cameras and points in 3D; nothing is trained yet |
+| 10C (stage 1) | Cloud training package (same page) | the COLMAP result checked from the shipped files and zipped with the placed photos, pinned Nerfstudio splatfacto scripts and a step-by-step rented-GPU procedure; nothing is uploaded or trained by the app |
 
 The dataset used: a handheld/SLAM LiDAR scan (`map.las`, 5,242,880 points, 178 MB, local metric frame, RGB) plus `poses.csv` (208 poses, 5 Hz, 41.4 s).
 
@@ -160,10 +161,10 @@ components/
     InspectorScene.tsx           Lab 9 <Canvas> (Lab 6 camera/reset), 1σ ellipsoid + own axes, gizmo, quad with SH colour, view reporter
     InspectorPanel.tsx           Lab 9 scene/index/sample pickers, stored → decoded table, experiments, Σ3D/Σ2D, scene statistics
 app/gaussian-inspector/page.tsx    Lab 9 client page: scenes, layout, record + edits, sample, summary; preview Gaussian via useMemo
-app/gaussian-training/page.tsx     Lab 10A/10B client page: projects, uploads with progress, environment report; pose job polling, photos ↔ 3D view
-components/training/               Lab 10A only (no 3D on this page)
-  TrainingPanel.tsx     project picker/creation, facts, add photos (files/folder), checks, refused files, camera poses (start/cancel/result), stages, environment
-  PhotoGrid.tsx         thumbnail grid: size, bytes, format, warnings, notes, placed/not placed, Remove
+app/gaussian-training/page.tsx     Lab 10A–10C client page: projects, uploads with progress, environment report; pose job polling, photos ↔ 3D view; package report/build
+components/training/               Lab 10A–10C
+  TrainingPanel.tsx     project picker/creation, facts, add photos (files/folder), checks, refused files, camera poses (start/cancel/result), cloud training package (checks, size, build, download, next steps), stages, environment
+  PhotoGrid.tsx         thumbnail grid: size, bytes, format, warnings, notes, placed/not placed, held out for evaluation, Remove
   PoseScene.tsx         Lab 10B <Canvas>: sparse points, camera frustums, click a camera → its photo, look through it
 app/gaussian-viewer/page.tsx       Lab 8 client page: splat scene list, catalog, selection, start view; SplatViewer + SplatPanel
 components/splat/                  Lab 8 only (no React Three Fiber on this page)
@@ -188,7 +189,7 @@ lib/
   importPlan.ts         folder/files → import plan: role detection, ambiguity flags, preview summary
   catalog.ts            Property/Capture/Catalog types, helpers, catalog API calls (Lab 7C)
   splats.ts             Lab 8: SplatScene type, splat API calls, selection checks, start camera (robust box, 180° Z)
-  training.ts           Lab 10A: training project/environment types, API calls, warning explanations, file partition, batched XHR upload with progress; 10B pose job/preview types + calls
+  training.ts           Lab 10A: training project/environment types, API calls, warning explanations, file partition, batched XHR upload with progress; 10B pose job/preview types + calls; 10C package types, calls, download URL
   poseView.ts           Lab 10B: COLMAP frame → display (median centre, cameras' mean up, 90% radius), frustum line segments
   datasets.ts           Dataset type (= backend metadata), BUILTIN_DATASET (map.las offset/bounds),
                         asset URLs, pickBudget(), backend API calls, client-side file checks
@@ -208,12 +209,15 @@ backend/                local FastAPI dataset service (Lab 7A)
   training.py           Lab 10A: training-photo store, Pillow validation, thumbnails, checks (resolution, blur, duplicates, sizes), planned stages
   training_env.py       Lab 10A: read-only report of OS/CPU/memory/GPU/disk/tools/packages and a local-training verdict
   training_poses.py     Lab 10B: COLMAP pose job (preprocess → features → matching → mapper), progress from its logs, cancel, summary + preview
+  training_package.py   Lab 10C: COLMAP binary reader, checks of the shipped files, lossless JPEG metadata removal, zip + manifest + SHA256SUMS
+  cloud_training/       Lab 10C files copied into every package: README.md (cloud procedure), setup_env.sh, train.sh,
+                        requirements-nerfstudio.lock.txt (239 pins, resolved as of Nerfstudio 1.1.5's release)
   uploads.py            per-role extension/size/content validation
   converter.py          conversion job (progress → metadata), budget backfill job, pose/frame validation
   lidar_conversion.py   shared core: chunked LAS read, offset, sampling, .bin writer
   requirements.txt
 spatial-data/           (gitignored) datasets/<id>/{metadata.json, source/, converted/}, splats/<id>/{...},
-                        training/<id>/{project.json, source/, thumbs/, work/, output/}, catalog.json
+                        training/<id>/{project.json, source/, thumbs/, work/, exports/, output/}, catalog.json
 docs/                   this guide
 ```
 
@@ -456,7 +460,8 @@ project.json     name, createdAt, association {propertyId: null, captureId: null
 source/          originals as <img_id>.jpg|png|heic (extension from the detected content; never served)
 thumbs/          <img_id>.jpg, longer side 320 px, EXIF orientation applied (the only image files the API serves)
 work/            Lab 10B jobs: poses.json + poses/ (section 5.10)
-output/          reserved for Lab 10B training (PLY/SOG)
+exports/         Lab 10C: <slug>-training-package.zip + package.json (section 5.11)
+output/          reserved for trained results (PLY/SOG)
 ```
 
 `project.json` is written atomically under one lock per project. Each image entry: `id` (`img_<12 hex>`), `filename` (display only, never used as a path), `storedAs`, `bytes`, `format`, `width`/`height` (after EXIF orientation), `orientation`, `camera` (make, model, focal length, 35 mm focal length; **GPS is never read**), `takenAt`, `sha256`, `dhash`, `sharpness`, `notes`, `addedAt`.
@@ -477,7 +482,7 @@ output/          reserved for Lab 10B training (PLY/SOG)
 
 The checks look at each photo on its own: they **cannot** tell whether photos overlap enough or cover the space. That is only known once camera poses are estimated (Lab 10B).
 
-**Stages** (returned with every project): image preprocessing → camera pose estimation (COLMAP) → Gaussian training (Brush, OpenSplat, gsplat/splatfacto) → export Gaussian PLY (readable by Labs 8/9) → optional SOG (SplatTransform). Since 10B step 1 the first two carry the pose job's status (`queued`/`running`/`done`/`failed`/`cancelled`/`outdated`, attributed to the step it stopped in); the rest stay `planned`. No poses or Gaussians are invented; `jobs` in `project.json` stays empty (the pose job lives in `work/poses.json`).
+**Stages** (returned with every project): image preprocessing → camera pose estimation (COLMAP) → Gaussian training (Nerfstudio splatfacto on a rented GPU, Lab 10C) → export Gaussian PLY (readable by Labs 8/9) → optional SOG (SplatTransform). Since 10B step 1 the first two carry the pose job's status (`queued`/`running`/`done`/`failed`/`cancelled`/`outdated`, attributed to the step it stopped in); the rest stay `planned`. No poses or Gaussians are invented; `jobs` in `project.json` stays empty (the pose job lives in `work/poses.json`).
 
 **Environment** (`GET /training/environment`, `training_env.py`): OS/arch, CPU, memory (`sysctl`), GPUs (`system_profiler SPDisplaysDataType -json` on macOS, `nvidia-smi` elsewhere), free disk, tools on `PATH` (colmap, glomap, brush_app, opensplat, ns-train, ffmpeg, nvidia-smi, docker), Python packages found with `importlib.util.find_spec` (torch, gsplat, pycolmap, cv2; nothing imported). Verdict: `local-cuda`, `local-metal-limited` or `cpu-only` with notes (memory < 16 GB, disk < 30 GiB, missing COLMAP/trainer). Read-only: it never installs anything. Tools are looked up on `PATH` and in Homebrew's folders (`/opt/homebrew/bin`, `/usr/local/bin`), since a backend started outside a login shell may lack them.
 
@@ -509,6 +514,52 @@ Whole job about 4 minutes. The job is the only writer of `poses.json` while it r
 **Incremental vs global mapper** (COLMAP 4's built-in `global_mapper`, formerly GLOMAP): global placed all 192 in 20 s (1.18 px), but its 16 extra photos had 0–100 matched points (median 429 for the others; several had 0–3) — poses without evidence. On the 176 both placed, the cameras agree to 0.45% of the scene radius (median, after a similarity alignment). So the job uses the incremental mapper.
 
 **3D view** (`lib/poseView.ts`, `PoseScene.tsx`): COLMAP fixes no origin, up or scale, so for display only: centre = per-axis median of the points, up = mean of the cameras' up vectors (−y column of camera-to-world; phones are held roughly upright), scale = 90% of points within 4 units. Point colours are sRGB → linear. Frustums: apex at the centre, base = the image rectangle at depth 0.3 using `width/2/fx`, `height/2/fy`. "Look through this camera" sets the view at the solved centre, looking along its z axis, with the photo's vertical FOV (`2·atan(h/2/fy)`).
+
+### 5.11 Cloud training package (Lab 10C, stage 1)
+
+Gaussian training needs an NVIDIA GPU (CUDA), so it runs on a rented one; the app only **prepares** it (`training_package.py`). Nothing is uploaded, no cloud API is called, and the project's `source/` and `work/` are never modified.
+
+```
+exports/package.json                    createdAt, file, folder, bytes, sha256 (of the zip), poseJobFinishedAt, imageCount, evalCount, excludedCount
+exports/<slug>-training-package.zip     ZIP_STORED (JPEG/binary don't compress), one folder <slug>/:
+  images/<img_id>.jpg                   the registered photos only, as COLMAP solved them (work/poses/images: 1600 px, upright)
+  sparse/0/{cameras,images,points3D,rigs,frames}.bin   COLMAP's model, byte-for-byte
+  manifest.json                         project, pose job (settings, counts, error), cameras, split rule + counts,
+                                        per image {colmapImageId, file, imageId, originalFilename, width, height, observations, split, sha256},
+                                        excluded (unplaced) photos, trainer versions + presets, file checksums
+  README.md setup_env.sh train.sh requirements-nerfstudio.lock.txt   from backend/cloud_training/ ({{NAME}}/{{SLUG}} filled in)
+  SHA256SUMS                            `sha256sum -c SHA256SUMS` on the GPU machine
+```
+
+`<slug>` = the project name lower-cased, runs of other characters → `-`, ≤ 40 chars (`project` if empty); the name is never used as a path otherwise. One package per project (a rebuild replaces it; built atomically via `.building.zip`). It is `outdated` when the pose job's `finishedAt` differs or the photo set changed.
+
+**Checks** (`GET /training/{id}/package`, about 0.5 s for 175 photos; read from the **shipped** files with our own COLMAP binary reader, not from the summary). Each is `ok`, `warn` or `fail` (any fail refuses the build):
+
+| Check | Rule |
+| --- | --- |
+| Camera poses | pose job `done` and not outdated |
+| One reconstruction | `summary.models` has one group (several → warn: only the largest is exported); the model folder has cameras/images/points3D.bin |
+| Intrinsics | camera model in SIMPLE_PINHOLE, PINHOLE, SIMPLE_RADIAL, RADIAL, OPENCV, OPENCV_FISHEYE (a conservative subset of what Nerfstudio reads; our pose job always writes OPENCV), finite params, f > 0, principal point inside the image, one model for all images (Nerfstudio asserts it) |
+| Extrinsics | every image: unit quaternion (±1e-6), finite translation, known camera id |
+| Sparse points | > 0, finite, every track entry → a registered image and an existing 2D feature, every 2D → 3D reference → an existing point |
+| Photos for every pose | each image name is a file in `work/poses/images`, a JPEG of exactly its camera's width × height, and a current project photo; names unique |
+| Resolution | longer side ≤ 1600 px: Nerfstudio picks downscale factor 1 itself (above that it **stops to ask interactively**) |
+| Frame | model copied byte-for-byte (COLMAP frame and calibration preserved); Nerfstudio's own re-centring is recorded in `dataparser_transforms.json` |
+| Held out | Nerfstudio's `--eval-mode interval --eval-interval 8`: images sorted by COLMAP image id, index % 8 == 0 → eval (room1: 22 of 175) |
+| Metadata | EXIF/XMP removed losslessly; GPS count reported |
+| Photos left out | unregistered photos are not packaged (Nerfstudio's COLMAP loader only reads posed images) |
+
+**Size before export**: photo bytes after metadata removal (exact) + model files + support files + 400 B per manifest image + 120 B per zip entry. room1: estimate 100,417,612 B, actual 100,447,676 B (0.03%).
+
+**Metadata removal** (`strip_jpeg_metadata`): walk the JPEG segments up to SOS and drop APP1 segments starting `Exif\0\0`, `http://ns.adobe.com/xap/1.0/\0` or `http://ns.adobe.com/xmp/extension/\0`; everything else (JFIF, ICC profile, tables, the scan) is copied, so decoded pixels are identical. COLMAP and Nerfstudio don't need EXIF (the calibration is in cameras.bin; the copies are already upright, orientation 1).
+
+**Nerfstudio compatibility** (verified against the v1.1.5 source): `ColmapDataParser` reads `images/` + `--colmap-path sparse/0` (TXT preferred, else BIN), sorts by image id, converts OpenCV → OpenGL camera axes, auto-orients ("up"), centres ("poses") and scales to ±1, undistorts OPENCV images itself (k1, k2, p1, p2 kept), and loads points3D for splatfacto's initialisation. Its own reader read our COLMAP 4.2.1 binary model identically to the text model (175 images, 20,734 points; COLMAP 4's extra `rigs.bin`/`frames.bin` are ignored).
+
+**Pinned environment** (verified 2026-10: PyPI, GitHub releases, ghcr.io, Docker Hub, docs.runpod.io): Nerfstudio 1.1.5 (latest release, 2024-11-11) requires `gsplat==1.4.0`; torch 2.1.2+cu118 (Nerfstudio's recommended install); Python 3.10 (`gsplat-1.4.0+pt21cu118-cp310` prebuilt wheel, GPU code for sm_70/75/80/86/90 — an RTX 4090 (8.9) runs the 8.6 code); `numpy<2` (torch 2.1 is built against NumPy 1). The lock file was resolved with `uv pip compile --exclude-newer 2024-11-12` for `x86_64-manylinux_2_31`: without the date cutoff the loose pins pull e.g. tyro 1.0 / pillow 12 (untested with 1.1.5); with it, tyro 0.8.14, pillow 11.0, rich 13.9, open3d 0.18. Only `pyliblzfse` (C), `fire` and `pycollada` build from source. Runpod base image `runpod/pytorch:2.1.0-py3.10-cuda11.8.0-devel-ubuntu22.04` (template "PyTorch 2.1", has gcc, SSH, JupyterLab); provider-neutral alternative `ghcr.io/nerfstudio-project/nerfstudio:1.1.5` (CUDA 11.8, 5.6 GB, built for arch 61–90).
+
+**Presets** (`train.sh`, same command apart from the length): `ns-train splatfacto --data <pkg> --output-dir /workspace/outputs --experiment-name <slug> --timestamp <preset>-<UTC time> --max-num-iterations N --vis viewer+tensorboard --viewer.quit-on-train-completion True colmap --colmap-path sparse/0 --images-path images --downscale-factor 1 --eval-mode interval --eval-interval 8`, then `ns-export gaussian-splat` (→ `splat.ply`) and `ns-eval --render-output-path` (PSNR/SSIM/LPIPS + one side-by-side PNG per held-out photo, `eval-renders/INDEX.txt` names them). Quick = 7,000 iterations (the standard early 3DGS checkpoint; splatfacto's LR schedule is fixed at 30k, so it stops mid-schedule), quality = 30,000 (the reference length, default splatfacto: ~6 GB VRAM per the docs). `splatfacto-big` (~12 GB) is the next step if needed. The result folder adds `config.yml`, `dataparser_transforms.json`, `manifest.json`, `gpu.csv` (nvidia-smi every 5 s) and `run.json` (versions, preset, iterations, GPU, seconds, peak MiB, Gaussian count from the PLY header, PLY bytes, eval metrics, package provenance).
+
+**Estimates** (not measurements, stated as such in the README): setup 5–10 min; quick 3–8 min (4090) / 5–12 min (3090); quality 15–35 / 25–50 min; 4–10 GB VRAM; 0.3–2 M Gaussians; PLY ≈ 250 MB per million (62 float properties incl. nx/ny/nz and SH degree 3). Runpod prices (pricing page, 2026-10): RTX 4090 $0.34/h Community, $0.74/h Secure; RTX 3090 $0.22/$0.50; stopped volumes $0.20/GB/month until terminated.
 
 ## 6. Rendering pipeline
 
@@ -885,7 +936,29 @@ Accept (real 192-photo room set copied to a test store):
 2. Page: outdated notice and badges `done`/`outdated` on load; Run again disables uploads and Remove; progress text advances; result 174 of 191 placed, 0.942 px, 17 unplaced cards and filter = 17; 3D view shows 174 frustums inside the room's points; a clicked camera (IMG_8178) shows its photo and looking through it lines the chest and cabinet points up with the photo.
 3. `/`, `/gaussian-projection`, `/gaussian-compositing`, `/gaussian-viewer`, `/gaussian-inspector` load; `tsc`, `next build`, pyflakes clean; no console errors.
 
-Limitations to state: poses only (no training yet); CPU only on macOS (no CUDA SIFT); exhaustive matching grows with N² (sequential above 300 photos assumes the files are in shooting order); one lens per size group, not per phone; the model has no metric scale or gravity (display up is a heuristic); not linked to LiDAR or a property yet; unplaced photos are excluded, not fixed.
+Limitations to state: poses only (training: Lab 10C); CPU only on macOS (no CUDA SIFT); exhaustive matching grows with N² (sequential above 300 photos assumes the files are in shooting order); one lens per size group, not per phone; the model has no metric scale or gravity (display up is a heuristic); not linked to LiDAR or a property yet; unplaced photos are excluded, not fixed.
+
+### Lab 10C (stage 1) — Cloud training package
+
+Constraints (from the brief): no CUDA or heavy training on the Mac; no cloud instance, upload or charge without the user's explicit approval; original photos and the COLMAP output untouched; a COLMAP success is not assumed to mean a training success.
+
+Requirements:
+
+- Backend (section 5.11): `GET /training/{id}/package` (checks, `ready`, size estimate, held-out photo ids, last build + `outdated`/`available`, `building`), `POST /training/{id}/package` (builds in a thread; 400 if a check fails; 409 while poses run or another build runs), `GET /training/{id}/package/download` (attachment `<slug>-training-package.zip`; 404 before a build). While a build runs, uploads/removal/deletion and starting pose estimation → 409.
+- `backend/cloud_training/`: README.md (versions, estimates, Runpod steps 1–7: choose GPU, upload, install, quick test, quality test, download, Stop + Terminate; monitoring; troubleshooting; other providers), `setup_env.sh` (venv on the volume, `pip install --no-deps -r` the lock with the cu118 and gsplat indexes, GPU + gsplat rasterisation smoke test), `train.sh quick|quality` (train → export → eval → `run.json`), the lock file.
+- Panel "Cloud training package (Lab 10C)" (shown once poses are done): the checks (✓/!/✗ + detail), contents (photos to train / held out, files), size before export, Build package / Build again, download link, built date + size + SHA-256, outdated notice, "What to do with it" (seven plain steps). Photo cards: "Held out for evaluation".
+
+Accept (copy of room1, 192 photos, 175 placed):
+
+1. Checks all ✓ (one model, OPENCV 1200×1600, 175 poses, 20,734 points / 101,200 observations, 175 files of the right size, 22 held out, no GPS, 17 left out); estimate ≈ actual (100.4 MB).
+2. Zip: `shasum -c SHA256SUMS` passes; the five `.bin` files `cmp`-identical to `work/poses/sparse/0`; 175/175 images decode to the same pixels as COLMAP's copies with no EXIF/XMP left; Nerfstudio 1.1.5's own `colmap_parsing_utils` reads the package: 1 camera, 175 images, 20,734 points, all files present at the camera size; its interval split equals the manifest's; manifest `colmapImageId` ↔ file agrees with images.bin.
+3. Failure cases: photo removed after poses → poses ✗ and build 400; packaged photo missing → ✗ "missing"; photo resized → ✗ size vs lens; no pose job → ✗; a JPEG with GPS + XMP + ICC → GPS and XMP gone, ICC kept, pixels identical; non-JPEG → error.
+4. `run.json` step of `train.sh` run on a fake result (Nerfstudio-style PLY header, nvidia-smi CSV, eval.json): peak memory, Gaussian count, INDEX.txt; Lab 8's `inspect_ply` accepts the Nerfstudio PLY layout (SH degree 3, extra nx/ny/nz).
+5. Page (production build on :3011 against a test backend on :8001): 11 ✓, size line, Build → download link, the downloaded file has the reported size, 22 "Held out" cards; removing a photo → ✗ poses, Build disabled, outdated notice, held-out badges gone; the other five pages load without errors; `tsc`, `next build`, pyflakes clean.
+
+Not verified here (needs the GPU machine): the lock's installation, training, export and evaluation themselves.
+
+Stage 2 (after the first real training, with the user): import `splat.ply` into the splat store linked to the training project with `run.json`/`dataparser_transforms.json` as provenance (Labs 8/9), check its orientation (Nerfstudio's frame is z-up, re-centred and scaled), record viewer FPS/memory and the visual review.
 
 ## 8. Pitfalls we hit and how they were fixed
 
@@ -936,6 +1009,9 @@ Limitations to state: poses only (no training yet); CPU only on macOS (no CUDA S
 | A cut-off HEIC is accepted with a garbage picture | libheif fills missing tiles instead of failing | check the HEIF box chain fits in the file before decoding (`heif_complete`) |
 | COLMAP feature extraction crawls (~4 s/photo, one core busy) on an 8 GB Mac | default `first_octave -1` upsamples every image 2× and all threads run at once → memory pressure and swapping | `SiftExtraction.first_octave 0`, 4 threads, 1600 px copies: 192 photos in ~50 s |
 | Cancel takes ~10 s / `pkill colmap` leaves it running | COLMAP ignores SIGTERM | kill it (SIGKILL); each run starts from a clean `work/poses/` |
+| A pip lock for an old release pulls today's dependencies (tyro 1.0, pillow 12 for Nerfstudio 1.1.5) | the package only sets lower bounds (`tyro>=0.6.6`) | resolve with `uv pip compile --exclude-newer <release date>` for the target platform; `--only-binary :all:` + `--no-binary <pkg>` finds the source-only packages |
+| Nerfstudio training hangs at "Would you like to downscale the images" | images > 1600 px make the COLMAP loader ask interactively | ship 1600 px images and pass `--downscale-factor 1` |
+| Production test build talks to the real backend | `NEXT_PUBLIC_SPATIAL_API_URL` is inlined at **build** time, not read by `next start` | build with it set to the test backend, rebuild without it afterwards |
 | Global mapper "places every photo" | it also poses photos with 0–3 matched points | use the incremental mapper; report unplaced photos |
 | Two COLMAP runs write the same database | a killed shell's `&&` chain kept going to the next step | one run per clean folder; check `pgrep colmap` before starting |
 | HEIC portrait photo reported as landscape / swapped twice | pillow-heif already rotated it and resets EXIF orientation to 1 | don't swap sides for HEIF; record `info["original_orientation"]` |
@@ -983,6 +1059,7 @@ Techniques used:
 - **Gaussian Inspector** (Lab 9): `curl` the three endpoints incl. errors; decode-check with an independent decoder (the same scene's SOG package, matched by nearest position); `npx tsx` script (`.mts`, `node_modules` symlinked) importing `lib/gaussian/inspector.ts`, `sphericalHarmonics.ts`, `gaussianMath.ts` with real records from the test backend: SH orthonormality (Fibonacci sphere), degree-0 = base, Euler round trip, preview Σ3D = FΣFᵀ, magnification invariance, Monte Carlo Σ2D (mulberry32), view direction mapping. In Playwright: turn the ellipsoid/outline off, compare the centre 2×2 pixel with `colour·α + bg·(1 − α)` from the panel (bg = 0.0103), orbit by dragging and compare again; set range inputs with the native value setter + `input` event.
 - **Training photos** (Lab 10A): build fixtures outside the repo (crops of real renders, plus a byte copy, a re-encode, a blurred copy, a tiny PNG, a JPEG renamed `.png`, an EXIF-orientation-6 JPEG, a truncated JPEG, random bytes as `.jpg`, a `.txt`, text named `.heic`; HEIC copies via `sips -s format heic`, plus a truncated one with `head -c`); `curl -F files=@…` (zsh array) into a test backend; check every warning kind, removal, size/pixel limits and that `source/` + `thumbs/` match `project.json`. In Playwright: create a project, `setInputFiles` on the photo input and the folder input, answer `confirm` via `page.on("dialog")`, scroll before counting lazy thumbnails.
 - **Camera poses** (Lab 10B): copy a real project's folder (without `work/`) into a test store; `curl` start / double start / removal while running / cancel (check `pgrep colmap` afterwards) / full run with polling; compare the summary with a manual COLMAP run (`model_analyzer`); when comparing mappers, align camera centres with a similarity (Umeyama) and list photos with few matched points. In Playwright, poll the panel text for the stage changes (a full run is ~4 min), then the 3D view: click over the canvas until a camera is selected, "Look through this camera", screenshot next to the thumbnail.
+- **Training package** (Lab 10C): on a test-store copy (project.json, thumbs, work/poses.json, work/poses/{images,sparse,model}): print the checks; build; unzip and `shasum -a 256 -c SHA256SUMS`; `cmp` the model files; decode every packaged image against COLMAP's copy; read the package with Nerfstudio's `colmap_parsing_utils.py` fetched from the release tag (pure Python + NumPy, no install) and replay the interval split; break things one at a time (remove a photo, hide one, resize one, hide poses.json). Extract the `run.json` heredoc from `train.sh` and run it on a fake result folder. Playwright: block `127.0.0.1:8000`, build → download event → size, then remove a photo and check the outdated state.
 - Note: FPS numbers from SwiftShader are meaningless; use real hardware for performance conclusions.
 
 ## 10. Adapting Spatial Lab for different web purposes
@@ -1005,13 +1082,13 @@ General scaling rules: raw LAS is never loaded directly; convert offline to a ty
 
 ## 11. Not built yet / roadmap
 
-Explicitly out of scope so far (each would be its own lab): cross-capture alignment (Lab 7C organises captures per property; registration into a property frame via `alignment`/`frame`, using control points/GNSS/CRS, is not built), meshes and photographs as capture representations (splat scenes exist since Lab 8, section 5.7), splat ↔ LiDAR registration, importing SuperSplat `settings.json` (authored cameras/annotations), splat editing/cropping, background import jobs for very large splat files, LAZ/E57 import, LiDAR intensity visualisation, pose animation, clipping/cropping, measurement tools, annotations/hotspots, full Gaussian splatting (Lab 6 projects one Gaussian; Lab 7B composites up to 1,000 with CPU projection, centre sorting and instanced quads; still missing: projection and sorting on the GPU for millions of Gaussians, tile-based rasterisation, spherical-harmonic colour for many Gaussians in our own renderer (Lab 9 evaluates it for one; Lab 8 views real trained scenes with the official viewer), training), Gaussian training from the solved camera poses (Lab 10B step 2: Brush locally or a cloud GPU; `output/` reserved), metric scale/gravity for photo reconstructions (e.g. from LiDAR), video frame extraction, linking training projects to a property/capture, RAW/video import, editing/saving trained Gaussians (Lab 9 experiments are preview-only), inspecting a Gaussian among its neighbours, ordinary meshes, WebXR, LOD/octrees, workers.
+Explicitly out of scope so far (each would be its own lab): cross-capture alignment (Lab 7C organises captures per property; registration into a property frame via `alignment`/`frame`, using control points/GNSS/CRS, is not built), meshes and photographs as capture representations (splat scenes exist since Lab 8, section 5.7), splat ↔ LiDAR registration, importing SuperSplat `settings.json` (authored cameras/annotations), splat editing/cropping, background import jobs for very large splat files, LAZ/E57 import, LiDAR intensity visualisation, pose animation, clipping/cropping, measurement tools, annotations/hotspots, full Gaussian splatting (Lab 6 projects one Gaussian; Lab 7B composites up to 1,000 with CPU projection, centre sorting and instanced quads; still missing: projection and sorting on the GPU for millions of Gaussians, tile-based rasterisation, spherical-harmonic colour for many Gaussians in our own renderer (Lab 9 evaluates it for one; Lab 8 views real trained scenes with the official viewer), training), running the cloud training and importing its PLY with provenance (Lab 10C stage 2; `output/` reserved), metric scale/gravity for photo reconstructions (e.g. from LiDAR), video frame extraction, linking training projects to a property/capture, RAW/video import, editing/saving trained Gaussians (Lab 9 experiments are preview-only), inspecting a Gaussian among its neighbours, ordinary meshes, WebXR, LOD/octrees, workers.
 
 ## 12. Prompt templates
 
 **Rebuild the whole app:**
 
-> Build "Spatial Lab" exactly as specified in `docs/SPATIAL_LAB_REBUILD_GUIDE.md`. Follow the principles in section 2, the versions and config in section 3, the architecture in section 4, and implement Labs 1 through 10B step 1 in order (section 7). The built-in dataset is in `public/data/` (`pointcloud-500k.bin`, `pointcloud-1m.bin`, `pointcloud-2m.bin`, `pointcloud-5m.bin`, `poses.csv`); its offset is in section 5.2. Start the backend as in section 3.1. For Labs 8 and 9, use a downloaded SuperSplat scene (e.g. Ceramic Studio; its PLY download for Lab 9) as the test scene. After each lab run the validation playbook (section 9) and report results. Do not generate fake data.
+> Build "Spatial Lab" exactly as specified in `docs/SPATIAL_LAB_REBUILD_GUIDE.md`. Follow the principles in section 2, the versions and config in section 3, the architecture in section 4, and implement Labs 1 through 10C stage 1 in order (section 7). The built-in dataset is in `public/data/` (`pointcloud-500k.bin`, `pointcloud-1m.bin`, `pointcloud-2m.bin`, `pointcloud-5m.bin`, `poses.csv`); its offset is in section 5.2. Start the backend as in section 3.1. For Labs 8 and 9, use a downloaded SuperSplat scene (e.g. Ceramic Studio; its PLY download for Lab 9) as the test scene. After each lab run the validation playbook (section 9) and report results. Do not generate fake data.
 
 **Variant for another purpose:**
 
@@ -1053,3 +1130,4 @@ Explicitly out of scope so far (each would be its own lab): cross-capture alignm
 | 10A.1 | HEIC/HEIF (iPhone) photos accepted: `pillow-heif` 1.8.1 added to `requirements.txt`, stored as `.heic`, truncation check on the HEIF box chain, original orientation recorded; preprocessing stage notes HEIC → JPG for Lab 10B; frontend accepts `.heic/.heif` |
 | 10A.2 | `/gaussian-training` tells a backend started before Lab 10A (`/training` 404/405 → "restart it") apart from other errors, instead of a bare "Not Found" |
 | 10B.1 | Camera pose estimation: COLMAP 4.2.1 via Homebrew (user-approved); `training_poses.py` job in its own worker (preprocess 1600 px → SIFT CPU first octave 0 → exhaustive/sequential matching → incremental mapper), log-based progress, cancel (SIGKILL), restart recovery, 409 guards, summary + preview; 3 `/training/{id}/poses…` endpoints; stage statuses; `training_env.find_tool` (Homebrew fallback); panel section, placed/not-placed cards and filter, `PoseScene` 3D view (`lib/poseView.ts`); section 5.10 |
+| 10C.1 | Cloud training package: `training_package.py` (COLMAP binary reader, 11 checks of the shipped files, lossless EXIF/XMP removal, size estimate, zip + manifest + SHA256SUMS) + 3 `/training/{id}/package…` endpoints with 409 guards; `backend/cloud_training/` (Runpod/any-GPU README, `setup_env.sh`, `train.sh quick|quality`, Nerfstudio 1.1.5 lock resolved as of its release date); panel section + "Held out for evaluation" cards; versions verified against PyPI/GitHub/ghcr/Runpod docs; section 5.11 |

@@ -616,6 +616,64 @@ body {
   color: #bbb;
 }
 
+/* Lab 10C: package checks (✓ ok, ! warn, ✗ fail), the download link, the zip's hash. */
+.controls .check-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 11px;
+  color: #bbb;
+  line-height: 1.35;
+}
+
+.controls .check-list li {
+  display: flex;
+  gap: 6px;
+}
+
+.controls .check-list .mark {
+  flex: 0 0 10px;
+  font-weight: bold;
+}
+
+.controls .check-list .ok .mark {
+  color: #8d8;
+}
+
+.controls .check-list .warn .mark {
+  color: #fc6;
+}
+
+.controls .check-list .fail .mark {
+  color: #f88;
+}
+
+.controls .download-link {
+  padding: 2px 8px;
+  border: 1px solid #3a7a3a;
+  border-radius: 4px;
+  background: #1d2a1d;
+  color: #cfc;
+  font-size: 12px;
+  text-decoration: none;
+}
+
+.controls .hash {
+  word-break: break-all;
+  font-size: 10px;
+}
+
+.controls .steps {
+  margin: 4px 0;
+  padding-left: 18px;
+  font-size: 11px;
+  color: #bbb;
+  line-height: 1.4;
+}
+
 .photo-unplaced {
   color: #f88;
 }

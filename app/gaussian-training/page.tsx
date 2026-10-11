@@ -12,6 +12,7 @@ import {
   type Environment,
   type PosePreview,
   type ProjectSummary,
+  type TrainingPackage,
   type TrainingProject,
 } from "@/lib/training";
 
@@ -27,6 +28,8 @@ const POLL_MS = 2000;
  * Lab 10B (step 1): camera pose estimation with COLMAP as a background job;
  * the page polls its progress and shows the result as photos (placed or not)
  * or in 3D (sparse points and solved cameras).
+ * Lab 10C (stage 1): checks the finished reconstruction and builds a zip for
+ * training on a rented GPU; the photos it holds out for evaluation are marked.
  */
 export default function GaussianTrainingPage() {
   const [projects, setProjects] = useState<ProjectSummary[]>([]);
@@ -40,6 +43,7 @@ export default function GaussianTrainingPage() {
   const [view, setView] = useState<"photos" | "poses">("photos");
   /** Tagged with the job it belongs to, so a re-run never shows the previous result. */
   const [preview, setPreview] = useState<{ key: string; data: PosePreview } | null>(null);
+  const [trainingPackage, setTrainingPackage] = useState<{ key: string; data: TrainingPackage } | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -93,6 +97,15 @@ export default function GaussianTrainingPage() {
 
   const showPoses = view === "poses" && !!project && preview?.key === previewKey && !!preview;
 
+  // The package checks read the model and every photo (about a second): once per finished job and photo set.
+  const packageKey = previewKey && `${previewKey}:${job?.outdated}`;
+  useEffect(() => {
+    if (!project || !packageKey || trainingPackage?.key === packageKey) return;
+    run(async () => setTrainingPackage({ key: packageKey, data: await trainingApi.trainingPackage(project.id) }));
+  }, [packageKey]);
+  const currentPackage = trainingPackage?.key === packageKey ? trainingPackage.data : null;
+  const evalImages = new Set(currentPackage?.ready ? currentPackage.evalImages : []);
+
   useEffect(() => {
     run(async () => {
       const list = await trainingApi.list();
@@ -119,6 +132,7 @@ export default function GaussianTrainingPage() {
           project={project}
           onlyWarnings={onlyWarnings}
           onlyUnplaced={onlyUnplaced}
+          evalImages={evalImages}
           disabled={busy || progress !== null || jobActive}
           onRemove={(imageId, filename) => {
             if (!window.confirm(`Remove "${filename}" from this project? The stored copy is deleted.`)) return;
@@ -198,6 +212,11 @@ export default function GaussianTrainingPage() {
         }}
         onlyUnplaced={onlyUnplaced}
         onOnlyUnplaced={setOnlyUnplaced}
+        trainingPackage={currentPackage}
+        onBuildPackage={() => {
+          if (!project || !packageKey) return;
+          run(async () => setTrainingPackage({ key: packageKey, data: await trainingApi.buildPackage(project.id) }));
+        }}
         busy={busy}
         error={error}
       />

@@ -4,9 +4,11 @@ import Link from "next/link";
 import { useState } from "react";
 import { formatBytes } from "@/lib/splats";
 import {
+  packageDownloadUrl,
   WARNING_LABELS,
   type Environment,
   type ProjectSummary,
+  type TrainingPackage,
   type TrainingProject,
   type WarningKind,
 } from "@/lib/training";
@@ -31,6 +33,8 @@ type TrainingPanelProps = {
   onView: (view: "photos" | "poses") => void;
   onlyUnplaced: boolean;
   onOnlyUnplaced: (value: boolean) => void;
+  trainingPackage: TrainingPackage | null;
+  onBuildPackage: () => void;
   busy: boolean;
   error: string | null;
 };
@@ -57,8 +61,9 @@ export function TrainingPanel(props: TrainingPanelProps) {
         ← Lab 9: Gaussian Inspector
       </Link>
       <div className="note">
-        Lab 10A: collect photographs of a space and check them. Lab 10B (step 1): estimate where each photo was taken
-        from with COLMAP. Nothing is trained yet; the photos are stored by the local backend and never modified.
+        Lab 10A: collect photographs of a space and check them. Lab 10B: estimate where each photo was taken from with
+        COLMAP. Lab 10C: package the result for training on a rented GPU. Nothing is trained on this Mac; the photos
+        are stored by the local backend and never modified.
       </div>
       {props.error && <div className="error">{props.error}</div>}
 
@@ -170,6 +175,14 @@ export function TrainingPanel(props: TrainingPanelProps) {
             onlyUnplaced={props.onlyUnplaced}
             onOnlyUnplaced={props.onOnlyUnplaced}
           />
+          {project.poses?.status === "done" && (
+            <CloudPackage
+              projectId={project.id}
+              pkg={props.trainingPackage}
+              busy={busy || uploading}
+              onBuild={props.onBuildPackage}
+            />
+          )}
           <Stages project={project} />
         </>
       )}
@@ -443,6 +456,112 @@ function Poses({
   );
 }
 
+const CHECK_MARKS = { ok: "✓", warn: "!", fail: "✗" } as const;
+
+function CloudPackage({
+  projectId,
+  pkg,
+  busy,
+  onBuild,
+}: {
+  projectId: string;
+  pkg: TrainingPackage | null;
+  busy: boolean;
+  onBuild: () => void;
+}) {
+  const e = pkg?.estimate;
+  const built = pkg?.built;
+  return (
+    <div className="section">
+      <b>Cloud training package (Lab 10C)</b>
+      <div className="note">
+        Gaussian training needs an NVIDIA GPU, so it runs on a rented one with Nerfstudio splatfacto. This builds a zip
+        of the placed photos and the COLMAP reconstruction on this computer. Nothing is uploaded and no cloud service is
+        contacted: you take the zip there yourself.
+      </div>
+      {!pkg ? (
+        <div className="note">Checking the reconstruction…</div>
+      ) : (
+        <>
+          <ul className="check-list">
+            {pkg.checks.map((c) => (
+              <li key={c.key} className={c.level}>
+                <span className="mark">{CHECK_MARKS[c.level]}</span>
+                <span>
+                  <b>{c.label}</b>: {c.detail}
+                </span>
+              </li>
+            ))}
+          </ul>
+          {e && (
+            <div className="dataset-info">
+              <span>
+                Contents: {e.imageCount} photos ({e.imageCount - e.evalCount} to train on, {e.evalCount} held out for
+                evaluation), the COLMAP model, scripts and manifest · {e.files} files
+              </span>
+              <span>
+                Size before export: about {formatBytes(e.total)} (photos {formatBytes(e.images)}, model{" "}
+                {formatBytes(e.model)}, scripts and manifest {formatBytes(e.other)})
+              </span>
+            </div>
+          )}
+          <div className="dataset-actions">
+            <button onClick={onBuild} disabled={busy || !pkg.ready || pkg.building}>
+              {pkg.building ? "Building…" : built ? "Build again" : "Build package"}
+            </button>
+            {built?.available && (
+              <a className="download-link" href={packageDownloadUrl(projectId)} download={built.file}>
+                Download {built.file}
+              </a>
+            )}
+          </div>
+          {built && (
+            <div className="dataset-info">
+              <span>
+                Built {new Date(built.createdAt).toLocaleString()}: {formatBytes(built.bytes)}, {built.imageCount} photos
+                ({built.evalCount} held out), {built.excludedCount} unplaced left out.
+              </span>
+              <span>
+                SHA-256 (check it after uploading: <code>sha256sum {built.file}</code>):{" "}
+                <code className="hash">{built.sha256}</code>
+              </span>
+            </div>
+          )}
+          {built?.outdated && (
+            <div className="status">The camera poses changed after this package was built. Build it again.</div>
+          )}
+          <details className="explain">
+            <summary>What to do with it</summary>
+            <ol className="steps">
+              <li>
+                Rent one NVIDIA RTX 4090 or 3090 (24 GB). On Runpod: Pods → Deploy, Secure Cloud for private photos,
+                template &quot;PyTorch 2.1&quot;, 30 GB volume. Billing starts here (about $0.34–0.74 per hour).
+              </li>
+              <li>Upload the zip (drag it into JupyterLab) and unpack it in /workspace.</li>
+              <li>
+                <code>bash setup_env.sh</code> installs Nerfstudio 1.1.5 at pinned versions and tests the GPU.
+              </li>
+              <li>
+                <code>bash train.sh quick</code> (7,000 steps, minutes) proves the pipeline. Look at the renders of the
+                held-out photos.
+              </li>
+              <li>
+                <code>bash train.sh quality</code> (30,000 steps) makes the first useful scene.
+              </li>
+              <li>Download the result folder (splat.ply, run.json, evaluation) to this Mac.</li>
+              <li>Stop, then Terminate the Pod, so nothing keeps billing.</li>
+            </ol>
+            <div className="note">
+              README.md inside the package has the exact commands, versions, time and cost estimates, monitoring and
+              troubleshooting. Importing the trained scene into Labs 8 and 9 comes next.
+            </div>
+          </details>
+        </>
+      )}
+    </div>
+  );
+}
+
 function Stages({ project }: { project: TrainingProject }) {
   const anyRun = project.stages.some((s) => s.status !== "planned");
   return (
@@ -450,7 +569,7 @@ function Stages({ project }: { project: TrainingProject }) {
       <b>Training stages</b>
       <div className="note">
         {anyRun
-          ? "Preprocessing and camera poses run together (above). Training, export and SOG are still planned: there are no trained Gaussians for this project yet."
+          ? "Preprocessing and camera poses run together (above). Training and export happen on a rented GPU from the cloud training package; there are no trained Gaussians for this project yet."
           : "The plan for Lab 10B. None of these has run yet: there are no camera poses and no trained Gaussians for this project."}
       </div>
       <ol className="stage-list">

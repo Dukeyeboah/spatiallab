@@ -7,12 +7,14 @@ type PhotoGridProps = {
   project: TrainingProject;
   onlyWarnings: boolean;
   onlyUnplaced: boolean;
+  /** Photo ids the training package holds out for evaluation (Lab 10C). */
+  evalImages: Set<string>;
   onRemove: (imageId: string, filename: string) => void;
   disabled: boolean;
 };
 
 /** Thumbnails (served by the backend, 320 px) with each photo's facts, warnings and, once estimated, its pose status. */
-export function PhotoGrid({ project, onlyWarnings, onlyUnplaced, onRemove, disabled }: PhotoGridProps) {
+export function PhotoGrid({ project, onlyWarnings, onlyUnplaced, evalImages, onRemove, disabled }: PhotoGridProps) {
   const warnings = project.analysis.warnings;
   const job = project.poses?.status === "done" ? project.poses : null;
   const unplaced = new Set(job?.summary?.notRegistered ?? []);
@@ -62,6 +64,11 @@ export function PhotoGrid({ project, onlyWarnings, onlyUnplaced, onRemove, disab
                   ) : (
                     <div className="photo-placed">Placed · {job.summary?.observations[image.id] ?? 0} points</div>
                   ))}
+                {evalImages.has(image.id) && (
+                  <div className="photo-facts" title="Not trained on: the trained scene is rendered from this pose and compared with the photo.">
+                    Held out for evaluation
+                  </div>
+                )}
                 <button
                   onClick={() => onRemove(image.id, image.filename)}
                   disabled={disabled}
