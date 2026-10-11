@@ -42,7 +42,7 @@ Training projects (training.py, Lab 10A; photographs prepared for Gaussian train
     POST   /training                         {"name"} -> new project
     GET    /training/{id}                    project + analysis (warnings per photo) + planned stages
     DELETE /training/{id}                    delete the project and its photos
-    POST   /training/{id}/images             multipart files (JPG/PNG): accepted + rejected (with reasons) + project
+    POST   /training/{id}/images             multipart files (JPG/PNG/HEIC): accepted + rejected (with reasons) + project
     DELETE /training/{id}/images/{imageId}   remove one photo before processing
     DELETE /training/{id}/rejected           clear the list of refused files
     GET    /training/{id}/images/{imageId}/thumbnail   320 px JPEG (originals are never served)
@@ -552,7 +552,7 @@ def delete_training_project(project_id: str) -> None:
 
 @app.post("/training/{project_id}/images")
 async def add_training_images(project_id: str, files: Annotated[list[UploadFile], File()]) -> dict:
-    """Each file is checked on its own: readable JPG/PNG photos are added, the rest are listed with a reason."""
+    """Each file is checked on its own: readable JPG/PNG/HEIC photos are added, the rest are listed with a reason."""
     get_project_or_404(project_id)
     folder = training.project_dir(project_id)
     accepted: list[str] = []

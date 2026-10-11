@@ -8,7 +8,7 @@
 
 import { API_URL, errorMessage } from "./datasets";
 
-export const ACCEPTED_EXTENSIONS = [".jpg", ".jpeg", ".png"];
+export const ACCEPTED_EXTENSIONS = [".jpg", ".jpeg", ".png", ".heic", ".heif"];
 const UPLOAD_BATCH = 8;
 
 export type WarningKind = "low-resolution" | "blur" | "duplicate" | "near-duplicate" | "dimensions" | "orientation";
@@ -19,7 +19,7 @@ export type TrainingImage = {
   filename: string;
   bytes: number;
   addedAt: string;
-  format: "JPEG" | "PNG";
+  format: "JPEG" | "PNG" | "HEIF";
   /** As seen (EXIF orientation applied). */
   width: number;
   height: number;
@@ -139,10 +139,7 @@ export function partitionFiles(files: File[]): { photos: File[]; skipped: { file
     else
       skipped.push({
         filename: file.name,
-        reason:
-          extension === ".heic" || extension === ".heif"
-            ? "HEIC photos aren't supported yet: export them as JPG."
-            : `Not uploaded: only JPG, JPEG and PNG photos are supported (${extension || "no extension"}).`,
+        reason: `Not uploaded: only JPG, PNG and HEIC photos are supported (${extension || "no extension"}).`,
       });
   }
   return { photos, skipped };

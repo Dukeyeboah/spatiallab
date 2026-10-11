@@ -100,7 +100,7 @@ export function TrainingPanel(props: TrainingPanelProps) {
           <div className="section import-form">
             <b>Add photographs</b>
             <div className="note">
-              JPG or PNG, up to 64 MB each. Walk around the space and take overlapping photos from many positions;
+              JPG, PNG or HEIC (iPhone), up to 64 MB each. Walk around the space and take overlapping photos from many positions;
               keep the camera still while each photo is taken.
             </div>
             <div className="dataset-actions">
@@ -109,7 +109,7 @@ export function TrainingPanel(props: TrainingPanelProps) {
                 <input
                   type="file"
                   multiple
-                  accept=".jpg,.jpeg,.png,image/jpeg,image/png"
+                  accept=".jpg,.jpeg,.png,.heic,.heif,image/jpeg,image/png,image/heic,image/heif"
                   disabled={busy || uploading}
                   onChange={(e) => {
                     props.onFiles(Array.from(e.target.files ?? []));

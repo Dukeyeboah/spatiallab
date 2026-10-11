@@ -5,7 +5,7 @@ trained Gaussian scenes:
 
     spatial-data/training/<trn_id>/
         project.json            name, images (validated facts), rejected files, planned stages
-        source/<img_id>.jpg     the photographs as uploaded (never served, never modified)
+        source/<img_id>.jpg|png|heic   the photographs as uploaded (never served, never modified)
         thumbs/<img_id>.jpg     320 px previews (the only image files served)
         work/, output/          reserved for Lab 10B (preprocessed images, COLMAP model, training, PLY/SOG)
 
@@ -24,15 +24,21 @@ import json
 import secrets
 import shutil
 import statistics
+import struct
 import threading
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator, Optional
 
 import numpy as np
+import pillow_heif
 from PIL import Image, ImageOps
 
 from storage import DATA_DIR, now_iso
+
+# Lets Pillow open HEIC/HEIF (iPhone photos). Format name "HEIF"; the rotation is
+# applied while decoding (EXIF orientation reads 1, the original is in info["original_orientation"]).
+pillow_heif.register_heif_opener()
 
 TRAINING_DIR = DATA_DIR / "training"
 PROJECT_ID_PREFIX, IMAGE_ID_PREFIX = "trn_", "img_"
@@ -49,11 +55,9 @@ THUMB_SIZE = 320
 # Pillow refuses images above 2 × MAX_IMAGE_PIXELS (it only warns between 1× and 2×).
 Image.MAX_IMAGE_PIXELS = MAX_PIXELS // 2
 
-ACCEPTED_EXTENSIONS = {".jpg": "JPEG", ".jpeg": "JPEG", ".png": "PNG"}
+ACCEPTED_EXTENSIONS = {".jpg": "JPEG", ".jpeg": "JPEG", ".png": "PNG", ".heic": "HEIF", ".heif": "HEIF"}
+STORED_EXTENSIONS = {"JPEG": ".jpg", "PNG": ".png", "HEIF": ".heic"}
 EXTENSION_HINTS = {
-    ".heic": "HEIC photos (iPhone default) aren't supported yet: export them as JPG "
-             "(Photos: File › Export, or set Camera › Formats › Most Compatible).",
-    ".heif": "HEIF photos aren't supported yet: export them as JPG.",
     ".dng": "RAW photos aren't supported: export them as JPG.",
     ".mov": "Videos aren't supported yet: extract frames as JPG first (e.g. ffmpeg -i video.mov -vf fps=2 frame_%04d.jpg).",
     ".mp4": "Videos aren't supported yet: extract frames as JPG first (e.g. ffmpeg -i video.mp4 -vf fps=2 frame_%04d.jpg).",
@@ -71,9 +75,10 @@ STAGES = [
     {
         "key": "preprocess",
         "title": "Image preprocessing",
-        "detail": "Apply EXIF orientation, downscale to the training resolution (e.g. 1600 px), "
-                  "leave out the photos you removed; optional masks for moving objects.",
-        "tools": ["Pillow"],
+        "detail": "Apply EXIF orientation, convert HEIC to JPG (COLMAP and the trainers don't read HEIC), "
+                  "downscale to the training resolution (e.g. 1600 px), leave out the photos you removed; "
+                  "optional masks for moving objects.",
+        "tools": ["Pillow", "pillow-heif"],
         "output": "work/images/",
     },
     {
@@ -233,8 +238,36 @@ def check_extension(filename: str) -> None:
     extension = Path(filename).suffix.lower()
     if extension in ACCEPTED_EXTENSIONS:
         return
-    hint = EXTENSION_HINTS.get(extension, f"Only JPG, JPEG and PNG photos are supported ({extension or 'no extension'}).")
+    hint = EXTENSION_HINTS.get(extension, f"Only JPG, PNG and HEIC photos are supported ({extension or 'no extension'}).")
     raise ImageRejected(hint)
+
+
+def heif_complete(path: Path) -> bool:
+    """
+    A HEIF file is a chain of boxes (4-byte size, 4-byte type; size 1 = a 64-bit
+    size follows, 0 = to the end of the file). If a box claims more bytes than
+    the file holds, it was cut off. Needed because libheif decodes a truncated
+    HEIC without an error, filling the missing tiles with garbage.
+    """
+    size = path.stat().st_size
+    with open(path, "rb") as f:
+        offset = 0
+        while offset < size:
+            f.seek(offset)
+            header = f.read(16)
+            if len(header) < 8:
+                return False
+            length, _ = struct.unpack(">I4s", header[:8])
+            if length == 1:
+                if len(header) < 16:
+                    return False
+                length = struct.unpack(">Q", header[8:16])[0]
+            elif length == 0:
+                length = size - offset
+            if length < 8 or offset + length > size:
+                return False
+            offset += length
+    return True
 
 
 def sharpness(gray: Image.Image) -> float:
@@ -286,7 +319,7 @@ def exif_facts(img: Image.Image) -> tuple[int, Optional[dict[str, Any]], Optiona
 
 
 def inspect_image(path: Path, filename: str) -> dict[str, Any]:
-    """Validate and measure one stored upload. Raises ImageRejected if it isn't a readable JPG/PNG."""
+    """Validate and measure one stored upload. Raises ImageRejected if it isn't a readable JPG/PNG/HEIC."""
     try:
         with Image.open(path) as img:
             fmt = img.format
@@ -295,8 +328,10 @@ def inspect_image(path: Path, filename: str) -> dict[str, Any]:
         raise ImageRejected(f"larger than {MAX_PIXELS // 1_000_000} megapixels.") from None
     except Exception:
         raise ImageRejected("not a readable image (corrupt, or not an image at all).") from None
-    if fmt not in ("JPEG", "PNG"):
-        raise ImageRejected(f"its content is {fmt}, not JPG or PNG.")
+    if fmt not in STORED_EXTENSIONS:
+        raise ImageRejected(f"its content is {fmt}, not JPG, PNG or HEIC.")
+    if fmt == "HEIF" and not heif_complete(path):
+        raise ImageRejected("the image data is truncated or corrupt.")
     expected = ACCEPTED_EXTENSIONS[Path(filename).suffix.lower()]
     notes = [] if fmt == expected else [f"Named {Path(filename).suffix} but the content is {fmt} (read as {fmt})."]
 
@@ -304,13 +339,15 @@ def inspect_image(path: Path, filename: str) -> dict[str, Any]:
         with Image.open(path) as img:
             width, height = img.size
             orientation, camera, taken = exif_facts(img)
+            if fmt == "HEIF":
+                orientation = int(img.info.get("original_orientation") or 1)
             if fmt == "JPEG":
                 img.draft("RGB", (2 * SHARPNESS_SIDE, 2 * SHARPNESS_SIDE))  # decode at reduced size: faster, same checks
             img.load()  # decodes everything: truncated files fail here
             oriented = ImageOps.exif_transpose(img)
     except Exception:
         raise ImageRejected("the image data is truncated or corrupt.") from None
-    if orientation in (5, 6, 7, 8):  # rotated 90°: the photo is seen with swapped sides
+    if orientation in (5, 6, 7, 8) and fmt != "HEIF":  # rotated 90°: seen with swapped sides (HEIF: already applied)
         width, height = height, width
 
     gray = oriented.convert("L")
@@ -342,7 +379,7 @@ def add_image(project_id: str, stored: Path, filename: str, size: int) -> dict[s
     folder = project_dir(project_id)
     facts = inspect_image(stored, filename)
     image_id = new_id(IMAGE_ID_PREFIX)
-    extension = ".png" if facts["format"] == "PNG" else ".jpg"
+    extension = STORED_EXTENSIONS[facts["format"]]
     record = {"id": image_id, "filename": filename, "storedAs": f"{image_id}{extension}", "bytes": size,
               "addedAt": now_iso(), **facts}
     thumbnail = record.pop("_thumbnail")
