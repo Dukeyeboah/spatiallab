@@ -5,7 +5,7 @@ import type { Vec3 } from "./datasets";
  *
  *   timestamp, x, y, z, qx, qy, qz, qw
  *
- *   timestamp   Unix time in seconds (5 Hz in our file)
+ *   timestamp   Unix time in seconds (5 Hz for map.las, 10 Hz for Basel House)
  *   x, y, z     scanner position in metres, same frame as the dataset's LAS (Z-up)
  *   qx..qw      orientation quaternion, scalar (w) last
  *

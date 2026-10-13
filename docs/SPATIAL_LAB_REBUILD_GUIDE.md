@@ -147,7 +147,7 @@ components/
   DatasetManager.tsx    collapsible Properties section: property → capture → dataset pickers, catalog actions, metadata/status, import form, delete
   PointCloud.tsx        BufferGeometry from typed arrays; picks Standard or Shader material
   ShaderPointsMaterial.tsx  RawShaderMaterial; shader table per experiment; uniforms; blending
-  Trajectory.tsx        THREE.Line + <points> sharing one geometry of pose positions
+  Trajectory.tsx        THREE.Line (drawn on top) + <points> (≤ MAX_POSE_POINTS = 2,000 poses) sharing one geometry; start sphere
   ScannerMarker.tsx     body + cone marker at the selected pose (position + quaternion)
   Controls.tsx          plain HTML overlay panel (no UI library)
   GaussianShapePanel.tsx    learning panel: sigmas, angle, covariance matrix
@@ -285,7 +285,7 @@ Every preview has a metadata JSON next to it (`lib/previewDataset.ts` validates 
   "coordinateSystem": "Original LAS axes; centered only" }
 ```
 
-Basel's `coordinateCenter` is the midpoint of `sourceBounds` (including Z), unlike our converter, which uses the minimum Z. `Dataset.preview` (in `lib/datasets.ts`) holds `files` (points + metadata URL per budget key) and an optional `scanArea` box in **original LAS coordinates** (Basel: the scanner trajectory bounds X −41.80..6.85, Y −22.63..17.66, Z −3.60..2.73). Previews have no poses and no backend. Basel has two budgets, 1M (1,003,809 points) and 5M (5,097,774 points, 76.5 MB), with the same `coordinateCenter` and `sourceBounds`.
+Basel's `coordinateCenter` is the midpoint of `sourceBounds` (including Z), unlike our converter, which uses the minimum Z. `Dataset.preview` (in `lib/datasets.ts`) holds `files` (points + metadata URL per budget key) and an optional `scanArea` box in **original LAS coordinates** (Basel: the scanner trajectory bounds X −41.80..6.85, Y −22.63..17.66, Z −3.60..2.73). Previews have no backend; optional `posesUrl` points to a header-less `poses.csv` in original LAS coordinates (loaded with `loadPoses(url, offset)` like any dataset's poses; the pose `status` in the dataset record documents the frame checks run offline). Basel has two budgets, 1M (1,003,809 points) and 5M (5,097,774 points, 76.5 MB), with the same `coordinateCenter` and `sourceBounds`.
 
 Budget switches keep the frame: `page.tsx` keeps the dataset's last loaded metadata (`previewFrame`) while another budget loads, so offset, axes/grid position and the framing boxes never change, and it **refuses** a budget whose `coordinateCenter` differs from the dataset's ("Couldn't load the 5M budget: its coordinateCenter … differs"), rather than showing it shifted.
 
@@ -774,6 +774,8 @@ Requirements: inspect `poses.csv` and validate column meaning from values (secti
 
 Accept: path lies inside the scanned space at plausible scanner height.
 
+Later additions (Basel.2): the path line and a green start sphere (first pose, 0.25 m) are drawn **on top** of the cloud (`depthTest: false`, transparent pass, `renderOrder` 10), because interior paths are otherwise hidden behind walls and roofs; per-pose dots are skipped above `MAX_POSE_POINTS` (2,000) and the checkbox says so.
+
 ### Lab 2B — Pose playback
 
 Requirements: "Scan Playback" slider 1..N (manual only); "Pose: i / N"; elapsed seconds from first timestamp; scanner marker (box body + forward cone along local +X, plus a small axes helper showing the raw body frame) placed with pose position + recorded quaternion inside the LiDAR group; `MARKER_FORWARD_CORRECTION` constant for any fixed geometry-axis correction; "Show scanner marker" toggle.
@@ -1017,10 +1019,12 @@ Budgets (density/performance comparison): the existing Point Budget buttons show
 
 Requirements (constraints from the brief: existing datasets, renderers, controls and performance tools unchanged; no arbitrary rotations or offsets; no walking, collisions, Gaussian training or image registration):
 
-- `BASEL_HOUSE_DATASET` in `BUILTIN_DATASETS` (`lib/datasets.ts`), id `builtin-basel-house`, one budget (1M), no poses; offset/bounds/count come from the metadata at load time. Backend: `catalog.BUILTIN_DATASET_IDS` so it can be assigned to a capture.
+- `BASEL_HOUSE_DATASET` in `BUILTIN_DATASETS` (`lib/datasets.ts`), id `builtin-basel-house`, budgets 1M and 5M (Basel.1); offset/bounds/count come from the metadata at load time. Backend: `catalog.BUILTIN_DATASET_IDS` so it can be assigned to a capture.
 - Loader: second layout `interleaved-xyzrgb`; map.las keeps `counted-planar` (default).
 - Coordinates: section 5.5 chain; the scan area (trajectory bounds in LAS coordinates) via `lasBoxToDataset`. Up axis verified with `describeVerticalAxis`.
 - Panel: **Focus on Scan Area** (only for datasets with a `scanArea`) and **Frame Entire Cloud** under the title next to Reset View; vertical-axis line in the stats; preview note in the dataset info. Axes and grid are placed at the original LAS origin for previews (the bounding-box centre's Z = 32 m is in the sky).
+
+Scanner trajectory (Basel.2): `public/datasets/basel-house/poses.csv` is a byte copy (SHA-256 `ba621b73…`) of the capture's `project_data/poses.csv` (24,198 rows, no header, 10 Hz, 2,419.8 s; gitignored like the point data). Checked before showing it, with `converter.validate_poses` against the 5M preview in LAS coordinates: timestamps increasing, max |‖q‖ − 1| = 0.0005 (qx, qy, qz, qw; w is the large component), 100% inside the LAS bounds, median 0.53 m / p95 1.04 m to the nearest scan point → aligned; the same poses shifted 500 m → suspect. Scanner height above the lowest points of its 0.5 m cell: median 1.20 m (handheld; spread from floors above/below). Same chain as the points (LAS − coordinateCenter, then the group rotation): the loaded path's box equals the scan-area box to 5 mm, and the first pose sits at LAS (0, 0, 0), i.e. at the axes helper. Shown with either budget; switching budgets doesn't reload it (the offset is kept, section 5.1.1).
 
 Accept: tsx test with the real code — parse equals numpy, 67.6% of points inside the scan area, view targets as in section 6.6, map.las 500K still loads (7,500,004 bytes) with an unchanged initial view; in the browser Basel lists, loads (15.1 MB, ~0.1 s), shows the metadata values and "Z up", the three view buttons move the camera, Standard/Shader, RGB and point size work, switching back to map.las hides Focus on Scan Area; all other pages load; `tsc` and `next build` clean.
 
@@ -1207,3 +1211,4 @@ Explicitly out of scope so far (each would be its own lab): cross-capture alignm
 | 10C.3 | `train.sh` checkpoint detection: latest checkpoint chosen by numeric step (only `step-<digits>.ckpt`), completion = exit 0 and an exact filename match with Nerfstudio's `step-%09d.ckpt` for step N−1 (replaces a grep regex with an unescaped dot); tested on 12 filename/exit-code cases; room1 package rebuilt |
 | Basel | Basel House preview as a second built-in dataset: interleaved 15-byte loader path (`DataView`), `lib/previewDataset.ts` (metadata validation + count check), `BUILTIN_DATASETS`, documented LAS → dataset → world chain and helpers in `worldFrame.ts`, data-checked up axis in the panel, Focus on Scan Area (trajectory bounds) / Frame Entire Cloud / Reset View via `viewRequest`, helpers at the LAS origin for previews, backend `BUILTIN_DATASET_IDS`; `public/datasets/**/*.bin` gitignored; sections 4, 5.1.1, 5.5, 6.6, 7, 8, 9 |
 | Basel.1 | Basel House 5M budget (5,097,774 points) next to 1M: `preview.files` per budget key; preview metadata kept across budget switches (`previewFrame`), a budget with a different `coordinateCenter` is refused; checked: same centre and first point in both files, 67.6% in the scan area for both, camera unchanged 1M ↔ 5M ↔ 1M, Standard/Shader (RGB, Height), geometry count constant; sections 4, 5.1.1, 7, 8 |
+| Basel.2 | Basel House scanner trajectory: `preview.posesUrl` → `public/datasets/basel-house/poses.csv` (copy of `project_data/poses.csv`, gitignored), pose status from `validate_poses` run offline (aligned, median 0.53 m); `Trajectory` draws the path and a new green start sphere on top of the cloud, skips per-pose dots above 2,000 poses (map.las's 208 unchanged); "Show scanner path" label mentions the start sphere; sections 4, 5.1.1, 7 |

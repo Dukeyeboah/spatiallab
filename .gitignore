@@ -11,8 +11,9 @@ next-env.d.ts
 
 # Converted point clouds (regenerate with scripts/convert_las.py).
 public/data/*.bin
-# Dataset previews (e.g. basel-house): binaries stay local, metadata JSON is tracked.
+# Dataset previews (e.g. basel-house): binaries and scanner poses stay local, metadata JSON is tracked.
 public/datasets/**/*.bin
+public/datasets/**/poses.csv
 
 # Local dataset store written by the backend (uploads + converted data).
 spatial-data/

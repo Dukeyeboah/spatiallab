@@ -92,6 +92,8 @@ export type Dataset = {
    */
   preview?: {
     files: Record<string, { pointsUrl: string; metadataUrl: string }>;
+    /** Header-less poses.csv in original LAS coordinates (offset subtracted on load, like the points). */
+    posesUrl?: string;
     /** The region "Focus on Scan Area" frames, in original LAS coordinates. */
     scanArea?: { min: Vec3; max: Vec3; description: string };
   };
@@ -138,8 +140,11 @@ export const BUILTIN_DATASET: Dataset = {
 
 /**
  * BM Heritage Basel House: 1,003,809- and 5,097,774-point previews of
- * map-002.las (259,986,436 points), both centred on the same coordinateCenter.
- * No scanner poses are shipped with it, so none are shown.
+ * map-002.las (259,986,436 points), both centred on the same coordinateCenter,
+ * plus the capture's project_data/poses.csv (24,198 poses, 10 Hz, 40.3 min).
+ * The pose status records backend/converter.validate_poses run on the 5M preview
+ * (in LAS coordinates): 100% inside the LAS bounds, median 0.53 m / p95 1.04 m
+ * to the nearest scan point; the same poses shifted 500 m fail.
  */
 export const BASEL_HOUSE_DATASET: Dataset = {
   schemaVersion: 1,
@@ -162,9 +167,16 @@ export const BASEL_HOUSE_DATASET: Dataset = {
     { key: "1m", label: "1M", pointCount: 1_003_809 },
     { key: "5m", label: "5M", pointCount: 5_097_774 },
   ],
-  poses: null,
+  poses: {
+    status: "aligned",
+    count: 24_198,
+    message:
+      "Poses agree with the point cloud (median 0.53 m from the nearest scan point). " +
+      "Quaternion order assumed qx, qy, qz, qw.",
+  },
   attachments: [],
   preview: {
+    posesUrl: "/datasets/basel-house/poses.csv",
     files: {
       "1m": {
         pointsUrl: "/datasets/basel-house/basel-preview-1m.bin",
@@ -199,6 +211,7 @@ export function pointsUrl(dataset: Dataset, budgetKey: string): string {
 }
 
 export function posesUrl(dataset: Dataset): string {
+  if (dataset.preview?.posesUrl) return dataset.preview.posesUrl;
   return dataset.origin === "builtin" ? "/data/poses.csv" : `${API_URL}/datasets/${dataset.id}/poses`;
 }
 

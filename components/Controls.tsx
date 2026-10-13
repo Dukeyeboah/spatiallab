@@ -4,6 +4,7 @@ import type { ReactNode } from "react";
 import Link from "next/link";
 import type { DatasetBudget } from "@/lib/datasets";
 import { GaussianShapePanel } from "./GaussianShapePanel";
+import { MAX_POSE_POINTS } from "./Trajectory";
 import {
   EXPERIMENT_PARAMETERS,
   TRANSPARENT_EXPERIMENTS,
@@ -378,16 +379,18 @@ export function Controls({
           checked={settings.showPath}
           onChange={(e) => update("showPath", e.target.checked)}
         />
-        Show scanner path
+        Show scanner path (green sphere = start)
       </label>
 
       <label>
         <input
           type="checkbox"
           checked={settings.showPoses}
+          disabled={poseCount > MAX_POSE_POINTS}
           onChange={(e) => update("showPoses", e.target.checked)}
         />
         Show pose points
+        {poseCount > MAX_POSE_POINTS && ` (off above ${MAX_POSE_POINTS.toLocaleString()} poses)`}
       </label>
 
       <div className="section">
