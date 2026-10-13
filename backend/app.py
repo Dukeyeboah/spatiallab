@@ -345,7 +345,7 @@ def assign_dataset(capture_id: str, body: DatasetRefBody) -> dict:
         raise HTTPException(400, "Invalid dataset id.")
     if catalog.is_splat_reference(dataset_id):
         get_splat_or_404(dataset_id)  # must exist
-    elif dataset_id != catalog.BUILTIN_DATASET_ID:
+    elif dataset_id not in catalog.BUILTIN_DATASET_IDS:
         get_metadata_or_404(dataset_id)  # must exist
     return catalog_change(lambda c: catalog.assign_dataset(c, capture_id, dataset_id))
 

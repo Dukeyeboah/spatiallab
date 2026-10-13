@@ -3,14 +3,16 @@
 import { Canvas } from "@react-three/fiber";
 import { OrbitControls } from "@react-three/drei";
 import { Perf } from "r3f-perf";
-import { CameraFraming } from "./CameraFraming";
+import type * as THREE from "three";
+import { CameraFraming, type ViewRequest } from "./CameraFraming";
 import { PointCloud } from "./PointCloud";
 import { Trajectory } from "./Trajectory";
 import { ScannerMarker } from "./ScannerMarker";
+import type { Vec3 } from "@/lib/datasets";
 import type { PointCloudData } from "@/lib/loadPointCloud";
 import type { PoseData } from "@/lib/loadPoses";
 import type { ViewSettings } from "@/lib/viewSettings";
-import { LIDAR_TO_THREE_ROTATION } from "@/lib/worldFrame";
+import { LIDAR_TO_THREE_ROTATION, lidarPointToWorld } from "@/lib/worldFrame";
 
 type SpatialSceneProps = {
   /** The selected dataset's id: the camera is framed once per dataset. */
@@ -20,8 +22,17 @@ type SpatialSceneProps = {
   /** 0-based index of the pose shown by the scanner marker. */
   poseIndex: number;
   settings: ViewSettings;
-  /** Increases by one every time Reset View is clicked. */
-  viewResetRequest: number;
+  /** Dataset-coordinate boxes for the framing actions (see CameraFraming). */
+  scanArea: THREE.Box3 | null;
+  fullExtent: THREE.Box3 | null;
+  /** Reset View / Focus on Scan Area / Frame Entire Cloud clicks. */
+  viewRequest: ViewRequest | null;
+  /**
+   * Where the axes and grid are drawn, in dataset coordinates. [0, 0, 0] (the
+   * dataset origin) except for previews, which mark the original LAS origin.
+   * Display only: the points are never moved.
+   */
+  helperOrigin: Vec3;
 };
 
 export function SpatialScene({
@@ -30,8 +41,12 @@ export function SpatialScene({
   poses,
   poseIndex,
   settings,
-  viewResetRequest,
+  scanArea,
+  fullExtent,
+  viewRequest,
+  helperOrigin,
 }: SpatialSceneProps) {
+  const gridPosition = lidarPointToWorld(helperOrigin);
   return (
     <div className="canvas-container">
       <Canvas
@@ -50,10 +65,18 @@ export function SpatialScene({
         <OrbitControls makeDefault />
 
         {/* Initial camera + OrbitControls target, and Reset View. */}
-        <CameraFraming data={data} frameKey={datasetId} resetRequest={viewResetRequest} />
+        <CameraFraming
+          data={data}
+          frameKey={datasetId}
+          scanArea={scanArea}
+          fullExtent={fullExtent}
+          request={viewRequest}
+        />
 
-        {/* Grid lies on the ground plane (three.js XZ). 1 cell = 1 metre. */}
-        {settings.showGrid && <gridHelper args={[100, 100, "#666", "#333"]} />}
+        {/* Grid lies on the horizontal plane (three.js XZ) through the helper origin. 1 cell = 1 metre. */}
+        {settings.showGrid && (
+          <gridHelper args={[100, 100, "#666", "#333"]} position={gridPosition.toArray()} />
+        )}
 
         {/*
           Everything inside this group uses LiDAR coordinates (Z-up, metres).
@@ -62,7 +85,7 @@ export function SpatialScene({
         */}
         <group rotation={LIDAR_TO_THREE_ROTATION}>
           {/* Red = X, green = Y, blue = Z (up). Length 5 m. */}
-          {settings.showAxes && <axesHelper args={[5]} />}
+          {settings.showAxes && <axesHelper args={[5]} position={helperOrigin} />}
 
           {data && (
             <PointCloud

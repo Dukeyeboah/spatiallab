@@ -2,8 +2,9 @@
  * Datasets: one LiDAR capture each, with its own coordinate offset.
  *
  * Two origins:
- *   - "builtin": the original map.las scan, converted earlier into public/data/.
- *     Always available, even when the backend isn't running.
+ *   - "builtin": static files in public/, always available, even when the
+ *     backend isn't running: the original map.las scan (public/data/) and
+ *     dataset previews (public/datasets/<name>/, see lib/previewDataset.ts).
  *   - "local-backend": imported through the Datasets panel, converted and
  *     served by the local FastAPI service in backend/ (see backend/app.py).
  *
@@ -67,7 +68,10 @@ export type Dataset = {
   originalPointCount: number | null;
   /** Real-world coordinates of the full original point cloud. */
   originalBounds: { min: Vec3; max: Vec3 } | null;
-  /** Subtracted from every budget and from the poses: X/Y centre, lowest Z. */
+  /**
+   * Subtracted from every budget and from the poses. Converted datasets: X/Y
+   * centre, lowest Z. Previews: the converter's coordinateCenter (bounding-box centre).
+   */
   offset: Vec3 | null;
   hasRgb: boolean | null;
   budgets: DatasetBudget[];
@@ -81,6 +85,16 @@ export type Dataset = {
   skippedFiles?: { role: UploadRole; filename: string; reason: string }[];
   /** Safe facts from the LAS header when project.json was missing or empty. */
   projectInferred?: Record<string, string | null> | null;
+  /**
+   * A static preview (interleaved 15-byte points + metadata JSON). Its offset,
+   * original bounds and point count come from the metadata once it is loaded.
+   */
+  preview?: {
+    pointsUrl: string;
+    metadataUrl: string;
+    /** The region "Focus on Scan Area" frames, in original LAS coordinates. */
+    scanArea?: { min: Vec3; max: Vec3; description: string };
+  };
 };
 
 /** The original scan (Labs 1–6). Values printed by scripts/convert_las.py for map.las. */
@@ -122,10 +136,51 @@ export const BUILTIN_DATASET: Dataset = {
   attachments: [],
 };
 
+/**
+ * BM Heritage Basel House: a 1,003,809-point preview of map-002.las
+ * (259,986,436 points). No scanner poses are shipped with it, so none are shown.
+ */
+export const BASEL_HOUSE_DATASET: Dataset = {
+  schemaVersion: 1,
+  id: "builtin-basel-house",
+  name: "Basel House (BM Heritage, preview)",
+  kind: "lidar-capture",
+  origin: "builtin",
+  createdAt: "2026-10-13T15:54:00Z",
+  status: "ready",
+  progress: 1,
+  stage: "Ready",
+  error: null,
+  source: {},
+  // Filled from basel-preview-metadata.json when it loads.
+  originalPointCount: null,
+  originalBounds: null,
+  offset: null,
+  hasRgb: true,
+  budgets: [{ key: "1m", label: "1M", pointCount: 1_003_809 }],
+  poses: null,
+  attachments: [],
+  preview: {
+    pointsUrl: "/datasets/basel-house/basel-preview-1m.bin",
+    metadataUrl: "/datasets/basel-house/basel-preview-metadata.json",
+    // The original scanner trajectory's extent (LAS coordinates, metres): the
+    // building the scanner walked through, unlike the full LAS box, which is
+    // stretched to 225 × 208 × 99 m by surroundings and stray points.
+    scanArea: {
+      min: [-41.8, -22.63, -3.6],
+      max: [6.85, 17.66, 2.73],
+      description: "scanner trajectory bounds",
+    },
+  },
+};
+
+export const BUILTIN_DATASETS: Dataset[] = [BUILTIN_DATASET, BASEL_HOUSE_DATASET];
+
 /** The local backend. Override with NEXT_PUBLIC_SPATIAL_API_URL. */
 export const API_URL = process.env.NEXT_PUBLIC_SPATIAL_API_URL ?? "http://127.0.0.1:8000";
 
 export function pointsUrl(dataset: Dataset, budgetKey: string): string {
+  if (dataset.preview) return dataset.preview.pointsUrl;
   return dataset.origin === "builtin"
     ? `/data/pointcloud-${budgetKey}.bin`
     : `${API_URL}/datasets/${dataset.id}/points/${budgetKey}`;

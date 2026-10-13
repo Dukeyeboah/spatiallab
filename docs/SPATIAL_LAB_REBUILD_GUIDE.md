@@ -47,6 +47,7 @@ A deliberately small Next.js + React Three Fiber app that renders a **real** LiD
 | 10A | Photos for Gaussian training (separate page `/gaussian-training`) | training projects of real photographs: validated upload, thumbnails, per-photo checks (resolution, blur heuristic, duplicates, sizes) as warnings, planned pipeline stages, local training-environment assessment; nothing is trained yet |
 | 10B (step 1) | Camera poses (same page) | structure from motion with COLMAP as a cancellable background job: which photos were placed, sparse points, reprojection error, lens; solved cameras and points in 3D; nothing is trained yet |
 | 10C (stage 1) | Cloud training package (same page) | the COLMAP result checked from the shipped files and zipped with the placed photos, pinned Nerfstudio splatfacto scripts and a step-by-step rented-GPU procedure; nothing is uploaded or trained by the app |
+| Basel | Basel House preview (built-in dataset on the main page) | a second binary layout (interleaved, metadata JSON), an explicit LAS → dataset → world chain, verifying the up axis from the data, framing a named region (scanner trajectory bounds) vs the whole cloud |
 
 The dataset used: a handheld/SLAM LiDAR scan (`map.las`, 5,242,880 points, 178 MB, local metric frame, RGB) plus `poses.csv` (208 poses, 5 Hz, 41.4 s).
 
@@ -142,7 +143,7 @@ app/
   globals.css           full-screen canvas, overlay panel styles
 components/
   SpatialScene.tsx      <Canvas>, background, Perf, OrbitControls, grid, LiDAR group
-  CameraFraming.tsx     camera + OrbitControls target framed once per dataset, Reset View (renders nothing)
+  CameraFraming.tsx     camera + OrbitControls target: initial / scan-area / entire-cloud views computed once per dataset; Reset View, Focus on Scan Area, Frame Entire Cloud (renders nothing)
   DatasetManager.tsx    collapsible Properties section: property → capture → dataset pickers, catalog actions, metadata/status, import form, delete
   PointCloud.tsx        BufferGeometry from typed arrays; picks Standard or Shader material
   ShaderPointsMaterial.tsx  RawShaderMaterial; shader table per experiment; uniforms; blending
@@ -183,22 +184,25 @@ lib/gaussian/
 shaders/projectedGaussianShader.ts  GLSL3 quad vertex/fragment (conic falloff, outline)
 shaders/compositedGaussianShader.ts GLSL3 instanced version (per-instance attributes, fill + outline pass)
 lib/
-  loadPointCloud.ts     binary point-cloud loader (format in section 5)
+  loadPointCloud.ts     binary point-cloud loader: "counted-planar" (section 5.1) and "interleaved-xyzrgb" (section 5.1.1)
+  previewDataset.ts     static preview datasets: metadata JSON validation, loads points + metadata, count check
   loadPoses.ts          poses.csv parser, subtracts the dataset's offset
-  worldFrame.ts         LIDAR_TO_THREE_ROTATION (Z-up → Y-up)
+  worldFrame.ts         the documented LAS → dataset → world chain: LIDAR_TO_THREE_ROTATION (Z-up → Y-up),
+                        lasBoxToDataset, lidarBoxToWorld, lidarPointToWorld, describeVerticalAxis (up-axis check)
   importPlan.ts         folder/files → import plan: role detection, ambiguity flags, preview summary
   catalog.ts            Property/Capture/Catalog types, helpers, catalog API calls (Lab 7C)
   splats.ts             Lab 8: SplatScene type, splat API calls, selection checks, start camera (robust box, 180° Z)
   training.ts           Lab 10A: training project/environment types, API calls, warning explanations, file partition, batched XHR upload with progress; 10B pose job/preview types + calls; 10C package types, calls, download URL
   poseView.ts           Lab 10B: COLMAP frame → display (median centre, cameras' mean up, 90% radius), frustum line segments
-  datasets.ts           Dataset type (= backend metadata), BUILTIN_DATASET (map.las offset/bounds),
+  datasets.ts           Dataset type (= backend metadata), BUILTIN_DATASETS (map.las + Basel House preview),
                         asset URLs, pickBudget(), backend API calls, client-side file checks
   usefulBounds.ts       1st–99th percentile bounding box (ignores stray points)
-  initialView.ts        computes camera position + target from useful bounds
+  initialView.ts        camera position + target: computeViewOfBox(box) and computeInitialView (= useful bounds)
   viewSettings.ts       ViewSettings type + defaults; shader experiment types/params
 shaders/                GLSL as exported TS template strings (no bundler loader needed)
 scripts/convert_las.py  LAS → browser binary converter (CLI; uses backend/lidar_conversion.py)
 public/data/            built-in dataset: pointcloud-500k/1m/2m/5m.bin (gitignored), poses.csv
+public/datasets/basel-house/  Basel House preview: basel-preview-1m.bin (gitignored), basel-preview-metadata.json (tracked)
 backend/                local FastAPI dataset service (Lab 7A)
   app.py                routes, CORS, worker process pool, restart recovery
   storage.py            dataset folders, id validation, atomic metadata.json, budget table + planned/missing budgets
@@ -223,12 +227,12 @@ docs/                   this guide
 
 Data and state flow:
 
-- `page.tsx` owns state: dataset list (built-in + backend), catalog (properties/captures), selected dataset id, preferred budget key, loaded point cloud and poses (each tagged with its dataset id), selected pose index, `ViewSettings`, `viewResetRequest` counter, status/error strings. The dataset list is polled every 1.5 s only while a conversion runs.
+- `page.tsx` owns state: dataset list (built-in + backend), catalog (properties/captures), selected dataset id, preferred budget key, loaded point cloud and poses (each tagged with its dataset id), selected pose index, `ViewSettings`, `viewRequest` (`{kind: "initial" | "scanArea" | "entire", serial}`), status/error strings. For preview datasets the loaded metadata fills the dataset's `offset`, `originalBounds` and `originalPointCount`. The dataset list is polled every 1.5 s only while a conversion runs.
 - Loaded data is stored as `{ datasetId, data }` and only passed to the scene when `datasetId` matches the selection, so the scene never sees the previous dataset's data together with the new dataset's id (which would frame the camera on the wrong scene).
 - Effects depend on primitive keys (URL strings, ids), not on dataset objects, because polling replaces the objects every 1.5 s.
 - Data flows **down** as props: `page → SpatialScene → PointCloud/Trajectory/ScannerMarker`, and `page → Controls`.
 - Controls report changes **up** via callbacks (`onChange(settings)`, `onBudgetChange`, `onPoseIndexChange`, `onResetView`).
-- HTML UI lives outside the `<Canvas>`; communication into the canvas uses props (e.g. an incrementing `viewResetRequest` number that an effect inside the canvas watches).
+- HTML UI lives outside the `<Canvas>`; communication into the canvas uses props (e.g. a `viewRequest` whose `serial` increments on every click, watched by an effect inside the canvas).
 - `ViewSettings` is one flat-ish object; experiment parameters are grouped (`softPoints`). Add new toggles there with a default.
 
 Scene graph (inside `<Canvas linear flat>`):
@@ -238,9 +242,9 @@ Scene graph (inside `<Canvas linear flat>`):
 <Perf position="top-right">
 <OrbitControls makeDefault>
 <CameraFraming>
-<gridHelper 100 m, 1 m cells>             (three.js world, Y-up)
+<gridHelper 100 m, 1 m cells>             (three.js world, Y-up; at lidarPointToWorld(helperOrigin))
 <group rotation={LIDAR_TO_THREE_ROTATION}> (LiDAR frame, Z-up, metres, offset applied)
-  <axesHelper 5 m>
+  <axesHelper 5 m position={helperOrigin}> (helperOrigin = [0,0,0], or −offset = the LAS origin for previews)
   <PointCloud>
   <Trajectory>
   <ScannerMarker>
@@ -259,6 +263,28 @@ uint8[N * 3]          R, G, B    0..255
 ```
 
 Total size = `4 + 15 N` bytes. The loader validates the size and creates `Float32Array`/`Uint8Array` **views** on the fetched `ArrayBuffer` (no copy).
+
+#### 5.1.1 Interleaved preview format (Basel House)
+
+`loadPointCloud(url, signal, "interleaved-xyzrgb")`. No header, one 15-byte record per point, little-endian:
+
+```
+float32 X, float32 Y, float32 Z, uint8 R, uint8 G, uint8 B     (× N, N = bytes / 15)
+```
+
+Records are 15 bytes, so floats are not 4-byte aligned: they **cannot** be viewed as a `Float32Array`; the loader de-interleaves through a `DataView` (`getFloat32(i*15 + k*4, true)`) into new planar arrays, then the rest of the app sees the same `PointCloudData` as for the planar format. Size not a multiple of 15 → error.
+
+Every preview has a metadata JSON next to it (`lib/previewDataset.ts` validates it; the point count must equal `previewPointCount`):
+
+```jsonc
+{ "source": "map-002.las", "sourcePointCount": 259986436, "previewPointCount": 1003809,
+  "coordinateCenter": [-22.6653, 0.4986, 32.0324],      // subtracted from LAS coords = the dataset offset
+  "sourceBounds": { "min": [...], "max": [...] },       // full LAS cloud, original coordinates
+  "strideBytes": 15, "layout": "float32 xyz + uint8 rgb",
+  "coordinateSystem": "Original LAS axes; centered only" }
+```
+
+Basel's `coordinateCenter` is the midpoint of `sourceBounds` (including Z), unlike our converter, which uses the minimum Z. `Dataset.preview` (in `lib/datasets.ts`) holds the two URLs and an optional `scanArea` box in **original LAS coordinates** (Basel: the scanner trajectory bounds X −41.80..6.85, Y −22.63..17.66, Z −3.60..2.73). Previews have one budget, no poses, no backend.
 
 ### 5.2 Converter (`scripts/convert_las.py`)
 
@@ -384,7 +410,18 @@ Each dataset has its own local frame: real-world LAS coordinates minus that data
 | View space (camera) | camera looks down −Z | shaders (`mvPosition`) |
 | Point sprite | `gl_PointCoord` 0..1, **y grows downward** | fragment shaders |
 
-Conversion LiDAR → three.js is exactly one rotation of −90° about X (`LIDAR_TO_THREE_ROTATION = [-π/2, 0, 0]`), so `(x, y, z)_lidar → (x, z, −y)_three`. Apply it **once**, on the parent group. Children (points, path, marker) use raw LiDAR-frame values. Code outside the group that needs world coordinates (camera framing) must apply the same matrix (`new Matrix4().makeRotationFromEuler(new Euler(...LIDAR_TO_THREE_ROTATION))`).
+Conversion LiDAR → three.js is exactly one rotation of −90° about X (`LIDAR_TO_THREE_ROTATION = [-π/2, 0, 0]`), so `(x, y, z)_lidar → (x, z, −y)_three`. Apply it **once**, on the parent group. Children (points, path, marker) use raw LiDAR-frame values. Code outside the group that needs world coordinates (camera framing, grid position) must use the same matrix through `lidarBoxToWorld` / `lidarPointToWorld` (`lib/worldFrame.ts`).
+
+The full chain, the only transforms in the app (documented at the top of `lib/worldFrame.ts`):
+
+```
+dataset = LAS − offset                 (offset = converter offset, or coordinateCenter for previews)
+world   = R · dataset                  (R = −90° about X: (x, y, z) → (x, z, −y))
+```
+
+Named regions given in LAS coordinates (a preview's `scanArea`) go through `lasBoxToDataset(min, max, offset)` and then the same rotation. No other rotation, offset or scale is applied anywhere; if a scan looks wrong, check the data, don't add one.
+
+**Up axis is checked, not assumed:** `describeVerticalAxis(positions)` compares the 1st–99th percentile extents and reports "Z up (checked …)" when Z is the smallest, or a ⚠ warning otherwise (shown in the panel's stats). map.las: 6.2 × 7.7 × 1.5 m; Basel: 56.1 × 42.1 × 8.7 m (full box 225 × 208 × 99 m because of outliers).
 
 Quaternions: apply the recorded `(qx, qy, qz, qw)` directly as the marker group's `quaternion` inside the LiDAR group (three.js uses the same xyzw order). Any mismatch between the marker geometry's forward axis and the scanner's convention is fixed by a separate constant child rotation (`MARKER_FORWARD_CORRECTION`), never by editing recorded quaternions.
 
@@ -627,6 +664,7 @@ For Soft Circle / Gaussian / Elliptical Gaussian: `transparent: true`, `depthTes
 - Rotate that box into three.js space with the LiDAR group's rotation; target = box centre.
 - Distance = bounding-sphere radius / sin(min(vFov, hFov)/2). Direction: elevation 15°, azimuth 45°.
 - Compute once per dataset (keyed by dataset id) from its first loaded budget, store in a ref, reuse for Reset View: switching budgets never moves the camera; switching datasets frames the new scene.
+- Three views per dataset (`CameraFraming`), all via `computeViewOfBox(box)` with the target at the box centre in world space (so orbiting pivots on what is framed): **initial** (Reset View) = the scan-area view if the dataset has a `scanArea`, otherwise the useful-bounds view; **scanArea** (Focus on Scan Area, button shown only when defined); **entire** (Frame Entire Cloud) = `originalBounds` − offset, or the min/max of the loaded points. Basel: scan-area target (5.190, −32.467, 2.984), entire target (0, 0, 0) at distance ≈ 322.
 - When applying a view with damped OrbitControls, flush leftover drag momentum first: set `enableDamping = false`, `update()`, set position/target, `update()`, restore damping.
 
 ### 6.7 Projecting a 3D Gaussian (Lab 6)
@@ -968,6 +1006,19 @@ Not verified here (needs the GPU machine): the installation itself, training, ex
 
 Stage 2 (after the first real training, with the user): import `splat.ply` into the splat store linked to the training project with `run.json`/`dataparser_transforms.json` as provenance (Labs 8/9), check its orientation (Nerfstudio's frame is z-up, re-centred and scaled), record viewer FPS/memory and the visual review.
 
+### Basel House — static preview dataset
+
+Data: `public/datasets/basel-house/basel-preview-1m.bin` (1,003,809 points of BM Heritage's `map-002.las`, 259,986,436 points; interleaved format, section 5.1.1) + `basel-preview-metadata.json`. The `.bin` is gitignored like all point data; the JSON is tracked.
+
+Requirements (constraints from the brief: existing datasets, renderers, controls and performance tools unchanged; no arbitrary rotations or offsets; no walking, collisions, Gaussian training or image registration):
+
+- `BASEL_HOUSE_DATASET` in `BUILTIN_DATASETS` (`lib/datasets.ts`), id `builtin-basel-house`, one budget (1M), no poses; offset/bounds/count come from the metadata at load time. Backend: `catalog.BUILTIN_DATASET_IDS` so it can be assigned to a capture.
+- Loader: second layout `interleaved-xyzrgb`; map.las keeps `counted-planar` (default).
+- Coordinates: section 5.5 chain; the scan area (trajectory bounds in LAS coordinates) via `lasBoxToDataset`. Up axis verified with `describeVerticalAxis`.
+- Panel: **Focus on Scan Area** (only for datasets with a `scanArea`) and **Frame Entire Cloud** under the title next to Reset View; vertical-axis line in the stats; preview note in the dataset info. Axes and grid are placed at the original LAS origin for previews (the bounding-box centre's Z = 32 m is in the sky).
+
+Accept: tsx test with the real code — parse equals numpy, 67.6% of points inside the scan area, view targets as in section 6.6, map.las 500K still loads (7,500,004 bytes) with an unchanged initial view; in the browser Basel lists, loads (15.1 MB, ~0.1 s), shows the metadata values and "Z up", the three view buttons move the camera, Standard/Shader, RGB and point size work, switching back to map.las hides Focus on Scan Area; all other pages load; `tsc` and `next build` clean.
+
 ## 8. Pitfalls we hit and how they were fixed
 
 | Symptom | Cause | Fix |
@@ -1027,6 +1078,10 @@ Stage 2 (after the first real training, with the user): import `splat.ply` into 
 | HEIC portrait photo reported as landscape / swapped twice | pillow-heif already rotated it and resets EXIF orientation to 1 | don't swap sides for HEIF; record `info["original_orientation"]` |
 | Re-uploaded copies flagged only as "near-duplicate" | the duplicate loop stopped at the first earlier photo matching in any way | look for an exact SHA-256 match among all earlier photos first, then the closest dHash |
 | Thumbnails "not loaded" in a headless check | `loading="lazy"` images below the fold load only when scrolled to | scroll the grid and wait before counting |
+| (Preventive) `RangeError: start offset of Float32Array should be a multiple of 4` (interleaved preview) | 15-byte records leave floats unaligned | read through a `DataView` and de-interleave into planar arrays |
+| Basel House grid/axes float far above the building | its offset is the bounding-box centre (Z = 32 m), so dataset (0,0,0) is in the air | place the helpers at the LAS origin (−offset); never shift the points |
+| Basel full-cloud view shows a tiny building | outliers stretch the full box to 225 × 208 × 99 m | default to the scan-area view; Frame Entire Cloud stays available |
+| Cursor's embedded browser screenshots don't change after a click | the hidden tab pauses `requestAnimationFrame` (0 FPS) | take a second screenshot, or check state through the DOM/numbers instead of pixels |
 
 ## 9. Validation playbook
 
@@ -1070,6 +1125,7 @@ Techniques used:
 - **Training photos** (Lab 10A): build fixtures outside the repo (crops of real renders, plus a byte copy, a re-encode, a blurred copy, a tiny PNG, a JPEG renamed `.png`, an EXIF-orientation-6 JPEG, a truncated JPEG, random bytes as `.jpg`, a `.txt`, text named `.heic`; HEIC copies via `sips -s format heic`, plus a truncated one with `head -c`); `curl -F files=@…` (zsh array) into a test backend; check every warning kind, removal, size/pixel limits and that `source/` + `thumbs/` match `project.json`. In Playwright: create a project, `setInputFiles` on the photo input and the folder input, answer `confirm` via `page.on("dialog")`, scroll before counting lazy thumbnails.
 - **Camera poses** (Lab 10B): copy a real project's folder (without `work/`) into a test store; `curl` start / double start / removal while running / cancel (check `pgrep colmap` afterwards) / full run with polling; compare the summary with a manual COLMAP run (`model_analyzer`); when comparing mappers, align camera centres with a similarity (Umeyama) and list photos with few matched points. In Playwright, poll the panel text for the stage changes (a full run is ~4 min), then the 3D view: click over the canvas until a camera is selected, "Look through this camera", screenshot next to the thumbnail.
 - **Training package** (Lab 10C): on a test-store copy (project.json, thumbs, work/poses.json, work/poses/{images,sparse,model}): print the checks; build; unzip and `shasum -a 256 -c SHA256SUMS`; `cmp` the model files; decode every packaged image against COLMAP's copy; read the package with Nerfstudio's `colmap_parsing_utils.py` fetched from the release tag (pure Python + NumPy, no install) and replay the interval split; break things one at a time (remove a photo, hide one, resize one, hide poses.json). Preflight with Nerfstudio itself: a throwaway Python 3.10 venv with `nerfstudio==1.1.5 torch==2.1.2 gsplat==1.4.0` (`--exclude-newer 2024-11-12`, `BUILD_NO_CUDA=1`); run the dataparser (`get_dataparser_outputs("train"/"test")`) and `FullImageDatamanager(device="cpu", test_mode="test").fixed_indices_eval_dataloader` on the unzipped package and compare with the manifest by **basename** (manifest `file` includes `images/`); run the exact `ns-train` command until it stops at CUDA and inspect `config.yml`; `uv pip compile` the lock with itself as input. Test `train.sh` with stand-in commands on PATH (`FAKE_TRAIN=ok|crash|nockpt`, `FAKE_EVAL=fail`, a `flock` stub on macOS, `python` as a wrapper script — a symlink to a venv's python loses the venv). Playwright: block `127.0.0.1:8000`, build → download event → size, then remove a photo and check the outdated state.
+- **Preview datasets** (Basel): numpy reads the `.bin` as a structured dtype (`<f4` ×3, `u1` ×3) for reference values; a temporary `.mts` in the repo root run with `npx tsx` imports `lib/loadPointCloud.ts`, `previewDataset.ts`, `worldFrame.ts`, `initialView.ts` (feed `fetch` from the file system) and prints the parsed points, scan-area fraction, view targets and the map.las regression; delete it afterwards.
 - Note: FPS numbers from SwiftShader are meaningless; use real hardware for performance conclusions.
 
 ## 10. Adapting Spatial Lab for different web purposes
@@ -1143,3 +1199,4 @@ Explicitly out of scope so far (each would be its own lab): cross-capture alignm
 | 10C.1 | Cloud training package: `training_package.py` (COLMAP binary reader, 11 checks of the shipped files, lossless EXIF/XMP removal, size estimate, zip + manifest + SHA256SUMS) + 3 `/training/{id}/package…` endpoints with 409 guards; `backend/cloud_training/` (Runpod/any-GPU README, `setup_env.sh`, `train.sh quick|quality`, Nerfstudio 1.1.5 lock resolved as of its release date); panel section + "Held out for evaluation" cards; versions verified against PyPI/GitHub/ghcr/Runpod docs; section 5.11 |
 | 10C.2 | Preflight before renting: held-out split and eval-render order verified with Nerfstudio 1.1.5's own dataparser/datamanager on the built zip; CLI dry run (`ns-train` → config.yml, `ns-export`/`ns-eval` options, PLY name, transforms location); lock re-resolves to itself, wheels and Runpod image verified. `train.sh`: `smoke` preset (300), per-step status (`run.env`), checkpoint always kept, `incomplete` training still exported/evaluated, `finish <result>` retry, optional report fields + `problems`, INDEX.txt from the run's config, `flock`, `TORCH_HOME` on the volume. `setup_env.sh`: free-space + gcc checks, no pip cache, `pip check`. README: presets/folders, storage table, encrypted volume, failure handling. Section 5.11 |
 | 10C.3 | `train.sh` checkpoint detection: latest checkpoint chosen by numeric step (only `step-<digits>.ckpt`), completion = exit 0 and an exact filename match with Nerfstudio's `step-%09d.ckpt` for step N−1 (replaces a grep regex with an unescaped dot); tested on 12 filename/exit-code cases; room1 package rebuilt |
+| Basel | Basel House preview as a second built-in dataset: interleaved 15-byte loader path (`DataView`), `lib/previewDataset.ts` (metadata validation + count check), `BUILTIN_DATASETS`, documented LAS → dataset → world chain and helpers in `worldFrame.ts`, data-checked up axis in the panel, Focus on Scan Area (trajectory bounds) / Frame Entire Cloud / Reset View via `viewRequest`, helpers at the LAS origin for previews, backend `BUILTIN_DATASET_IDS`; `public/datasets/**/*.bin` gitignored; sections 4, 5.1.1, 5.5, 6.6, 7, 8, 9 |

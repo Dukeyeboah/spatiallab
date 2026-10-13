@@ -1,22 +1,29 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { SpatialScene } from "@/components/SpatialScene";
 import { Controls } from "@/components/Controls";
 import { DatasetManager } from "@/components/DatasetManager";
+import type { ViewKind, ViewRequest } from "@/components/CameraFraming";
 import { loadPointCloud, type PointCloudData } from "@/lib/loadPointCloud";
+import { loadPreview, type PreviewMetadata } from "@/lib/previewDataset";
 import { loadPoses, type PoseData } from "@/lib/loadPoses";
 import {
   API_URL,
   BUILTIN_DATASET,
+  BUILTIN_DATASETS,
   fetchDatasets,
   pickBudget,
   pointsUrl,
   posesUrl,
   type Dataset,
+  type Vec3,
 } from "@/lib/datasets";
 import { EMPTY_CATALOG, catalogApi, type Catalog } from "@/lib/catalog";
 import { defaultViewSettings, withDefaults, type ViewSettings } from "@/lib/viewSettings";
+import { describeVerticalAxis, lasBoxToDataset } from "@/lib/worldFrame";
+
+const DATASET_ORIGIN: Vec3 = [0, 0, 0];
 
 /** How often the dataset list is refreshed while a conversion is running. */
 const POLL_MS = 1500;
@@ -29,15 +36,16 @@ export default function Home() {
   const [catalog, setCatalog] = useState<Catalog>(EMPTY_CATALOG);
   const [catalogError, setCatalogError] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState(BUILTIN_DATASET.id);
-  const datasets = [BUILTIN_DATASET, ...backendDatasets];
+  const datasets = [...BUILTIN_DATASETS, ...backendDatasets];
   // Falls back to the built-in scan if the selected dataset was deleted.
-  const dataset = datasets.find((d) => d.id === selectedId) ?? BUILTIN_DATASET;
+  const listedDataset = datasets.find((d) => d.id === selectedId) ?? BUILTIN_DATASET;
 
   // The user's preferred budget is kept across dataset switches; each dataset
   // shows the closest budget it actually has (see pickBudget).
   const [budgetKey, setBudgetKey] = useState("500k");
-  const budget = pickBudget(dataset.budgets, budgetKey);
-  const cloudUrl = dataset.status === "ready" && budget ? pointsUrl(dataset, budget.key) : null;
+  const budget = pickBudget(listedDataset.budgets, budgetKey);
+  const cloudUrl = listedDataset.status === "ready" && budget ? pointsUrl(listedDataset, budget.key) : null;
+  const metadataUrl = listedDataset.preview?.metadataUrl ?? null;
   const budgetLabel = budget?.label ?? "";
 
   // Loaded data is tagged with its dataset, so a scene never mixes the old
@@ -45,12 +53,25 @@ export default function Home() {
   const [loaded, setLoaded] = useState<{
     datasetId: string;
     data: PointCloudData;
+    /** A preview's metadata JSON, loaded with its points. */
+    metadata: PreviewMetadata | null;
     /** Download + parse time and size of the budget file, shown in the panel. */
     seconds: number;
     bytes: number;
   } | null>(null);
   const [loadedPoses, setLoadedPoses] = useState<{ datasetId: string; poses: PoseData } | null>(null);
-  const data = loaded?.datasetId === dataset.id ? loaded.data : null;
+  const data = loaded?.datasetId === listedDataset.id ? loaded.data : null;
+
+  // A preview's offset, original bounds and point count come from its metadata.
+  const metadata = loaded?.datasetId === listedDataset.id ? loaded.metadata : null;
+  const dataset: Dataset = metadata
+    ? {
+        ...listedDataset,
+        offset: metadata.coordinateCenter,
+        originalBounds: metadata.sourceBounds,
+        originalPointCount: metadata.sourcePointCount,
+      }
+    : listedDataset;
   const poses = loadedPoses?.datasetId === dataset.id ? loadedPoses.poses : null;
 
   const [status, setStatus] = useState<string | null>(null);
@@ -63,8 +84,31 @@ export default function Home() {
   const [poseIndex, setPoseIndex] = useState(0);
   const elapsedSeconds = poses ? poses.timestamps[poseIndex] - poses.timestamps[0] : 0;
 
-  // Increases on every Reset View click; the scene restores the initial view.
-  const [viewResetRequest, setViewResetRequest] = useState(0);
+  // Reset View / Focus on Scan Area / Frame Entire Cloud clicks.
+  const [viewRequest, setViewRequest] = useState<ViewRequest | null>(null);
+  const requestView = (kind: ViewKind) =>
+    setViewRequest((previous) => ({ kind, serial: (previous?.serial ?? 0) + 1 }));
+
+  // Framing boxes in dataset coordinates (original LAS − offset). CameraFraming
+  // rotates them into the viewer's world with the same rotation as the points,
+  // and frames each dataset once, so recomputed boxes never move the camera.
+  const offset = dataset.offset;
+  const scanAreaSpec = dataset.preview?.scanArea;
+  const bounds = dataset.originalBounds;
+  const scanArea = useMemo(
+    () => (scanAreaSpec && offset ? lasBoxToDataset(scanAreaSpec.min, scanAreaSpec.max, offset) : null),
+    [scanAreaSpec, offset],
+  );
+  const fullExtent = useMemo(
+    () => (bounds && offset ? lasBoxToDataset(bounds.min, bounds.max, offset) : null),
+    [bounds, offset],
+  );
+  // Previews mark the original LAS origin (dataset point −offset) with the axes
+  // and grid, instead of the bounding-box centre their offset happens to be.
+  // Display only: the points are never moved.
+  const helperOrigin: Vec3 =
+    dataset.preview && offset ? [-offset[0], -offset[1], -offset[2]] : DATASET_ORIGIN;
+  const verticalAxis = useMemo(() => (data ? describeVerticalAxis(data.positions) : null), [data]);
 
   const refreshDatasets = useCallback(async () => {
     try {
@@ -79,7 +123,7 @@ export default function Home() {
       }
     } catch {
       setBackendError(
-        `Local backend not reachable at ${API_URL}. Only the built-in dataset is available ` +
+        `Local backend not reachable at ${API_URL}. Only the built-in datasets are available ` +
           "(start it with the instructions in docs/SPATIAL_LAB_REBUILD_GUIDE.md).",
       );
     }
@@ -114,13 +158,17 @@ export default function Home() {
     setStatus(`Loading ${budgetLabel} points…`);
     const started = performance.now();
 
-    loadPointCloud(cloudUrl, controller.signal)
-      .then((loadedData) => {
+    const load = metadataUrl
+      ? loadPreview(cloudUrl, metadataUrl, controller.signal)
+      : loadPointCloud(cloudUrl, controller.signal).then((points) => ({ data: points, metadata: null }));
+    load
+      .then(({ data: loadedData, metadata: loadedMetadata }) => {
         setLoaded({
           datasetId,
           data: loadedData,
+          metadata: loadedMetadata,
           seconds: (performance.now() - started) / 1000,
-          bytes: loadedData.positions.byteLength + loadedData.colors.byteLength + 4,
+          bytes: loadedData.fileBytes,
         });
         setStatus(null);
       })
@@ -133,7 +181,7 @@ export default function Home() {
       });
 
     return () => controller.abort();
-  }, [cloudUrl, datasetId, budgetLabel]);
+  }, [cloudUrl, metadataUrl, datasetId, budgetLabel]);
 
   // Poses: only if the dataset has poses that passed the frame checks.
   const posesSource =
@@ -172,7 +220,10 @@ export default function Home() {
         poses={poses}
         poseIndex={poseIndex}
         settings={settings}
-        viewResetRequest={viewResetRequest}
+        scanArea={scanArea}
+        fullExtent={fullExtent}
+        viewRequest={viewRequest}
+        helperOrigin={helperOrigin}
       />
       <Controls
         datasetPanel={
@@ -202,7 +253,11 @@ export default function Home() {
         error={error}
         settings={settings}
         onChange={setSettings}
-        onResetView={() => setViewResetRequest((n) => n + 1)}
+        onResetView={() => requestView("initial")}
+        onFocusScanArea={scanArea ? () => requestView("scanArea") : null}
+        scanAreaDescription={scanAreaSpec?.description ?? null}
+        onFrameEntireCloud={() => requestView("entire")}
+        verticalAxis={verticalAxis}
       />
     </>
   );

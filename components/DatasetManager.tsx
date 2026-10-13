@@ -362,6 +362,13 @@ function DatasetInfo({ dataset }: { dataset: Dataset }) {
         </div>
       )}
       {dataset.budgets.length > 0 && <div>Budgets: {dataset.budgets.map((b) => b.label).join(", ")}</div>}
+      {dataset.preview && (
+        <div className="note">
+          Static preview (original LAS axes, offset = bounding-box centre). Axes and grid mark the original LAS
+          origin.
+          {dataset.preview.scanArea && ` Focus on Scan Area frames the ${dataset.preview.scanArea.description}.`}
+        </div>
+      )}
       {dataset.budgetJob &&
         (dataset.budgetJob.status === "failed" ? (
           <div className="error">

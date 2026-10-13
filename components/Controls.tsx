@@ -52,6 +52,13 @@ type ControlsProps = {
   settings: ViewSettings;
   onChange: (settings: ViewSettings) => void;
   onResetView: () => void;
+  /** Null when the dataset defines no scan area. */
+  onFocusScanArea: (() => void) | null;
+  /** What the scan area is, e.g. "scanner trajectory bounds". */
+  scanAreaDescription: string | null;
+  onFrameEntireCloud: () => void;
+  /** Result of the "is Z up?" check on the loaded points. */
+  verticalAxis: string | null;
 };
 
 /** A plain HTML panel drawn on top of the canvas. */
@@ -73,6 +80,10 @@ export function Controls({
   settings,
   onChange,
   onResetView,
+  onFocusScanArea,
+  scanAreaDescription,
+  onFrameEntireCloud,
+  verticalAxis,
 }: ControlsProps) {
   // Helper: copy the settings and change one field.
   function update<K extends keyof ViewSettings>(key: K, value: ViewSettings[K]) {
@@ -102,6 +113,16 @@ export function Controls({
       <div className="title-row">
         <h1>Spatial Lab</h1>
         <button onClick={onResetView}>Reset View</button>
+      </div>
+      <div className="mini-actions">
+        {onFocusScanArea && (
+          <button onClick={onFocusScanArea} title={`Frame the ${scanAreaDescription ?? "scan area"}`}>
+            Focus on Scan Area
+          </button>
+        )}
+        <button onClick={onFrameEntireCloud} title="Frame the full LiDAR extent of this dataset">
+          Frame Entire Cloud
+        </button>
       </div>
       <Link href="/gaussian-projection" className="lab-link">
         Lab 6: 3D Gaussian Projection →
@@ -304,6 +325,7 @@ export function Controls({
         {loadInfo && <div className="note">Loaded {loadInfo}</div>}
         <div>Point size: {settings.pointSize}px</div>
         <div>Poses loaded: {poseCount.toLocaleString()}</div>
+        {verticalAxis && <div className="note">{verticalAxis}</div>}
       </div>
       {status && <div className="status">{status}</div>}
       {error && <div className="error">{error}</div>}

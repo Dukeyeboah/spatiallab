@@ -53,8 +53,9 @@ CATALOG_FILE = DATA_DIR / "catalog.json"
 CATALOG_SCHEMA_VERSION = 1
 PROPERTY_ID_PATTERN = re.compile(r"^prop_[0-9a-f]{12}$")
 CAPTURE_ID_PATTERN = re.compile(r"^cap_[0-9a-f]{12}$")
-# The built-in sample (public/data) can be organised too; it is never deleted.
+# The built-in datasets (public/data, public/datasets; lib/datasets.ts) can be organised too; never deleted.
 BUILTIN_DATASET_ID = "builtin-map"
+BUILTIN_DATASET_IDS = {BUILTIN_DATASET_ID, "builtin-basel-house"}
 MAX_NAME_LENGTH = 80
 
 # One request at a time edits the file (FastAPI runs sync endpoints in threads).
@@ -125,8 +126,8 @@ def is_splat_reference(dataset_id: str) -> bool:
 
 
 def is_dataset_reference(dataset_id: str) -> bool:
-    """A LiDAR dataset, the built-in sample, or a Gaussian splat scene."""
-    return dataset_id == BUILTIN_DATASET_ID or bool(DATASET_ID_PATTERN.match(dataset_id)) or is_splat_reference(dataset_id)
+    """A LiDAR dataset, a built-in dataset, or a Gaussian splat scene."""
+    return dataset_id in BUILTIN_DATASET_IDS or bool(DATASET_ID_PATTERN.match(dataset_id)) or is_splat_reference(dataset_id)
 
 
 # ---------------------------------------------------------------------------

@@ -1,6 +1,6 @@
 import * as THREE from "three";
 import { usefulBounds } from "./usefulBounds";
-import { LIDAR_TO_THREE_ROTATION } from "./worldFrame";
+import { lidarBoxToWorld } from "./worldFrame";
 
 /** A camera position and the point OrbitControls orbits around (three.js world space). */
 export type CameraView = {
@@ -13,22 +13,23 @@ const ELEVATION_DEGREES = 15;
 /** Horizontal direction the camera looks from, around the vertical axis. */
 const AZIMUTH_DEGREES = 45;
 
-/**
- * Frame the useful scan volume:
- *   target   = centre of the useful bounding box
- *   position = target + a direction (low elevation) * a distance that fits
- *              the box's bounding sphere inside the camera's field of view.
- */
+/** Frame the useful scan volume (1st–99th percentile box of the points). */
 export function computeInitialView(
   positions: Float32Array,
   camera: THREE.PerspectiveCamera,
 ): CameraView {
-  // The box is in LiDAR coordinates (Z-up). Rotate it into three.js world
-  // space (Y-up) with the same rotation as the scene's LiDAR group.
-  const lidarToThree = new THREE.Matrix4().makeRotationFromEuler(
-    new THREE.Euler(...LIDAR_TO_THREE_ROTATION),
-  );
-  const box = usefulBounds(positions).applyMatrix4(lidarToThree);
+  return computeViewOfBox(usefulBounds(positions), camera);
+}
+
+/**
+ * Frame a box given in dataset (LiDAR, Z-up) coordinates:
+ *   target   = centre of the box in three.js world space (the same rotation
+ *              as the scene's LiDAR group, lib/worldFrame.ts)
+ *   position = target + a direction (low elevation) * a distance that fits
+ *              the box's bounding sphere inside the camera's field of view.
+ */
+export function computeViewOfBox(lidarBox: THREE.Box3, camera: THREE.PerspectiveCamera): CameraView {
+  const box = lidarBoxToWorld(lidarBox);
 
   const target = box.getCenter(new THREE.Vector3());
   const radius = box.getBoundingSphere(new THREE.Sphere()).radius;
