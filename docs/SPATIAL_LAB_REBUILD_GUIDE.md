@@ -202,7 +202,8 @@ lib/
 shaders/                GLSL as exported TS template strings (no bundler loader needed)
 scripts/convert_las.py  LAS → browser binary converter (CLI; uses backend/lidar_conversion.py)
 public/data/            built-in dataset: pointcloud-500k/1m/2m/5m.bin (gitignored), poses.csv
-public/datasets/basel-house/  Basel House preview: basel-preview-1m.bin (gitignored), basel-preview-metadata.json (tracked)
+public/datasets/basel-house/  Basel House preview: basel-preview-1m.bin + basel-preview-metadata.json,
+                        basel-preview-5m.bin + basel-preview-5m-metadata.json (.bin gitignored, JSON tracked)
 backend/                local FastAPI dataset service (Lab 7A)
   app.py                routes, CORS, worker process pool, restart recovery
   storage.py            dataset folders, id validation, atomic metadata.json, budget table + planned/missing budgets
@@ -284,7 +285,9 @@ Every preview has a metadata JSON next to it (`lib/previewDataset.ts` validates 
   "coordinateSystem": "Original LAS axes; centered only" }
 ```
 
-Basel's `coordinateCenter` is the midpoint of `sourceBounds` (including Z), unlike our converter, which uses the minimum Z. `Dataset.preview` (in `lib/datasets.ts`) holds the two URLs and an optional `scanArea` box in **original LAS coordinates** (Basel: the scanner trajectory bounds X −41.80..6.85, Y −22.63..17.66, Z −3.60..2.73). Previews have one budget, no poses, no backend.
+Basel's `coordinateCenter` is the midpoint of `sourceBounds` (including Z), unlike our converter, which uses the minimum Z. `Dataset.preview` (in `lib/datasets.ts`) holds `files` (points + metadata URL per budget key) and an optional `scanArea` box in **original LAS coordinates** (Basel: the scanner trajectory bounds X −41.80..6.85, Y −22.63..17.66, Z −3.60..2.73). Previews have no poses and no backend. Basel has two budgets, 1M (1,003,809 points) and 5M (5,097,774 points, 76.5 MB), with the same `coordinateCenter` and `sourceBounds`.
+
+Budget switches keep the frame: `page.tsx` keeps the dataset's last loaded metadata (`previewFrame`) while another budget loads, so offset, axes/grid position and the framing boxes never change, and it **refuses** a budget whose `coordinateCenter` differs from the dataset's ("Couldn't load the 5M budget: its coordinateCenter … differs"), rather than showing it shifted.
 
 ### 5.2 Converter (`scripts/convert_las.py`)
 
@@ -1008,7 +1011,9 @@ Stage 2 (after the first real training, with the user): import `splat.ply` into 
 
 ### Basel House — static preview dataset
 
-Data: `public/datasets/basel-house/basel-preview-1m.bin` (1,003,809 points of BM Heritage's `map-002.las`, 259,986,436 points; interleaved format, section 5.1.1) + `basel-preview-metadata.json`. The `.bin` is gitignored like all point data; the JSON is tracked.
+Data: `public/datasets/basel-house/basel-preview-1m.bin` (1,003,809 points of BM Heritage's `map-002.las`, 259,986,436 points; interleaved format, section 5.1.1) + `basel-preview-metadata.json`, and `basel-preview-5m.bin` (5,097,774 points) + `basel-preview-5m-metadata.json`. The `.bin` files are gitignored like all point data; the JSONs are tracked.
+
+Budgets (density/performance comparison): the existing Point Budget buttons show 1M and 5M for Basel; switching uses the same loader, RGB handling and renderers, keeps camera, target, orientation and offset (section 5.1.1), and frees the previous geometry (`<PointCloud>` unmounts while the next budget loads). Measured on an M-series Mac at the default view: 1M ≈ 4.7 ms GPU, 5M ≈ 10–13 ms GPU, both ~60 FPS; load 0.1 s vs 0.5 s; r3f-perf's geometry count stays at 3.
 
 Requirements (constraints from the brief: existing datasets, renderers, controls and performance tools unchanged; no arbitrary rotations or offsets; no walking, collisions, Gaussian training or image registration):
 
@@ -1079,6 +1084,7 @@ Accept: tsx test with the real code — parse equals numpy, 67.6% of points insi
 | Re-uploaded copies flagged only as "near-duplicate" | the duplicate loop stopped at the first earlier photo matching in any way | look for an exact SHA-256 match among all earlier photos first, then the closest dHash |
 | Thumbnails "not loaded" in a headless check | `loading="lazy"` images below the fold load only when scrolled to | scroll the grid and wait before counting |
 | (Preventive) `RangeError: start offset of Float32Array should be a multiple of 4` (interleaved preview) | 15-byte records leave floats unaligned | read through a `DataView` and de-interleave into planar arrays |
+| (Preventive) Grid and axes jump while another Basel budget loads | the metadata (= offset) was stored with the loaded points, which are cleared on a budget switch | keep the dataset's preview metadata separately (`previewFrame`) and check each new budget's `coordinateCenter` against it |
 | Basel House grid/axes float far above the building | its offset is the bounding-box centre (Z = 32 m), so dataset (0,0,0) is in the air | place the helpers at the LAS origin (−offset); never shift the points |
 | Basel full-cloud view shows a tiny building | outliers stretch the full box to 225 × 208 × 99 m | default to the scan-area view; Frame Entire Cloud stays available |
 | Cursor's embedded browser screenshots don't change after a click | the hidden tab pauses `requestAnimationFrame` (0 FPS) | take a second screenshot, or check state through the DOM/numbers instead of pixels |
@@ -1200,3 +1206,4 @@ Explicitly out of scope so far (each would be its own lab): cross-capture alignm
 | 10C.2 | Preflight before renting: held-out split and eval-render order verified with Nerfstudio 1.1.5's own dataparser/datamanager on the built zip; CLI dry run (`ns-train` → config.yml, `ns-export`/`ns-eval` options, PLY name, transforms location); lock re-resolves to itself, wheels and Runpod image verified. `train.sh`: `smoke` preset (300), per-step status (`run.env`), checkpoint always kept, `incomplete` training still exported/evaluated, `finish <result>` retry, optional report fields + `problems`, INDEX.txt from the run's config, `flock`, `TORCH_HOME` on the volume. `setup_env.sh`: free-space + gcc checks, no pip cache, `pip check`. README: presets/folders, storage table, encrypted volume, failure handling. Section 5.11 |
 | 10C.3 | `train.sh` checkpoint detection: latest checkpoint chosen by numeric step (only `step-<digits>.ckpt`), completion = exit 0 and an exact filename match with Nerfstudio's `step-%09d.ckpt` for step N−1 (replaces a grep regex with an unescaped dot); tested on 12 filename/exit-code cases; room1 package rebuilt |
 | Basel | Basel House preview as a second built-in dataset: interleaved 15-byte loader path (`DataView`), `lib/previewDataset.ts` (metadata validation + count check), `BUILTIN_DATASETS`, documented LAS → dataset → world chain and helpers in `worldFrame.ts`, data-checked up axis in the panel, Focus on Scan Area (trajectory bounds) / Frame Entire Cloud / Reset View via `viewRequest`, helpers at the LAS origin for previews, backend `BUILTIN_DATASET_IDS`; `public/datasets/**/*.bin` gitignored; sections 4, 5.1.1, 5.5, 6.6, 7, 8, 9 |
+| Basel.1 | Basel House 5M budget (5,097,774 points) next to 1M: `preview.files` per budget key; preview metadata kept across budget switches (`previewFrame`), a budget with a different `coordinateCenter` is refused; checked: same centre and first point in both files, 67.6% in the scan area for both, camera unchanged 1M ↔ 5M ↔ 1M, Standard/Shader (RGB, Height), geometry count constant; sections 4, 5.1.1, 7, 8 |

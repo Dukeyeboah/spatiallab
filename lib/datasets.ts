@@ -88,10 +88,10 @@ export type Dataset = {
   /**
    * A static preview (interleaved 15-byte points + metadata JSON). Its offset,
    * original bounds and point count come from the metadata once it is loaded.
+   * One points file + metadata per budget key; all must share one coordinateCenter.
    */
   preview?: {
-    pointsUrl: string;
-    metadataUrl: string;
+    files: Record<string, { pointsUrl: string; metadataUrl: string }>;
     /** The region "Focus on Scan Area" frames, in original LAS coordinates. */
     scanArea?: { min: Vec3; max: Vec3; description: string };
   };
@@ -137,8 +137,9 @@ export const BUILTIN_DATASET: Dataset = {
 };
 
 /**
- * BM Heritage Basel House: a 1,003,809-point preview of map-002.las
- * (259,986,436 points). No scanner poses are shipped with it, so none are shown.
+ * BM Heritage Basel House: 1,003,809- and 5,097,774-point previews of
+ * map-002.las (259,986,436 points), both centred on the same coordinateCenter.
+ * No scanner poses are shipped with it, so none are shown.
  */
 export const BASEL_HOUSE_DATASET: Dataset = {
   schemaVersion: 1,
@@ -152,17 +153,28 @@ export const BASEL_HOUSE_DATASET: Dataset = {
   stage: "Ready",
   error: null,
   source: {},
-  // Filled from basel-preview-metadata.json when it loads.
+  // Filled from the budget's metadata JSON when it loads.
   originalPointCount: null,
   originalBounds: null,
   offset: null,
   hasRgb: true,
-  budgets: [{ key: "1m", label: "1M", pointCount: 1_003_809 }],
+  budgets: [
+    { key: "1m", label: "1M", pointCount: 1_003_809 },
+    { key: "5m", label: "5M", pointCount: 5_097_774 },
+  ],
   poses: null,
   attachments: [],
   preview: {
-    pointsUrl: "/datasets/basel-house/basel-preview-1m.bin",
-    metadataUrl: "/datasets/basel-house/basel-preview-metadata.json",
+    files: {
+      "1m": {
+        pointsUrl: "/datasets/basel-house/basel-preview-1m.bin",
+        metadataUrl: "/datasets/basel-house/basel-preview-metadata.json",
+      },
+      "5m": {
+        pointsUrl: "/datasets/basel-house/basel-preview-5m.bin",
+        metadataUrl: "/datasets/basel-house/basel-preview-5m-metadata.json",
+      },
+    },
     // The original scanner trajectory's extent (LAS coordinates, metres): the
     // building the scanner walked through, unlike the full LAS box, which is
     // stretched to 225 × 208 × 99 m by surroundings and stray points.
@@ -180,7 +192,7 @@ export const BUILTIN_DATASETS: Dataset[] = [BUILTIN_DATASET, BASEL_HOUSE_DATASET
 export const API_URL = process.env.NEXT_PUBLIC_SPATIAL_API_URL ?? "http://127.0.0.1:8000";
 
 export function pointsUrl(dataset: Dataset, budgetKey: string): string {
-  if (dataset.preview) return dataset.preview.pointsUrl;
+  if (dataset.preview) return dataset.preview.files[budgetKey].pointsUrl;
   return dataset.origin === "builtin"
     ? `/data/pointcloud-${budgetKey}.bin`
     : `${API_URL}/datasets/${dataset.id}/points/${budgetKey}`;

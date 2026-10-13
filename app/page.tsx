@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { SpatialScene } from "@/components/SpatialScene";
 import { Controls } from "@/components/Controls";
 import { DatasetManager } from "@/components/DatasetManager";
@@ -45,7 +45,7 @@ export default function Home() {
   const [budgetKey, setBudgetKey] = useState("500k");
   const budget = pickBudget(listedDataset.budgets, budgetKey);
   const cloudUrl = listedDataset.status === "ready" && budget ? pointsUrl(listedDataset, budget.key) : null;
-  const metadataUrl = listedDataset.preview?.metadataUrl ?? null;
+  const metadataUrl = (budget && listedDataset.preview?.files[budget.key]?.metadataUrl) ?? null;
   const budgetLabel = budget?.label ?? "";
 
   // Loaded data is tagged with its dataset, so a scene never mixes the old
@@ -53,8 +53,6 @@ export default function Home() {
   const [loaded, setLoaded] = useState<{
     datasetId: string;
     data: PointCloudData;
-    /** A preview's metadata JSON, loaded with its points. */
-    metadata: PreviewMetadata | null;
     /** Download + parse time and size of the budget file, shown in the panel. */
     seconds: number;
     bytes: number;
@@ -63,7 +61,12 @@ export default function Home() {
   const data = loaded?.datasetId === listedDataset.id ? loaded.data : null;
 
   // A preview's offset, original bounds and point count come from its metadata.
-  const metadata = loaded?.datasetId === listedDataset.id ? loaded.metadata : null;
+  // Kept while another budget of the same dataset loads, so the frame (and the
+  // helpers placed from it) never changes on a budget switch. The ref lets the
+  // load effect compare a new budget's metadata with the dataset's frame.
+  const [previewFrame, setPreviewFrame] = useState<{ datasetId: string; metadata: PreviewMetadata } | null>(null);
+  const previewFrameRef = useRef(previewFrame);
+  const metadata = previewFrame?.datasetId === listedDataset.id ? previewFrame.metadata : null;
   const dataset: Dataset = metadata
     ? {
         ...listedDataset,
@@ -163,10 +166,23 @@ export default function Home() {
       : loadPointCloud(cloudUrl, controller.signal).then((points) => ({ data: points, metadata: null }));
     load
       .then(({ data: loadedData, metadata: loadedMetadata }) => {
+        if (loadedMetadata) {
+          // Every budget of a dataset must be in the same frame: refuse one
+          // centred differently rather than show it shifted.
+          const known = previewFrameRef.current;
+          if (known?.datasetId === datasetId) {
+            const a = known.metadata.coordinateCenter;
+            const b = loadedMetadata.coordinateCenter;
+            if (a.some((value, axis) => value !== b[axis])) {
+              throw new Error(`its coordinateCenter (${b.join(", ")}) differs from the dataset's (${a.join(", ")})`);
+            }
+          }
+          previewFrameRef.current = { datasetId, metadata: loadedMetadata };
+          setPreviewFrame(previewFrameRef.current);
+        }
         setLoaded({
           datasetId,
           data: loadedData,
-          metadata: loadedMetadata,
           seconds: (performance.now() - started) / 1000,
           bytes: loadedData.fileBytes,
         });

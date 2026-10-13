@@ -1,0 +1,25 @@
+{
+  "source": "map-002.las",
+  "sourcePointCount": 259986436,
+  "previewPointCount": 5097774,
+  "coordinateCenter": [
+    -22.66534423828125,
+    0.4985923767089844,
+    32.03241729736328
+  ],
+  "sourceBounds": {
+    "min": [
+      -135.33518981933594,
+      -103.57331848144531,
+      -17.29242706298828
+    ],
+    "max": [
+      90.00450134277344,
+      104.57050323486328,
+      81.35726165771484
+    ]
+  },
+  "strideBytes": 15,
+  "layout": "float32 xyz + uint8 rgb",
+  "coordinateSystem": "Original LAS axes; centered only"
+}
