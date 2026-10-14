@@ -64,9 +64,22 @@ Recording: Basel House, `2026-07-15-101012-003.xbin` (13,929,066,496 bytes), Lix
 - **Marker position:** the dataset's own poses, interpolated in the browser at each image time, agree with the run's positions to ≤ 0.002 mm. Against the 5M preview, all 242 interval events lie inside the LAS bounds, a median 0.40 m from the nearest point and 1.28 m above the floor beneath (3665: 1.37 m).
 - **Not checked by eye:** screenshots of the workspace were taken with the images blurred or hidden. One early screenshot was captured before the blur applied; it was not saved anywhere in the repository.
 
+## Lab 13S: manual visual extrinsics hypothesis test
+
+- **Body frame check:** in `poses.csv`, the scanner's +X is the walking direction (78% of motion samples within 60° of it) and +Z is up (mean 0.98 along world up). So Y is left, as `ScannerBody` assumed.
+- **Test set (`interval-10s`):** events were classified from the 5M preview by what lies above the scanner. Courtyard means no point within ±1 m horizontally (2466–2587, 2646–2857, 2977–3067). Indoor means a ceiling about 2.2 m up (e.g. 1335, 4718, 7178). The chosen set is the seeds 2497/2527/3037, 8 more courtyard events and 3 indoor events.
+- **Image geometry:** circular fisheye, the image circle about 95% of the image height, centre within about 3% of the image centre (from the mean of 41 images per channel).
+- **Numerical comparison:** coloured LiDAR rendered through an equidistant fisheye (assumed f) and compared with the 160 × 120 grey image.
+  - Correlation: ch14 is best at yaw −90° and ch18 at +100° (±10°), level, roll 0°.
+  - The opposite assignment, forward and backward all score far lower.
+  - The sky-overlap score is useless indoors and nearly flat in open courtyards. Grey-level correlation was more robust.
+  - Details in [calibration-workspace.md](calibration-workspace.md#result-on-basel-house-october-2026).
+- **Operator position:** the operator appears at the left edge of ch14 and the right edge of ch18. That fits left- and right-looking cameras, whose edges both point backward.
+- **Images viewed:** small thumbnails (480 × 360) of a few test events were viewed to compare scenes. Nothing was saved to the repository.
+
 ## Open questions
 
-- Which physical camera is channel 14 and which is 18? Clue: `project.json` lists `left_main` and `right_main` at indices 0 and 2.
+- Which physical camera is channel 14 and which is 18? Clue: `project.json` lists `left_main` and `right_main` at indices 0 and 2. Lab 13S found ch14 looks left, which suggests ch14 = `left_main`, but this is not confirmed.
 - What do header field 3 (20000), message field 2 (3), field 6, the record write time and the 4 trailing bytes mean?
 - What do channels 0, 1, 3 and 21 contain? Also unexplored: `project_data/log/data.ulg` and `lixel.zip`.
 - Does each timestamp mark the exposure start, middle or end? What is the camera clock's offset from the pose clock?

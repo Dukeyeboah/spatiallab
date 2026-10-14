@@ -780,15 +780,105 @@ body {
   gap: 2px;
 }
 
-.controls.calibration .provisional-camera .reset {
-  margin-left: auto;
-  padding: 1px 6px;
+/* Lab 13S: direction hypothesis test. */
+.controls.calibration input.angle {
+  width: 52px;
+}
+
+.controls.calibration input[type="text"],
+.controls.calibration textarea {
+  flex: 1;
+  min-width: 0;
+  padding: 3px 5px;
+  border: 1px solid #555;
+  border-radius: 4px;
+  background: #222;
+  color: #ddd;
+  font: inherit;
+  font-size: 12px;
+}
+
+.controls.calibration textarea {
+  width: 100%;
+  box-sizing: border-box;
+  resize: vertical;
+}
+
+.controls.calibration .test-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+}
+
+.controls.calibration .test-chips button,
+.controls.calibration .verdicts button {
+  padding: 1px 5px;
   border: 1px solid #555;
   border-radius: 4px;
   background: #222;
   color: #ddd;
   font-size: 11px;
   cursor: pointer;
+}
+
+.controls.calibration .test-chips button.selected,
+.controls.calibration .verdicts button.selected {
+  border-color: #fff;
+  background: #4a6fa5;
+}
+
+.controls.calibration .test-chips button.v-match {
+  box-shadow: inset 0 -3px 0 #6c6;
+}
+
+.controls.calibration .test-chips button.v-roughly {
+  box-shadow: inset 0 -3px 0 #db3;
+}
+
+.controls.calibration .test-chips button.v-no {
+  box-shadow: inset 0 -3px 0 #e55;
+}
+
+.controls.calibration .verdicts {
+  flex-wrap: wrap;
+  gap: 3px;
+}
+
+.helper-label {
+  padding: 0 4px;
+  border: 1px solid;
+  border-radius: 3px;
+  background: rgba(0, 0, 0, 0.7);
+  font: 600 11px system-ui, sans-serif;
+  white-space: nowrap;
+  pointer-events: none;
+  user-select: none;
+}
+
+.helper-label.axis {
+  border: none;
+  font-weight: 500;
+  font-size: 10px;
+}
+
+.camera-image {
+  display: block;
+  position: relative;
+}
+
+.camera-image .crosshair {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 28px;
+  height: 28px;
+  transform: translate(-50%, -50%);
+  background:
+    linear-gradient(#0f0, #0f0) center / 2px 100% no-repeat,
+    linear-gradient(#0f0, #0f0) center / 100% 2px no-repeat;
+  opacity: 0.8;
+  pointer-events: none;
+  z-index: 1;
 }
 
 .camera-pair {

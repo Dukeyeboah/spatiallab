@@ -11,7 +11,9 @@ import { loadPreview } from "@/lib/previewDataset";
 import { parsePoses } from "@/lib/loadPoses";
 import { defaultViewSettings, type ViewSettings } from "@/lib/viewSettings";
 import { lasBoxToDataset } from "@/lib/worldFrame";
-import { NEUTRAL_ORIENTATION } from "@/lib/calibration";
+import { NEUTRAL_ORIENTATION, STARTING_HYPOTHESIS } from "@/lib/calibration";
+import { DEFAULT_HELPER_SHAPE, type HelperShape } from "@/lib/directionTest";
+import { DirectionTestSection } from "@/components/calibration/DirectionTestSection";
 import { eventReference, fetchRun, fetchRuns, positionAt, sha256Hex, type Run, type RunList } from "@/lib/xgrids";
 
 /** Built-in LiDAR datasets with poses: the run's poses.csv must be one of their files (checked by SHA-256). */
@@ -30,8 +32,10 @@ function toDataset(p: Vec3 | null, offset: Vec3): Vec3 | null {
  * their exact timestamps, and the scanner pose interpolated at that time as a
  * marker in the LiDAR scene. Data: the run's manifest and selected JPEGs from
  * the local backend (SPATIAL_LAB_XGRIDS_DIR, outside the repo); the LiDAR
- * preview from public/. Camera intrinsics and extrinsics are unknown; the
- * orientation sliders are provisional experiments, not calibration.
+ * preview from public/. Camera intrinsics and extrinsics are unknown.
+ * Lab 13S adds a manual visual extrinsics hypothesis test: per-channel
+ * offsets relative to the scanner (default ch14 −90°, ch18 +90° yaw), drawn
+ * as direction helpers. That is not calibration.
  */
 export default function CameraCalibrationPage() {
   // --- LiDAR dataset -------------------------------------------------------
@@ -151,8 +155,10 @@ export default function CameraCalibrationPage() {
 
   // --- Provisional cameras + view --------------------------------------------
   const [cameras, setCameras] = useState<ProvisionalCamera[]>(() =>
-    CHANNELS.map((channel) => ({ channel, orientation: NEUTRAL_ORIENTATION, visible: true })),
+    CHANNELS.map((channel) => ({ channel, orientation: STARTING_HYPOTHESIS[channel] ?? NEUTRAL_ORIENTATION, visible: true })),
   );
+  const [helperShape, setHelperShape] = useState<HelperShape>(DEFAULT_HELPER_SHAPE);
+  const [showAxes, setShowAxes] = useState(true);
   const [view, setView] = useState<{ request: CalibrationViewRequest; serial: number } | null>(null);
   const requestView = (request: CalibrationViewRequest) =>
     setView((previous) => ({ request, serial: (previous?.serial ?? 0) + 1 }));
@@ -190,6 +196,8 @@ export default function CameraCalibrationPage() {
             onSelect={(index) => setEventIndex(run?.events.findIndex((e) => e.index === index) ?? 0)}
             scanner={scanner}
             cameras={cameras}
+            shape={helperShape}
+            showAxes={showAxes}
             view={view}
           />
         }
@@ -228,7 +236,21 @@ export default function CameraCalibrationPage() {
         onCamerasChange={setCameras}
         onRequestView={requestView}
         markerShown={!!scanner}
-      />
+      >
+        {run && event && (
+          <DirectionTestSection
+            run={run}
+            event={event}
+            onEventIndexChange={setEventIndex}
+            cameras={cameras}
+            onCamerasChange={setCameras}
+            shape={helperShape}
+            onShapeChange={setHelperShape}
+            showAxes={showAxes}
+            onShowAxesChange={setShowAxes}
+          />
+        )}
+      </CalibrationPanel>
       {run && event && <CameraPairPanel run={run} event={event} size={pairSize} onSizeChange={setPairSize} />}
     </>
   );

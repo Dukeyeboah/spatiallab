@@ -74,7 +74,9 @@ function CameraImage({ runId, event, channel, image }: { runId: string; event: R
       {failed ? (
         <div className="camera-pair-missing">{channel}: the backend didn&apos;t return this image.</div>
       ) : (
-        <a href={url} target="_blank" rel="noreferrer" title="Open at full resolution">
+        <a href={url} target="_blank" rel="noreferrer" title="Open at full resolution" className="camera-image">
+          {/* Image centre: the best clue to the optical axis (the fisheye circle is centred within a few %). */}
+          <span className="crosshair" aria-hidden />
           <img
             src={url}
             alt={`${channel}, sequence ${event.sequence}`}

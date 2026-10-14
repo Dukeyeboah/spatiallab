@@ -1,6 +1,6 @@
 # Camera calibration workspace (Lab 13R, phase 1)
 
-A separate page, `/camera-calibration`, for inspecting the XGRIDS camera pairs against the LiDAR scan. It shows one capture event at a time: both fisheye images, their exact timestamps, and the scanner pose at that moment as a marker in the point cloud. **It is not a calibration.** Camera intrinsics and extrinsics stay unknown (see [calibration-notes.md](calibration-notes.md)); the orientation sliders are a labelled experiment.
+A separate page, `/camera-calibration` (Lab 13R, extended by the direction test of Lab 13S), for inspecting the XGRIDS camera pairs against the LiDAR scan. It shows one capture event at a time: both fisheye images, their exact timestamps, and the scanner pose at that moment as a marker in the point cloud. **It is not a calibration.** Camera intrinsics and extrinsics stay unknown (see [calibration-notes.md](calibration-notes.md)); the orientation sliders are a labelled experiment.
 
 The main LiDAR viewer (`/`) is unchanged apart from a link to this page.
 
@@ -45,12 +45,80 @@ The LiDAR side uses the built-in Basel House preview and its `poses.csv` in `pub
 - **Marker.** The scanner body (red X forward, green Y left, blue Z up), a white halo, and all events of the run as small dots (the selected one white). Everything is drawn on top of the cloud, so it stays visible inside walls. The trajectory's green sphere marks where the scan started.
 - **Images.** ch14 and ch18 side by side, as recorded (fisheye, not undistorted), Hide / Small / Large, each linking to the full-resolution JPEG. Each caption checks that the file name encodes this event's sequence, channel and timestamp and that the decoded size equals the manifest's (✓ or ⚠).
 - **Calibration status.** Intrinsics and extrinsics for both channels: `unknown`.
-- **Provisional orientation (experiment).** Per channel, yaw / pitch / roll sliders relative to the scanner body and a dashed arrow from the scanner position (no lever arm) with a tick for image up. "Look along ch14/ch18" puts the viewer camera at the scanner and looks along that arrow, in a perspective view. Nothing is saved or used elsewhere, and the default (0, 0, 0) is the scanner's forward axis, not a claim about either camera.
+- **Direction hypothesis test (Lab 13S).** Per-channel yaw / pitch / roll offsets with direction helpers, presets, a fixed test set and notes; see the next section. "Look along ch14/ch18" puts the viewer camera at the scanner and looks along that channel's helper, in a perspective view.
+
+## Direction hypothesis test (Lab 13S)
+
+A **manual visual extrinsics hypothesis test**: does one fixed pair of camera-to-scanner rotations make each channel's helper point where the centre of that channel's fisheye image looks, across many events? It is not calibration. There is no lens model, no lever arm and no timing offset, and the result is a direction to within about 10°.
+
+**Offsets.** Per channel, in degrees, in the scanner's body frame (X forward, Y left, Z up), applied in this order:
+- yaw about Z: + = right, −90 = left;
+- pitch about the new Y: + = up;
+- roll about the viewing axis: + = clockwise seen from behind the camera.
+
+The body axes were checked against `poses.csv`: +X is the walking direction (78% of motion), +Z is up (0.98 along world up). The panel prints each result in words ("left 90°, level"). Defaults are the starting hypothesis ch14 = (−90, 0, 0) and ch18 = (+90, 0, 0); they are not a claim. The math is in `lib/calibration.ts`.
+
+**In the scene**, per channel:
+- an origin dot at the scanner position;
+- a dashed centre ray;
+- a translucent cone with adjustable length (0.5–10 m) and half-angle (5–85°). The cone only says "roughly this way"; the lens's real field of view (> 180°) is unknown;
+- an image-up tick and a label (orange ch14, purple ch18);
+- an optional labelled X forward / Y left / Z up gizmo at the scanner.
+
+**In the panel:**
+- Sliders and number inputs per angle.
+- "Reset both to ±90°".
+- "Mirror ch14 → ch18" and the reverse: opposite yaw and roll, same pitch.
+- "Swap ch14 ↔ ch18", which tests the opposite channel interpretation.
+- Named presets, kept in this browser's localStorage.
+- The test set: chips and ◀/▶ over the Basel events below.
+- Per-event notes: a verdict per channel (✓ centre matches / ≈ roughly / ✗ no / ?) and free text, saved with the offsets in use. Chips are coloured by verdict.
+- "Export notes + presets (JSON)".
+
+**In the images**, a green cross-hair marks each image's centre, the best clue to the optical axis; the fisheye circle is centred within a few per cent. The edges are distorted and partly blocked by the operator.
+
+**Test set** (`lib/directionTest.ts`, all in `interval-10s`):
+- seeds 2497, 2527 and 3037;
+- courtyard 2466, 2557, 2646, 2706, 2766, 2827, 3007 and 3067 (no LiDAR point within ±1 m horizontally above the scanner);
+- indoor 1335 (veranda), 4718 (upstairs corridor) and 7178 (ceiling about 2.2 m above the scanner).
+
+### Result on Basel House (October 2026)
+
+**Method.** Besides inspecting the tool by eye, each test image was compared numerically with the coloured 5M LiDAR, rendered through an assumed equidistant fisheye. The settings:
+- 160 × 120 px images; centre (80, 58); f = 30 px/rad, an assumption;
+- yaw every 10° over the full circle, pitch −50 to +50°;
+- per event, the grey-level correlation (NCC) is standardised as a z-score; one offset per channel is then chosen by the mean z-score over all 14 events.
+- A finer check of yaw ±10°, pitch ±10° and roll −30…+30° was run on 5 events (the 3 indoor, 2497, 2706).
+
+The throwaway scripts stayed outside the repository.
+
+**Findings.**
+- **Direction.** One fixed pair works across the test set, and the starting hypothesis is directionally right:
+  - ch14 is best at yaw −90° (neighbours −80° and −100°), pitch 0°;
+  - ch18 is best at yaw +100° (neighbours +90° and +110°), pitch 0°;
+  - roll is best at 0° for both, falling off steadily by ±20°.
+- **Alternatives score far lower.** Mean z-scores: the starting pair 1.48 (ch14 at −90°) and 1.40 (ch18 at +90°); ch14 looking right 0.11, ch18 looking left 0.30; forward or backward 0.17–0.89.
+- **Best provisional offsets:** ch14 (−90°, 0°, 0°), ch18 (+100°, 0°, 0°), i.e. not exactly mirror-symmetric. The 10° difference is at the resolution of the test; treat ch18 as +90…+105°.
+- **Per event**, about 9 of 14 peak within ±20° of these values for each channel. The exceptions are mostly open courtyard views (2766, 3007, 3067, and ch18 at 2527, 2557, 2827). There sky and symmetric façades make the score flat or pull it toward steep upward views. The indoor events are the clearest (z 2–3).
+- **Qualitative check.** The operator appears at the left edge of ch14 and the right edge of ch18. For left- and right-looking cameras those edges both point backward, where the person carrying the scanner is. Forward- and backward-facing cameras would put the operator in the middle of one image.
+- **By eye:**
+  - 1335: ch18 faces the wall with the red-trimmed doorway (renderings at +90…+120°); ch14 looks out over the garden (−60…−90°);
+  - 2497: ch14 has the veranda on its left and the garden on its right (−90…−120°); ch18 the mirror image (+90…+120°);
+  - 4718: ch14 faces the near wall with a louvred window; ch18 looks out over a railing.
+
+**Caveats.**
+- The lens model and focal length are assumed.
+- There is no lever arm (the cameras are a few centimetres from the pose origin).
+- The image-centre estimate is approximate.
+- The tested resolution is coarse (10° grid; 5° only in the fine check).
+- The result comes from one recording.
+- Which physical camera (`left_main` / `right_main`) each channel is remains unconfirmed, although "ch14 looks left" is consistent with `left_main`.
+- This narrows the rotation part of the extrinsics; it does not determine it.
 
 ## Assumptions and limits
 
 - The scanner pose is the SLAM pose from `poses.csv` (probably the LiDAR/IMU body), interpolated linearly in XYZ and by SLERP in orientation. **It is not a camera pose.** The camera-to-scanner rotation and offset are unknown, and so is which physical camera each channel is.
-- The scanner orientation is never assumed to be a camera orientation; the provisional arrows only show what a guessed orientation would look like.
+- The scanner orientation is never assumed to be a camera orientation; the direction helpers only show what a hypothesised offset would look like.
 - The images are fisheye, while the "look along" view is a pinhole perspective. They can't be compared pixel by pixel until the intrinsics are known.
 - Image timing (exposure start/middle/end, rolling shutter, clock offset) is unknown; see [calibration-notes.md](calibration-notes.md).
 - The frame check proves the run and the dataset share one pose file. It doesn't prove anything about other recordings.
@@ -71,10 +139,10 @@ The LiDAR side uses the built-in Basel House preview and its `poses.csv` in `pub
 
 Planned additions, in order. The data model in `lib/calibration.ts` (`Intrinsics`, `Extrinsics`, `CameraCalibration`) is where verified values will go.
 
-1. **Channel identity.** Which physical camera (`left_main` / `right_main` in `project.json`) is ch14 and which is ch18.
+1. **Channel identity.** Which physical camera (`left_main` / `right_main` in `project.json`) is ch14 and which is ch18. The Lab 13S result (ch14 looks left) suggests ch14 = `left_main`; confirm it from device documentation or a capture with a known target.
 2. **Intrinsics.** A fisheye model per camera (e.g. Kannala–Brandt or OpenCV fisheye): focal length, principal point, distortion. From a checkerboard capture, the device's factory files if they exist, or structure-from-motion with a fisheye model.
 3. **2D–3D correspondences.** Pick image points and their LiDAR points for several events and store them with the event, channel and source.
-4. **Extrinsics.** Solve camera-to-scanner rotation and lever arm (PnP per event, then one rigid transform shared by all events), with timing offset as an optional unknown.
+4. **Extrinsics.** Solve camera-to-scanner rotation and lever arm (PnP per event, then one rigid transform shared by all events), with timing offset as an optional unknown. Start from the Lab 13S directions (ch14 ≈ (−90°, 0°, 0°), ch18 ≈ (+100°, 0°, 0°)).
 5. **Reprojection diagnostics.** Project LiDAR points into the fisheye images, report per-point and per-event reprojection errors, and overlay them.
 6. **Frustum and ray visualisation.** Draw the calibrated fisheye field of view and pixel rays in the scene in place of the provisional arrows.
 7. **Alignment diagnostics.** Compare across events and both cameras before any images are used as posed photographs for Gaussian training.

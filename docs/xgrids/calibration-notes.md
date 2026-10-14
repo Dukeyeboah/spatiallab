@@ -18,9 +18,14 @@ What is and is not known about the camera geometry of the LixelKity K1 recording
   - Between samples the scanner moves up to 105 mm (median 32 mm) and turns up to 11.6° (median 1.2°).
   - Linear and SLERP interpolation assume smooth motion within those 100 ms.
 
+## Provisional (Lab 13S, manual visual extrinsics hypothesis test)
+
+- **Directions:** relative to the scanner body (X forward, Y left, Z up), **ch14 looks left** and **ch18 looks right**, both roughly level. Best single offsets over 14 events: ch14 yaw −90°, ch18 yaw +100° (±10°), pitch 0° and roll 0° for both. Yaw + = right; see [calibration-workspace.md](calibration-workspace.md#direction-hypothesis-test-lab-13s) for conventions, method and caveats.
+- **Not a calibration:** an assumed equidistant lens, no lever arm, a 10° search grid and one recording.
+
 ## Unknown
 
-- **Extrinsics:** camera-to-scanner rotation and translation for each camera. The manifest says `camera_extrinsics = unknown`.
+- **Extrinsics:** camera-to-scanner rotation and translation for each camera. The manifest says `camera_extrinsics = unknown`. Only the rough viewing directions are narrowed down (above).
 - **Intrinsics:** the fisheye model and its parameters (focal length, principal point, distortion) for each camera.
 - **Timing:**
   - whether image timestamps mark the start, middle or end of the exposure;

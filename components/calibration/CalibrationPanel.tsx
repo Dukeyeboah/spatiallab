@@ -1,10 +1,10 @@
 "use client";
 
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import Link from "next/link";
 import type { Dataset, DatasetBudget, Vec3 } from "@/lib/datasets";
 import type { ViewSettings } from "@/lib/viewSettings";
-import { calibrationOf, NEUTRAL_ORIENTATION, type ProvisionalOrientation } from "@/lib/calibration";
+import { calibrationOf } from "@/lib/calibration";
 import { eventChannels, eventReference, type Run, type RunEvent, type RunList } from "@/lib/xgrids";
 import { CHANNEL_COLOURS, type CalibrationViewRequest, type ProvisionalCamera } from "./CalibrationLayers";
 
@@ -37,6 +37,8 @@ type CalibrationPanelProps = {
   onCamerasChange: (cameras: ProvisionalCamera[]) => void;
   onRequestView: (request: CalibrationViewRequest) => void;
   markerShown: boolean;
+  /** Further sections below the calibration status (Lab 13S direction test). */
+  children?: ReactNode;
 };
 
 const fixed = (values: number[], digits: number) => values.map((v) => v.toFixed(digits)).join(", ");
@@ -107,6 +109,8 @@ export function CalibrationPanel(props: CalibrationPanelProps) {
       {run && event && <EventSection {...props} run={run} event={event} />}
 
       {run && <CalibrationSection {...props} />}
+
+      {props.children}
     </div>
   );
 }
@@ -316,12 +320,7 @@ function EventSection({
   );
 }
 
-function CalibrationSection({ cameras, onCamerasChange }: CalibrationPanelProps) {
-  const update = (channel: string, change: Partial<ProvisionalCamera>) =>
-    onCamerasChange(cameras.map((c) => (c.channel === channel ? { ...c, ...change } : c)));
-  const setAngle = (camera: ProvisionalCamera, key: keyof ProvisionalOrientation, value: number) =>
-    update(camera.channel, { orientation: { ...camera.orientation, [key]: value } });
-
+function CalibrationSection({ cameras }: CalibrationPanelProps) {
   return (
     <>
       <div className="section">
@@ -351,46 +350,6 @@ function CalibrationSection({ cameras, onCamerasChange }: CalibrationPanelProps)
           Intrinsics = fisheye lens model. Extrinsics = camera-to-scanner rotation and offset. Which physical camera each
           channel is has not been established. See docs/xgrids/calibration-notes.md.
         </div>
-      </div>
-
-      <div className="section provisional">
-        <b className="sub">Provisional orientation · experiment</b>
-        <div className="note">
-          Not calibration, not saved, not used anywhere else. Dashed arrows = a guessed viewing direction from the scanner
-          position (no lever arm), relative to the scanner body: yaw about Z, pitch about Y (+ = down), roll about the
-          arrow; the short tick is image up.
-        </div>
-        {cameras.map((c) => (
-          <div key={c.channel} className="provisional-camera">
-            <label>
-              <input type="checkbox" checked={c.visible} onChange={(e) => update(c.channel, { visible: e.target.checked })} />
-              <span className="swatch" style={{ background: CHANNEL_COLOURS[c.channel] }} /> {c.channel}
-              <button className="reset" onClick={() => update(c.channel, { orientation: NEUTRAL_ORIENTATION })}>
-                Reset
-              </button>
-            </label>
-            {(
-              [
-                ["yawDeg", "Yaw", -180, 180],
-                ["pitchDeg", "Pitch", -90, 90],
-                ["rollDeg", "Roll", -180, 180],
-              ] as const
-            ).map(([key, label, min, max]) => (
-              <label key={key}>
-                {label}
-                <input
-                  type="range"
-                  min={min}
-                  max={max}
-                  step={1}
-                  value={c.orientation[key]}
-                  onChange={(e) => setAngle(c, key, Number(e.target.value))}
-                />
-                <span className="value">{c.orientation[key]}°</span>
-              </label>
-            ))}
-          </div>
-        ))}
       </div>
     </>
   );
