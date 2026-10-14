@@ -140,6 +140,9 @@ export function Controls({
       <Link href="/gaussian-training" className="lab-link">
         Lab 10A: Photos for Gaussian training →
       </Link>
+      <Link href="/camera-calibration" className="lab-link">
+        Lab 13R: Camera Calibration →
+      </Link>
 
       {datasetPanel}
 

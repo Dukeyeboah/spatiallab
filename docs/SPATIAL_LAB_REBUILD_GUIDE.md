@@ -128,7 +128,7 @@ cd backend && .venv/bin/uvicorn app:app --host 127.0.0.1 --port 8000
 npm run dev        # http://localhost:3000
 ```
 
-Environment variables (all optional): `SPATIAL_LAB_DATA_DIR` (default `<repo>/spatial-data`), `SPATIAL_LAB_ALLOWED_ORIGINS` (CORS, default `http://localhost:3000,http://127.0.0.1:3000`), and for the frontend `NEXT_PUBLIC_SPATIAL_API_URL` (default `http://127.0.0.1:8000`). The viewer works without the backend (built-in dataset only).
+Environment variables (all optional): `SPATIAL_LAB_DATA_DIR` (default `<repo>/spatial-data`), `SPATIAL_LAB_ALLOWED_ORIGINS` (CORS, default `http://localhost:3000,http://127.0.0.1:3000`), `SPATIAL_LAB_XGRIDS_DIR` (Lab 13R: the `<recording>/reconstruction/xgrids/images` folder of extraction runs; unset = the calibration page says so), and for the frontend `NEXT_PUBLIC_SPATIAL_API_URL` (default `http://127.0.0.1:8000`). The viewer works without the backend (built-in dataset only).
 
 Disk (splat scenes, Lab 8): an upload needs about 2× its size while uploading; a .zip also keeps its extracted scene next to the original (≈ 2× the zip on disk).
 
@@ -148,7 +148,14 @@ components/
   PointCloud.tsx        BufferGeometry from typed arrays; picks Standard or Shader material
   ShaderPointsMaterial.tsx  RawShaderMaterial; shader table per experiment; uniforms; blending
   Trajectory.tsx        THREE.Line (drawn on top) + <points> (≤ MAX_POSE_POINTS = 2,000 poses) sharing one geometry; start sphere
-  ScannerMarker.tsx     body + cone marker at the selected pose (position + quaternion)
+  ScannerMarker.tsx     body + cone marker at the selected pose (position + quaternion); ScannerBody = the reusable body frame (Lab 13R)
+  calibration/          Lab 13R only
+    CalibrationLayers.tsx  inside SpatialScene's LiDAR group (prop lidarLayers): instanced clickable event dots, halo, ScannerBody with
+                           dashed provisional camera arrows, Focus marker / Look along camera moves (serial requests, damping flush)
+    CalibrationPanel.tsx   run picker, LiDAR settings, frame check, event selection + facts, scanner pose, marker check, calibration status
+                           (unknown), provisional yaw/pitch/roll per channel
+    CameraPairPanel.tsx    ch14 + ch18 images from the backend, Hide/Small/Large, per-image file-name + size checks
+app/camera-calibration/page.tsx    Lab 13R client page: LiDAR preview + poses (SHA-256 frame check), runs, event, cross-check, provisional cameras
   Controls.tsx          plain HTML overlay panel (no UI library)
   GaussianShapePanel.tsx    learning panel: sigmas, angle, covariance matrix
   gaussian/                 Labs 6 and 7B only (own pages, own Canvas, own camera)
@@ -186,7 +193,9 @@ shaders/compositedGaussianShader.ts GLSL3 instanced version (per-instance attrib
 lib/
   loadPointCloud.ts     binary point-cloud loader: "counted-planar" (section 5.1) and "interleaved-xyzrgb" (section 5.1.1)
   previewDataset.ts     static preview datasets: metadata JSON validation, loads points + metadata, count check
-  loadPoses.ts          poses.csv parser, subtracts the dataset's offset
+  loadPoses.ts          poses.csv loader; parsePoses(text, offset) parses and subtracts the dataset's offset
+  xgrids.ts             Lab 13R: extraction-run types + API calls, image URLs, channel order, sha256Hex, positionAt (poses at a time)
+  calibration.ts        Lab 13R: per-camera intrinsics/extrinsics state (both "unknown"), provisional orientation → axes
   worldFrame.ts         the documented LAS → dataset → world chain: LIDAR_TO_THREE_ROTATION (Z-up → Y-up),
                         lasBoxToDataset, lidarBoxToWorld, lidarPointToWorld, describeVerticalAxis (up-axis check)
   importPlan.ts         folder/files → import plan: role detection, ambiguity flags, preview summary
@@ -205,7 +214,8 @@ scripts/xgrids/         standalone XGRIDS .xbin tools (section 5.12; README.md l
   index_xbin.py         Lab 13P: indexer of the camera frames (no image decoding) → frames.csv, index-summary.json
   extract_frames.py     Lab 13Q: decodes chosen ch14 + ch18 pairs to JPEG via FFmpeg, interpolated scanner poses
 tests/xgrids/           unittest suite on synthetic XBAG-like files (synthetic_xbag.py builds them; no real data)
-docs/xgrids/            xbag-format.md (format, verified vs provisional), investigation-log.md, calibration-notes.md
+docs/xgrids/            xbag-format.md (format, verified vs provisional), investigation-log.md, calibration-notes.md,
+                        calibration-workspace.md (Lab 13R: running, behaviour, assumptions, validation, remaining work)
 public/data/            built-in dataset: pointcloud-500k/1m/2m/5m.bin (gitignored), poses.csv
 public/datasets/basel-house/  Basel House preview: basel-preview-1m.bin + basel-preview-metadata.json,
                         basel-preview-5m.bin + basel-preview-5m-metadata.json (.bin gitignored, JSON tracked)
@@ -219,6 +229,8 @@ backend/                local FastAPI dataset service (Lab 7A)
   training.py           Lab 10A: training-photo store, Pillow validation, thumbnails, checks (resolution, blur, duplicates, sizes), planned stages
   training_env.py       Lab 10A: read-only report of OS/CPU/memory/GPU/disk/tools/packages and a local-training verdict
   training_poses.py     Lab 10B: COLMAP pose job (preprocess → features → matching → mapper), progress from its logs, cancel, summary + preview
+  xgrids_runs.py        Lab 13R: read-only access to extraction runs in SPATIAL_LAB_XGRIDS_DIR (strict manifest parse, events,
+                        manifest-listed images only); GET /xgrids/runs, /xgrids/runs/{run}, /xgrids/runs/{run}/images/{file}
   training_package.py   Lab 10C: COLMAP binary reader, checks of the shipped files, lossless JPEG metadata removal, zip + manifest + SHA256SUMS
   cloud_training/       Lab 10C files copied into every package: README.md (cloud procedure), setup_env.sh, train.sh,
                         requirements-nerfstudio.lock.txt (239 pins, resolved as of Nerfstudio 1.1.5's release)
@@ -254,6 +266,7 @@ Scene graph (inside `<Canvas linear flat>`):
   <PointCloud>
   <Trajectory>
   <ScannerMarker>
+  {lidarLayers}                            (optional page-specific layers in the LiDAR frame, e.g. Lab 13R's CalibrationLayers)
 ```
 
 ## 5. Data: formats, conversion and coordinate frames
@@ -612,7 +625,7 @@ exports/<slug>-training-package.zip     ZIP_STORED (JPEG/binary don't compress),
 
 **Estimates** (not measurements, stated as such in the README): setup 5–10 min; smoke 2–5 min; quick 3–8 min (4090) / 5–12 min (3090); quality 15–35 / 25–50 min; 4–10 GB VRAM; 0.3–2 M Gaussians; PLY ≈ 250 MB per million (62 float properties incl. nx/ny/nz and SH degree 3). Runpod prices (pricing page, 2026-10): RTX 4090 $0.34/h Community, $0.74/h Secure; RTX 3090 $0.22/$0.50; disks $0.10/GB/month while the Pod exists, stopped volumes $0.20/GB/month until terminated. Pod settings: Secure Cloud, 1 × RTX 4090/3090, container disk 20 GB, volume 30 GB at `/workspace` with **Encrypt volume**, no network volume, HTTP ports 8888 + 7007; never *Edit Pod* while running (it resets everything outside `/workspace`).
 
-### 5.12 XGRIDS raw recording (`.xbin`, Labs 13P–13Q)
+### 5.12 XGRIDS raw recording (`.xbin`, Labs 13P–13R)
 
 The LixelKity K1 writes its raw sensors to one `.xbin` file (Basel House: 13,929,066,496 bytes, starts with `XBAG`). Reverse-engineered from **one** recording (software V3.1.1_20250826), **provisional**, and not proven for other firmware versions or recordings. The full write-up, with a table of what is verified and what is provisional, the corrections and a checklist for new recordings, is `docs/xgrids/xbag-format.md`; the history is in `docs/xgrids/investigation-log.md`. In short:
 
@@ -638,6 +651,8 @@ The LixelKity K1 writes its raw sensors to one `.xbin` file (Basel House: 13,929
   - `extraction-summary.json`.
 - **Safety:** an `--out` inside the repository (except the ignored `reconstruction/`) is refused.
 - **Basel, one pair every 10 s:** 242 events = 484 images at 4000 × 3000, all `ok`, 92 s, 452 MB.
+
+**Inspection in the app** (`/camera-calibration`, Lab 13R; full notes in `docs/xgrids/calibration-workspace.md`). The backend serves runs from `SPATIAL_LAB_XGRIDS_DIR` (never from `public/`). Only files listed in a run's manifest and located inside that run's folder are served, and responses carry file names and hashes, never absolute paths. The page places a run's `scanner_*` positions in the scene only when the run's `source.posesSha256` equals the SHA-256 of the selected dataset's `poses.csv` (same pose file, so same LAS frame). It then uses the usual chain: dataset = LAS − offset, inside the LiDAR group. As an independent cross-check it interpolates the dataset's own poses at the image time (Basel: ≤ 0.002 mm). Camera intrinsics and extrinsics stay `unknown` (`lib/calibration.ts`). The provisional camera directions are Euler ZYX (yaw about Z, pitch about Y with + = down, roll about the viewing axis) relative to the scanner body, without a lever arm, and are never saved.
 
 ## 6. Rendering pipeline
 
@@ -1103,6 +1118,34 @@ Interval run: 484/484 `ok`, events 9.59–10.39 s apart, PSNR 48.2–51.7 dB, th
 
 Not done: the images haven't been checked by eye in this lab, because they may show people. The user should look at the validation set.
 
+### Lab 13R — Camera calibration workspace, phase 1
+
+Constraints (from the brief):
+- The LiDAR viewer's rendering and navigation are unchanged; the workspace is a separate page.
+- The manifest and the selected images come from a configurable local data source, not bundled into Next.js and not in Git.
+- Show the ch14 + ch18 fisheye images side by side, with timestamp, sequence, interpolated scanner position and quaternion, and a navigable marker in the LiDAR scene.
+- Provisional orientation controls, clearly separated from verified calibration. Intrinsics and extrinsics stay unknown. The scanner orientation is never taken as a camera orientation.
+- Data preparation stays in `scripts/xgrids/`. The design leaves room for verified intrinsics/extrinsics, 2D–3D correspondences, optimisation with reprojection errors, frustum/ray drawing and alignment diagnostics.
+- No GPU training or new reconstruction techniques.
+
+Requirements (sections 4 and 5.12):
+- Backend `xgrids_runs.py` with the three `GET /xgrids…` endpoints (404 unknown run or file, 422 unreadable manifest). The manifest must have the required columns, and its integers must stay below 2⁵³ so they survive JSON → JS.
+- `lib/xgrids.ts`, `lib/calibration.ts`, `components/calibration/*` and `app/camera-calibration/page.tsx`. `SpatialScene` gets the optional `lidarLayers` prop; `ScannerMarker` exports `ScannerBody`; `loadPoses` exports `parsePoses`.
+- Frame check by SHA-256 of `poses.csv`; markers are hidden on a mismatch.
+- Marker check against the dataset's own poses.
+- Event selection by buttons, slider, sequence (nearest event, with a note that disappears once another control moves on) and clicking event dots.
+- Image captions check the file name and the decoded size against the manifest.
+- "Focus marker" and "Look along chNN" use serial view requests, as for Reset View.
+- A link from the viewer's panel.
+
+Accept:
+- **Sequence 3665** (run `sequence-3665`): both captions ✓ for seq 3665, 4000 × 3000; marker check 0.001 mm. The early pose-test renders match it by PSNR (ch18 44.3 dB, ch14 45.3 dB, ≈ 14 dB swapped).
+- **Several interval events:** captions ✓ and marker check ≤ 0.002 mm; Go to 3665 in `interval-10s` shows 3667 with a note.
+- **Against the point cloud:** all 242 events are inside the LAS bounds, median 1.28 m above the floor.
+- **`map.las`:** the frame mismatch is shown, with no markers and no viewer position.
+- **Backend:** traversal, unknown run, hidden name, manifest and another run's image all give 404.
+- **Main page** unchanged (loads 500K, link present); `tsc` and `next build` clean.
+
 ## 8. Pitfalls we hit and how they were fixed
 
 | Symptom | Cause | Fix |
@@ -1170,6 +1213,10 @@ Not done: the images haven't been checked by eye in this lab, because they may s
 | Basel House grid/axes float far above the building | its offset is the bounding-box centre (Z = 32 m), so dataset (0,0,0) is in the air | place the helpers at the LAS origin (−offset); never shift the points |
 | Basel full-cloud view shows a tiny building | outliers stretch the full box to 225 × 208 × 99 m | default to the scan-area view; Frame Entire Cloud stays available |
 | Cursor's embedded browser screenshots don't change after a click | the hidden tab pauses `requestAnimationFrame` (0 FPS) | take a second screenshot, or check state through the DOM/numbers instead of pixels |
+| A test screenshot captured private photographs (Lab 13R) | the blur style was injected but not yet applied when the screenshot ran | before any screenshot of a page with real photos: set the blur (`filter: … !important`) or hide the images, and confirm with `getComputedStyle` first |
+| Cursor's embedded browser screenshot shows only the top-left of the page | `Emulation.setDeviceMetricsOverride` renders a larger page, but the screenshot keeps the tab's real size | clear the override and work at the native viewport (hide panels if needed) |
+| Typing a value and pressing Enter in the embedded browser submits the old value | fast typing + Enter fires the submit before React stores the input's new state | click the button afterwards, or set the value with the native setter + `input` event, then submit |
+| (Preventive) Calibration markers in the wrong place for another dataset | a run's scanner positions are LAS coordinates of *its* recording | place them only when the run's `posesSha256` equals the dataset's `poses.csv` hash; hide markers and viewer position otherwise |
 
 ## 9. Validation playbook
 
@@ -1225,6 +1272,11 @@ Techniques used:
      - the pose agrees with \(q_0 (q_0^{-1} q_1)^t\) via axis-angle. Compare component differences, not `acos(dot)`, which is ill-conditioned near 1.
   3. Test damaged frames by embedding real H.264 bytes, truncated or partly zeroed, in a throwaway file built with `tests/xgrids/synthetic_xbag.py`. Keep that file in `/tmp`, never in the repo.
   4. Don't look at real photographs unless the user asks: they may show people.
+- **Calibration workspace** (Lab 13R):
+  1. Test backend on :8001 with `SPATIAL_LAB_XGRIDS_DIR` pointing at the real runs (read-only) and a temporary `SPATIAL_LAB_DATA_DIR`. `curl` the three endpoints, including traversal (`..%2F`), unknown run, `.hidden`, `manifest.csv` as an image and another run's image (all 404); unset variable, missing folder and a malformed manifest copied to `/tmp`.
+  2. Production build with `NEXT_PUBLIC_SPATIAL_API_URL=http://127.0.0.1:8001` on :3011; rebuild without it afterwards.
+  3. In the browser, read the panel and captions with `Runtime.evaluate` (frame check, marker check, captions ✓, `naturalWidth`/`naturalHeight`). Blur or hide the images before every screenshot (see section 8).
+  4. Check the marker against the cloud with numpy: nearest point and height above the floor beneath for every event. Confirm a known pair by PSNR against earlier, independently made renders.
 - Note: FPS numbers from SwiftShader are meaningless; use real hardware for performance conclusions.
 
 ## 10. Adapting Spatial Lab for different web purposes
@@ -1247,7 +1299,7 @@ General scaling rules: raw LAS is never loaded directly; convert offline to a ty
 
 ## 11. Not built yet / roadmap
 
-Explicitly out of scope so far (each would be its own lab): cross-capture alignment (Lab 7C organises captures per property; registration into a property frame via `alignment`/`frame`, using control points/GNSS/CRS, is not built), meshes and photographs as capture representations (splat scenes exist since Lab 8, section 5.7), splat ↔ LiDAR registration, importing SuperSplat `settings.json` (authored cameras/annotations), splat editing/cropping, background import jobs for very large splat files, LAZ/E57 import, LiDAR intensity visualisation, pose animation, clipping/cropping, measurement tools, annotations/hotspots, full Gaussian splatting (Lab 6 projects one Gaussian; Lab 7B composites up to 1,000 with CPU projection, centre sorting and instanced quads; still missing: projection and sorting on the GPU for millions of Gaussians, tile-based rasterisation, spherical-harmonic colour for many Gaussians in our own renderer (Lab 9 evaluates it for one; Lab 8 views real trained scenes with the official viewer), training), running the cloud training and importing its PLY with provenance (Lab 10C stage 2; `output/` reserved), metric scale/gravity for photo reconstructions (e.g. from LiDAR), XGRIDS camera calibration (fisheye intrinsics and camera-to-scanner extrinsics; Lab 13Q only gives scanner poses at the image times, see `docs/xgrids/calibration-notes.md`) and decoding of the non-camera XBAG channels, video frame extraction, linking training projects to a property/capture, RAW/video import, editing/saving trained Gaussians (Lab 9 experiments are preview-only), inspecting a Gaussian among its neighbours, ordinary meshes, WebXR, LOD/octrees, workers.
+Explicitly out of scope so far (each would be its own lab): cross-capture alignment (Lab 7C organises captures per property; registration into a property frame via `alignment`/`frame`, using control points/GNSS/CRS, is not built), meshes and photographs as capture representations (splat scenes exist since Lab 8, section 5.7), splat ↔ LiDAR registration, importing SuperSplat `settings.json` (authored cameras/annotations), splat editing/cropping, background import jobs for very large splat files, LAZ/E57 import, LiDAR intensity visualisation, pose animation, clipping/cropping, measurement tools, annotations/hotspots, full Gaussian splatting (Lab 6 projects one Gaussian; Lab 7B composites up to 1,000 with CPU projection, centre sorting and instanced quads; still missing: projection and sorting on the GPU for millions of Gaussians, tile-based rasterisation, spherical-harmonic colour for many Gaussians in our own renderer (Lab 9 evaluates it for one; Lab 8 views real trained scenes with the official viewer), training), running the cloud training and importing its PLY with provenance (Lab 10C stage 2; `output/` reserved), metric scale/gravity for photo reconstructions (e.g. from LiDAR), XGRIDS camera calibration (fisheye intrinsics and camera-to-scanner extrinsics; Lab 13Q only gives scanner poses at the image times and Lab 13R only inspects them, see `docs/xgrids/calibration-notes.md`; next steps in `docs/xgrids/calibration-workspace.md`: channel identity, intrinsics, 2D–3D correspondences, extrinsics, reprojection errors, frustums/rays, alignment diagnostics) and decoding of the non-camera XBAG channels, video frame extraction, linking training projects to a property/capture, RAW/video import, editing/saving trained Gaussians (Lab 9 experiments are preview-only), inspecting a Gaussian among its neighbours, ordinary meshes, WebXR, LOD/octrees, workers.
 
 ## 12. Prompt templates
 
@@ -1303,3 +1355,4 @@ Explicitly out of scope so far (each would be its own lab): cross-capture alignm
 | Basel.2 | Basel House scanner trajectory: `preview.posesUrl` → `public/datasets/basel-house/poses.csv` (copy of `project_data/poses.csv`, gitignored), pose status from `validate_poses` run offline (aligned, median 0.53 m); `Trajectory` draws the path and a new green start sphere on top of the cloud, skips per-pose dots above 2,000 poses (map.las's 208 unchanged); "Show scanner path" label mentions the start sphere; sections 4, 5.1.1, 7 |
 | 13P | `scripts/xgrids/index_xbin.py`: chunked, read-only indexer of the H.264 camera frames in an XGRIDS `.xbin` (SPS heuristic, strict protobuf metadata decode, XBAG record headers → camera channel, sequence + ≤ 5 ms pairing, pose coverage) → `frames.csv` + `index-summary.json`; Basel House: 14,590 frames, 7,295 pairs, 0 rejected; sections 4, 5.12, 7, 8, 9 |
 | 13Q | `scripts/xgrids/extract_frames.py`: selective ch14 + ch18 pair extraction from `frames.csv` (metadata re-checked, exact `h264_bytes` from `sps_offset`, FFmpeg at `-loglevel warning` → JPEG `-q:v`, JPEG SOF/EOI/SHA-256 checks, per-image statuses, exit 2 on incomplete events), scanner pose per image (linear XYZ + exact SLERP xyzw; extrinsics `unknown`), out-of-pose-range events excluded and reported, output refused inside the repo; Basel: validation 3 pairs and 242 pairs every 10 s, all 484 `ok`; `docs/xgrids/` (xbag-format, investigation-log, calibration-notes), `scripts/xgrids/README.md`, `tests/xgrids/` synthetic XBAG unittest suite (13 tests); `.gitignore`: `*.xbin`, `/reconstruction/`, `*.splat`, `*.ksplat` | 4, 5.12, 7, 8, 9, 11 |
+| 13R | Separate `/camera-calibration` page (phase 1, inspection only): backend `xgrids_runs.py` + `GET /xgrids/runs`, `/xgrids/runs/{run}`, `/xgrids/runs/{run}/images/{file}` from `SPATIAL_LAB_XGRIDS_DIR` (manifest-listed files only); `lib/xgrids.ts`, `lib/calibration.ts` (intrinsics/extrinsics `unknown`), `components/calibration/` (panel, image pair with name/size checks, event dots, scanner marker, dashed provisional camera arrows, Focus marker / Look along); `SpatialScene.lidarLayers`, `ScannerBody`, `parsePoses`; SHA-256 frame check of `poses.csv` + marker cross-check; viewer link; validated on sequence 3665 (run `sequence-3665`, PSNR match to the early renders) and interval events; `docs/xgrids/calibration-workspace.md`; sections 3.1, 4, 5.12, 7, 8, 9, 11 |

@@ -28,6 +28,10 @@ What is and is not known about the camera geometry of the LixelKity K1 recording
   - any offset between the camera clock and the pose clock.
 - **Factory calibration:** whether the device stores one, and in which file. Not yet inspected: `project_data/log/lixel.zip`, `data.ulg`, and the undecoded XBAG channels.
 
+## Inspection workspace (Lab 13R)
+
+`/camera-calibration` shows each extracted pair next to the scanner pose in the LiDAR scene, with intrinsics and extrinsics marked unknown and only provisional, unsaved orientation sliders. See [calibration-workspace.md](calibration-workspace.md) for how to run it, what it checks and the planned calibration steps.
+
 ## Consequences
 
 - **Not camera poses.** The `scanner_*` columns are the scanner pose at the image time, not camera poses. Using them as camera poses would put every image off by the unknown lever arm and rotation, and at 0.3 m/s also by any timing offset.

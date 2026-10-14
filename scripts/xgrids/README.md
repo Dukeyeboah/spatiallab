@@ -62,6 +62,10 @@ One row per image:
 
 **The scanner pose is not a camera pose.** It is the `poses.csv` pose at the image time. The camera-to-scanner extrinsics are unknown; see [docs/xgrids/calibration-notes.md](../../docs/xgrids/calibration-notes.md).
 
+## Viewing runs
+
+The app's `/camera-calibration` page (Lab 13R) reads these runs through the local backend: start it with `SPATIAL_LAB_XGRIDS_DIR=<recording>/reconstruction/xgrids/images`. See [docs/xgrids/calibration-workspace.md](../../docs/xgrids/calibration-workspace.md).
+
 ## Tests
 
 ```bash

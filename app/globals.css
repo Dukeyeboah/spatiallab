@@ -738,3 +738,134 @@ body {
   border-color: #4a6fa5;
   color: #fff;
 }
+
+/* Lab 13R: camera calibration workspace. */
+.controls.calibration select,
+.controls.calibration input[type="number"] {
+  padding: 2px 4px;
+  border: 1px solid #555;
+  border-radius: 4px;
+  background: #222;
+  color: #ddd;
+  font-size: 12px;
+}
+
+.controls.calibration input[type="number"] {
+  width: 70px;
+}
+
+.controls.calibration .attr-table td {
+  text-align: left;
+}
+
+.controls.calibration .unit {
+  color: #888;
+  font-size: 10px;
+}
+
+.controls.calibration .unknown {
+  color: #f0b060;
+  font-weight: 600;
+}
+
+.controls.calibration .provisional {
+  padding: 8px 6px 6px;
+  border: 1px dashed #b07a30;
+  border-radius: 4px;
+}
+
+.controls.calibration .provisional-camera {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.controls.calibration .provisional-camera .reset {
+  margin-left: auto;
+  padding: 1px 6px;
+  border: 1px solid #555;
+  border-radius: 4px;
+  background: #222;
+  color: #ddd;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.camera-pair {
+  position: fixed;
+  left: 328px; /* right of the 280 px panel */
+  right: 12px;
+  bottom: 12px;
+  padding: 8px;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.75);
+  font-size: 12px;
+}
+
+.camera-pair-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.camera-pair-header .segmented {
+  margin: 0;
+  width: 180px;
+}
+
+.camera-pair-images {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.camera-pair figure {
+  margin: 0;
+  min-width: 0;
+}
+
+.camera-pair img {
+  display: block;
+  width: 100%;
+  height: 26vh;
+  object-fit: contain;
+  background: #111;
+  border-radius: 4px;
+}
+
+.camera-pair.large img {
+  height: 58vh;
+}
+
+.camera-pair-missing {
+  height: 26vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #f88;
+  background: #111;
+  border-radius: 4px;
+}
+
+.camera-pair figcaption {
+  margin-top: 3px;
+  color: #bbb;
+  font-variant-numeric: tabular-nums;
+}
+
+.camera-pair .swatch {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  vertical-align: middle;
+}
+
+.camera-pair .check.ok {
+  color: #8fd18f;
+}
+
+.camera-pair .check.bad {
+  color: #f88;
+}

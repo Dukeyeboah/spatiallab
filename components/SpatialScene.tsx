@@ -3,6 +3,7 @@
 import { Canvas } from "@react-three/fiber";
 import { OrbitControls } from "@react-three/drei";
 import { Perf } from "r3f-perf";
+import type { ReactNode } from "react";
 import type * as THREE from "three";
 import { CameraFraming, type ViewRequest } from "./CameraFraming";
 import { PointCloud } from "./PointCloud";
@@ -33,6 +34,8 @@ type SpatialSceneProps = {
    * Display only: the points are never moved.
    */
   helperOrigin: Vec3;
+  /** Extra layers in the LiDAR frame (dataset coordinates), e.g. the Lab 13R calibration markers. */
+  lidarLayers?: ReactNode;
 };
 
 export function SpatialScene({
@@ -45,6 +48,7 @@ export function SpatialScene({
   fullExtent,
   viewRequest,
   helperOrigin,
+  lidarLayers,
 }: SpatialSceneProps) {
   const gridPosition = lidarPointToWorld(helperOrigin);
   return (
@@ -109,6 +113,8 @@ export function SpatialScene({
 
           {/* Recorded position + quaternion, used as-is in the shared Z-up frame. */}
           {poses && settings.showMarker && <ScannerMarker poses={poses} index={poseIndex} />}
+
+          {lidarLayers}
         </group>
       </Canvas>
     </div>

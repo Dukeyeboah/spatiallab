@@ -53,6 +53,11 @@ Training projects (training.py, Lab 10A; photographs prepared for Gaussian train
     POST   /training/{id}/package            build it (registered photos + COLMAP model + scripts, zip)
     GET    /training/{id}/package/download   the zip (attachment)
 
+XGRIDS camera extraction runs (xgrids_runs.py, Lab 13R; read-only, from SPATIAL_LAB_XGRIDS_DIR):
+    GET    /xgrids/runs                      configured?, runs (id, mode, event count, statuses, source checksums)
+    GET    /xgrids/runs/{run}                events: per channel image, timestamp, decoder status, scanner pose
+    GET    /xgrids/runs/{run}/images/{file}  a JPEG listed in the run's manifest
+
 Only converted assets are served; original uploads never leave spatial-data/.
 Conversions run one at a time in a separate worker process; budgets added
 after a dataset was converted (e.g. 5M) are generated there at startup.
@@ -80,6 +85,7 @@ import training
 import training_env
 import training_package
 import training_poses
+import xgrids_runs
 from splat_bounds import robust_bounds
 from catalog import CatalogError
 from converter import NORMALISED_POSES_FILE, backfill_budgets, convert_dataset
@@ -479,6 +485,37 @@ def get_splat_file(splat_id: str, relative: str) -> FileResponse:
         raise HTTPException(404, "File not found in this scene.")
     media_type = SPLAT_MEDIA_TYPES.get(path.suffix.lower(), "application/octet-stream")
     return FileResponse(path, media_type=media_type)
+
+
+# ---------------------------------------------------------------------------
+# XGRIDS camera extraction runs (xgrids_runs.py, Lab 13R). Read-only; the run
+# folders live outside the repository (SPATIAL_LAB_XGRIDS_DIR).
+
+
+@app.get("/xgrids/runs")
+def list_xgrids_runs() -> dict:
+    return xgrids_runs.list_runs()
+
+
+@app.get("/xgrids/runs/{run_id}")
+def get_xgrids_run(run_id: str) -> dict:
+    try:
+        return xgrids_runs.read_run(run_id)
+    except xgrids_runs.RunNotFound as error:
+        raise HTTPException(404, str(error)) from error
+    except xgrids_runs.RunError as error:
+        raise HTTPException(422, str(error)) from error
+
+
+@app.get("/xgrids/runs/{run_id}/images/{filename}")
+def get_xgrids_image(run_id: str, filename: str) -> FileResponse:
+    try:
+        path = xgrids_runs.image_path(run_id, filename)
+    except xgrids_runs.RunNotFound as error:
+        raise HTTPException(404, str(error)) from error
+    except xgrids_runs.RunError as error:
+        raise HTTPException(422, str(error)) from error
+    return FileResponse(path, media_type="image/jpeg")
 
 
 # ---------------------------------------------------------------------------

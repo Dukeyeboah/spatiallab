@@ -57,6 +57,13 @@ Recording: Basel House, `2026-07-15-101012-003.xbin` (13,929,066,496 bytes), Lix
 - **Not checked by eye in this lab:** the photographs may show people. Whether each view is a sensible fisheye image of the house is for a human to confirm.
 - **Untouched files:** the `.xbin`, `map-002.las` and `poses.csv` kept their sizes and modification times. Each summary records `unchanged…` = true.
 
+## Lab 13R: calibration workspace, phase 1 (`/camera-calibration`)
+
+- **Sequence 3665** (the pair verified in the early experiments) is not in `interval-10s`, so it was extracted as its own run (`--sequences 3665`, 2/2 `ok`). The early `pose-test/view-A.png` matches the new ch18 JPEG at 44.3 dB PSNR and `view-B.png` matches ch14 at 45.3 dB; the swapped pairing gives about 14 dB. Same pair, same channel assignment.
+- **Frame check:** the runs' `posesSha256` equals the SHA-256 of `public/datasets/basel-house/poses.csv` (ba621b73…), so the manifests' `scanner_*` values are in the Basel LAS frame.
+- **Marker position:** the dataset's own poses, interpolated in the browser at each image time, agree with the run's positions to ≤ 0.002 mm. Against the 5M preview, all 242 interval events lie inside the LAS bounds, a median 0.40 m from the nearest point and 1.28 m above the floor beneath (3665: 1.37 m).
+- **Not checked by eye:** screenshots of the workspace were taken with the images blurred or hidden. One early screenshot was captured before the blur applied; it was not saved anywhere in the repository.
+
 ## Open questions
 
 - Which physical camera is channel 14 and which is 18? Clue: `project.json` lists `left_main` and `right_main` at indices 0 and 2.

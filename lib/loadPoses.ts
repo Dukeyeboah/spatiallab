@@ -29,8 +29,11 @@ export async function loadPoses(url: string, offset: Vec3, signal?: AbortSignal)
   if (!response.ok) {
     throw new Error(`Could not load ${url} (HTTP ${response.status})`);
   }
-  const text = await response.text();
+  return parsePoses(await response.text(), offset);
+}
 
+/** The CSV text of a poses file → PoseData (for callers that also need the text itself). */
+export function parsePoses(text: string, offset: Vec3): PoseData {
   const lines = text.split("\n").filter((line) => line.trim() !== "");
   const count = lines.length;
 
