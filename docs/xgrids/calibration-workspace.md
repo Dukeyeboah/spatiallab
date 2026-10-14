@@ -84,6 +84,8 @@ The body axes were checked against `poses.csv`: +X is the walking direction (78%
 
 ### Result on Basel House (October 2026)
 
+Machine-readable export (offsets, matrices, conventions, observations): [provisional-camera-directions.json](provisional-camera-directions.json).
+
 **Method.** Besides inspecting the tool by eye, each test image was compared numerically with the coloured 5M LiDAR, rendered through an assumed equidistant fisheye. The settings:
 - 160 × 120 px images; centre (80, 58); f = 30 px/rad, an assumption;
 - yaw every 10° over the full circle, pitch −50 to +50°;

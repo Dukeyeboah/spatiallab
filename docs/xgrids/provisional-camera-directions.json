@@ -1,0 +1,139 @@
+{
+  "title": "XGRIDS ch14/ch18 provisional camera directions (Lab 13S manual visual extrinsics hypothesis test)",
+  "status": "provisional hypothesis, NOT a calibration",
+  "recording": "Basel House, 2026-07-15-101012-003.xbin (LixelKity K1, software V3.1.1_20250826); extraction run interval-10s",
+  "date": "2026-10-14",
+  "source": {
+    "code": ["lib/calibration.ts (provisionalRotation, describeDirection)", "lib/directionTest.ts (test set)"],
+    "documentation": "docs/xgrids/calibration-workspace.md#direction-hypothesis-test-lab-13s"
+  },
+
+  "coordinate_convention": {
+    "world_frame": "LAS frame of the scan (Z up, metres). The viewer subtracts the dataset offset (coordinateCenter) for display only; no rotation between LAS and dataset coordinates.",
+    "scanner_body_frame": {
+      "axes": { "x": "forward", "y": "left", "z": "up" },
+      "handedness": "right-handed",
+      "pose_source": "poses.csv columns t, x, y, z, qx, qy, qz, qw (scalar last), linearly/SLERP-interpolated to each image timestamp by extract_frames.py",
+      "pose_meaning": "q rotates body-frame vectors into the LAS frame: v_las = R(q) * v_body; p_las = R(q) * p_body + t",
+      "evidence": "+X is the walking direction (78% of moving samples within 60 degrees of it); +Z is up (mean 0.98 along world up)"
+    },
+    "provisional_camera_frame": {
+      "axes": { "x": "optical axis (camera forward, out of the lens)", "y": "image left", "z": "image up" },
+      "note": "Same X-forward/Y-left/Z-up convention as the body frame. NOT the OpenCV camera frame (x right, y down, z forward).",
+      "to_opencv": {
+        "description": "v_cam = M * v_opencv, i.e. x_cv (right) = -y_cam, y_cv (down) = -z_cam, z_cv (forward) = x_cam",
+        "M": [[0, 0, 1], [-1, 0, 0], [0, -1, 0]],
+        "R_body_from_opencv": "R_offset * M"
+      }
+    },
+    "offset_angles": {
+      "units": "degrees",
+      "yaw": "about body Z; positive = turn RIGHT (clockwise seen from above); -90 = left, +90 = right",
+      "pitch": "about the yawed Y axis; positive = tilt UP",
+      "roll": "about the camera's optical axis; positive = CLOCKWISE seen from behind the camera (image up turns toward the right)",
+      "rotation_order": "intrinsic yaw, then pitch, then roll (Z, Y', X'')",
+      "matrix": "R_offset = Rz(-yaw) * Ry(-pitch) * Rx(roll), using standard right-handed elementary rotations",
+      "three_js": "new THREE.Quaternion().setFromEuler(new THREE.Euler(roll, -pitch, -yaw, 'ZYX')) with angles in radians",
+      "meaning": "R_offset maps provisional-camera-frame vectors into the scanner body frame: v_body = R_offset * v_cam. Its first column is the camera's forward direction in the body frame.",
+      "full_chain": "v_las = R(q_scanner) * R_offset * v_cam; camera centre = scanner position (lever arm assumed zero)"
+    }
+  },
+
+  "starting_hypothesis": {
+    "ch14": { "yaw": -90, "pitch": 0, "roll": 0, "direction": "left 90°, level" },
+    "ch18": { "yaw": 90, "pitch": 0, "roll": 0, "direction": "right 90°, level" }
+  },
+
+  "best_provisional_offsets": {
+    "ch14": {
+      "yaw": -90, "pitch": 0, "roll": 0,
+      "direction": "left 90°, level",
+      "R_offset": [[0, -1, 0], [1, 0, 0], [0, 0, 1]],
+      "quaternion_xyzw": [0, 0, 0.707107, 0.707107],
+      "uncertainty": "about ±10° in yaw and pitch (10° search grid), roll ±10°"
+    },
+    "ch18": {
+      "yaw": 100, "pitch": 0, "roll": 0,
+      "direction": "right 100°, level",
+      "R_offset": [[-0.173648, 0.984808, 0], [-0.984808, -0.173648, 0], [0, 0, 1]],
+      "quaternion_xyzw": [0, 0, -0.766044, 0.642788],
+      "uncertainty": "yaw +90 to +105 nearly equally good; pitch ±10°, roll ±10°"
+    },
+    "lever_arm_m": { "ch14": "unknown (assumed 0)", "ch18": "unknown (assumed 0)" },
+    "time_offset": "unknown (assumed 0)",
+    "intrinsics": "unknown",
+    "channel_identity": "unconfirmed; ch14 looking left is consistent with project.json 'left_main' (index 0), ch18 with 'right_main' (index 2)"
+  },
+
+  "test_method": {
+    "manual": "Direction helpers in /camera-calibration compared with the centre of each fisheye image (cross-hair).",
+    "numerical": {
+      "description": "Coloured Basel 5M LiDAR rendered through an assumed fisheye at each candidate offset and compared with the real image (grey-level normalised cross-correlation inside the image circle).",
+      "assumed_fisheye_model": "equidistant r = f * theta; u = cx + r * (-y_cam / s), v = cy + r * (-z_cam / s), s = sqrt(y_cam^2 + z_cam^2)",
+      "assumed_parameters_160x120": { "f_px_per_rad": 30, "cx": 80, "cy": 58 },
+      "equivalent_at_4000x3000": { "f_px_per_rad": 750, "cx": 2000, "cy": 1450, "note": "assumptions for the test only, not measured intrinsics" },
+      "search": "yaw every 10° over 360°, pitch -50..+50° every 10°, roll 0; refinement yaw ±10°, pitch ±10°, roll -30..+30° (10° steps) on 5 events",
+      "selection": "per event and channel the score is standardised (z-score over the grid); one offset per channel is chosen by the mean z over all events"
+    }
+  },
+
+  "test_set": [
+    { "sequence": 2497, "setting": "courtyard", "seed": true },
+    { "sequence": 2527, "setting": "courtyard", "seed": true },
+    { "sequence": 3037, "setting": "courtyard", "seed": true },
+    { "sequence": 2466, "setting": "courtyard" },
+    { "sequence": 2557, "setting": "courtyard" },
+    { "sequence": 2646, "setting": "courtyard" },
+    { "sequence": 2706, "setting": "courtyard" },
+    { "sequence": 2766, "setting": "courtyard" },
+    { "sequence": 2827, "setting": "courtyard" },
+    { "sequence": 3007, "setting": "courtyard" },
+    { "sequence": 3067, "setting": "courtyard" },
+    { "sequence": 1335, "setting": "indoor (veranda)" },
+    { "sequence": 4718, "setting": "indoor (upstairs corridor)" },
+    { "sequence": 7178, "setting": "indoor" }
+  ],
+
+  "observations": {
+    "global_fit_mean_z": {
+      "ch14_yaw_-90": 1.48, "ch14_yaw_+90_opposite": 0.11, "ch14_forward_0": 0.79, "ch14_backward_180": 0.45,
+      "ch18_yaw_+100": 1.45, "ch18_yaw_+90": 1.40, "ch18_yaw_-90_opposite": 0.30, "ch18_forward_0": 0.46, "ch18_backward_180": 0.26
+    },
+    "roll_check_combined_z_by_roll": {
+      "ch14": { "-30": -2.5, "-20": 1.2, "-10": 3.9, "0": 6.6, "10": 4.7, "20": 1.4, "30": -2.3 },
+      "ch18": { "-30": -1.0, "-20": 2.6, "-10": 5.3, "0": 6.6, "10": 4.1, "20": 1.0, "30": -2.5 }
+    },
+    "per_event_best_yaw_pitch_ncc": {
+      "2497": { "ch14": [-80, 10], "ch18": [90, 10] },
+      "2527": { "ch14": [-80, 0], "ch18": [-110, 30] },
+      "3037": { "ch14": [-100, 0], "ch18": [80, 0] },
+      "2466": { "ch14": [-80, -10], "ch18": [-130, 40] },
+      "2557": { "ch14": [-90, -10], "ch18": [-30, 50] },
+      "2646": { "ch14": [-90, 0], "ch18": [100, 0] },
+      "2706": { "ch14": [-110, 0], "ch18": [110, 0] },
+      "2766": { "ch14": [10, 30], "ch18": [100, 0] },
+      "2827": { "ch14": [-100, 0], "ch18": [-140, -40] },
+      "3007": { "ch14": [10, 20], "ch18": [90, 0] },
+      "3067": { "ch14": [20, 50], "ch18": [50, 50] },
+      "1335": { "ch14": [170, 50], "ch18": [80, -30] },
+      "4718": { "ch14": [-90, -10], "ch18": [100, -10] },
+      "7178": { "ch14": [10, 50], "ch18": [100, 0] }
+    },
+    "per_event_note": "Single-event peaks are weak in open courtyard views (sky and similar façades on all sides); about 9 of 14 events per channel peak within ±20° of the global offsets. Indoor events are the most distinctive.",
+    "qualitative": [
+      "The operator appears at the left edge of ch14 and the right edge of ch18: for left/right-looking cameras both edges point backward, where the person carrying the scanner is.",
+      "1335: ch18 faces the wall with the red-trimmed doorway (renders at +90..+120°); ch14 looks out over the garden (-60..-90°).",
+      "2497: ch14 has the veranda on its left and the garden on its right (-90..-120°); ch18 the mirror image (+90..+120°).",
+      "4718: ch14 faces the near wall with a louvred window; ch18 looks out over a railing."
+    ],
+    "conclusion": "One fixed offset pair (ch14 left, ch18 right, both level, roll 0) is directionally consistent across the test set. Directions only, to about ±10°."
+  },
+
+  "caveats": [
+    "Lens model and focal length assumed; image centre approximate.",
+    "No lever arm and no camera/pose time offset modelled.",
+    "10° search grid (5° in the refinement); 160x120 comparison images.",
+    "One recording; other recordings or firmware not checked.",
+    "User notes and presets made in the browser are not included; use 'Export notes + presets (JSON)' in /camera-calibration."
+  ]
+}
