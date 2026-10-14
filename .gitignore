@@ -5,9 +5,19 @@ next-env.d.ts
 *.tsbuildinfo
 .DS_Store
 
-# Raw LiDAR files are large; keep them out of git.
+# Raw scanner recordings are large and private; keep them out of git.
 *.las
 *.laz
+*.xbin
+
+# Generated reconstruction data (XGRIDS index, extracted images, ...). The XGRIDS
+# scripts write next to the recording by default; this covers a copy inside the repo.
+/reconstruction/
+
+# Generated Gaussian scenes. *.ply is deliberately not ignored so a tiny test
+# fixture can be committed; real scenes live in spatial-data/ (ignored below).
+*.splat
+*.ksplat
 
 # Converted point clouds (regenerate with scripts/convert_las.py).
 public/data/*.bin

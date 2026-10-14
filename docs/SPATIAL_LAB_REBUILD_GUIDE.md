@@ -201,7 +201,11 @@ lib/
   viewSettings.ts       ViewSettings type + defaults; shader experiment types/params
 shaders/                GLSL as exported TS template strings (no bundler loader needed)
 scripts/convert_las.py  LAS → browser binary converter (CLI; uses backend/lidar_conversion.py)
-scripts/xgrids/index_xbin.py  Lab 13P: standalone indexer of the camera frames in an XGRIDS .xbin (section 5.12)
+scripts/xgrids/         standalone XGRIDS .xbin tools (section 5.12; README.md lists commands and options)
+  index_xbin.py         Lab 13P: indexer of the camera frames (no image decoding) → frames.csv, index-summary.json
+  extract_frames.py     Lab 13Q: decodes chosen ch14 + ch18 pairs to JPEG via FFmpeg, interpolated scanner poses
+tests/xgrids/           unittest suite on synthetic XBAG-like files (synthetic_xbag.py builds them; no real data)
+docs/xgrids/            xbag-format.md (format, verified vs provisional), investigation-log.md, calibration-notes.md
 public/data/            built-in dataset: pointcloud-500k/1m/2m/5m.bin (gitignored), poses.csv
 public/datasets/basel-house/  Basel House preview: basel-preview-1m.bin + basel-preview-metadata.json,
                         basel-preview-5m.bin + basel-preview-5m-metadata.json (.bin gitignored, JSON tracked)
@@ -608,15 +612,32 @@ exports/<slug>-training-package.zip     ZIP_STORED (JPEG/binary don't compress),
 
 **Estimates** (not measurements, stated as such in the README): setup 5–10 min; smoke 2–5 min; quick 3–8 min (4090) / 5–12 min (3090); quality 15–35 / 25–50 min; 4–10 GB VRAM; 0.3–2 M Gaussians; PLY ≈ 250 MB per million (62 float properties incl. nx/ny/nz and SH degree 3). Runpod prices (pricing page, 2026-10): RTX 4090 $0.34/h Community, $0.74/h Secure; RTX 3090 $0.22/$0.50; disks $0.10/GB/month while the Pod exists, stopped volumes $0.20/GB/month until terminated. Pod settings: Secure Cloud, 1 × RTX 4090/3090, container disk 20 GB, volume 30 GB at `/workspace` with **Encrypt volume**, no network volume, HTTP ports 8888 + 7007; never *Edit Pod* while running (it resets everything outside `/workspace`).
 
-### 5.12 XGRIDS raw recording (`.xbin`, Lab 13P)
+### 5.12 XGRIDS raw recording (`.xbin`, Labs 13P–13Q)
 
-The LixelKity K1 writes its raw sensors to one `.xbin` file (Basel House: 13,929,066,496 bytes, starts with `XBAG`). Reverse-engineered from our own recording, **provisional** (documented in `scripts/xgrids/index_xbin.py`):
+The LixelKity K1 writes its raw sensors to one `.xbin` file (Basel House: 13,929,066,496 bytes, starts with `XBAG`). Reverse-engineered from **one** recording (software V3.1.1_20250826), **provisional**, and not proven for other firmware versions or recordings. The full write-up, with a table of what is verified and what is provisional, the corrections and a checklist for new recordings, is `docs/xgrids/xbag-format.md`; the history is in `docs/xgrids/investigation-log.md`. In short:
 
 - **Records**: a 48-byte little-endian header `u32 record length (= payload + 52), u16 1, u16 36, u64 write time µs, u32 payload length, u32 message count, u64 first ts µs, u64 last ts µs, u32 channel, u32 payload length`, then the payload, then 4 unexplained bytes. Channels seen: 1 (2,432 records), 3 (4,852), 14 and 18 (1,459 each, the two cameras), 0 and 21 (1 each). Only the camera channels are decoded.
 - **Camera messages** (protobuf, 5 per record, filling the payload exactly): `0a L { 0a n {08 seq, 10 zigzag ts µs, 18 20000}, 10 3, 18 4000, 20 3000, 2a m <H.264 Annex B: SPS 00 00 00 01 67 64 10 3c, PPS, SEI, IDR>, 32 7 {…} }`. Sequence 0 has no `08` field (proto3 default).
 - **Basel House**: 14,590 images = 7,295 synchronised pairs (sequence 0–7294 on both channels, channel 18 always first, Δt median 17 µs, max 213 µs), 4000 × 3000, 292–716 KB each, every 0.3 s (≈ 3.0 Hz, longest gap 1.4 s) from 10:10:16.490409 to 10:50:52.990955 UTC. Poses start 17.6 s later: 106 frames precede the first pose, 14,484 lie inside the pose range (nearest pose ≤ 50 ms).
 
 `scripts/xgrids/index_xbin.py <file.xbin>` (standard library only, independent of the app) reads the file read-only in 16 MiB chunks (0.66 GB/s, 22 s for 13.9 GB) and writes `<xbin folder>/reconstruction/xgrids/metadata/frames.csv` (sequence, `timestamp_us` as exact integers, UTC, SPS offset, camera stream, pair status/id/Δt, message offset, declared H.264 length, size, stream evidence) and `index-summary.json` (counts, rejections, batches per channel, rates, pose coverage). Rules: frames are found by the SPS signature (heuristic), the metadata must decode exactly (fields 1–5 in a message whose field 5 starts at the SPS, a single field 6 after the image, plausible values) and only one message start may fit, otherwise the candidate is rejected with a reason; the camera stream is the record's channel only when its header matches its frames exactly; pairs need equal sequence, |Δt| ≤ 5 ms, different streams, and exactly one candidate. Images are neither extracted nor decoded.
+
+**Selective extraction** (`scripts/xgrids/extract_frames.py <file.xbin>`, Lab 13Q). It reads `frames.csv`; no rescan.
+- **Selection:** complete `ch14` + `ch18` pairs only.
+- **Pose range:** events outside the `poses.csv` time range are excluded and reported separately (Basel: sequences 0–52, 53 events). So are events whose bracketing pose samples are more than 200 ms apart.
+- **Sampling:** `--interval 10` takes the first event at or after each 10 s grid time. Alternatives are `--validation` (first, middle and last eligible event) and `--sequences`.
+- **Decoding, per image:**
+  1. Re-decode the metadata with the indexer's `decode_frame` and compare it with the CSV.
+  2. `os.pread` exactly `h264_bytes` from `sps_offset`. Each payload is a self-contained SPS + PPS + 2 SEI + IDR picture.
+  3. Run `ffmpeg -loglevel warning -f h264 -i pipe:0 -frames:v 1 -c:v mjpeg -q:v <quality>` to a `.partial` file, then rename it.
+  4. Check the JPEG's SOI/EOI markers and that its SOF size equals the declared size; record its SHA-256.
+- **Scanner pose per image:** XYZ interpolated linearly between the two bracketing poses, and the quaternion by SLERP. The quaternion order is xyzw, the angle is computed with atan2, and the result is exact down to 10⁻⁶ rad. This is the **scanner** pose; the camera extrinsics are unknown and the manifest says so (`docs/xgrids/calibration-notes.md`).
+- **Output:** `<xbin folder>/reconstruction/xgrids/images/<run>/` holds:
+  - `seq<NNNNN>_<ch14|ch18>_t<µs>.jpg`;
+  - `manifest.csv`: image, sequence, timestamp, channel, offsets, NAL types, decoder status, JPEG size and SHA-256, pose bracket, `scanner_*`, `camera_extrinsics=unknown`;
+  - `extraction-summary.json`.
+- **Safety:** an `--out` inside the repository (except the ignored `reconstruction/`) is refused.
+- **Basel, one pair every 10 s:** 242 events = 484 images at 4000 × 3000, all `ok`, 92 s, 452 MB.
 
 ## 6. Rendering pipeline
 
@@ -1047,6 +1068,41 @@ Requirements: `scripts/xgrids/index_xbin.py` as in section 5.12; patterns stradd
 
 Accept: first 64 MiB vs the earlier experiment (116 frames, 56 pairs): 117 frames, 57 pairs, identical with 16 MiB and 4 KiB chunks; the extra frame is a sequence-0 image the experiment skipped (no `08` field), the experiment's "1086 / …217.574699" for the first image is sequence 0 / …216.490409 (= its record header's first timestamp), the other 115 timestamps are identical; 3 unpaired and 2 stream-less frames only because their partners/record lie beyond 64 MiB. Full file: 14,590 SPS matches, 14,590 decoded, 0 rejected, all streams assigned (2,918 camera records, 14,590 declared messages = images found, so no camera image lacks the SPS), 7,295 pairs, 0 unpaired; `unchangedDuringScan` true.
 
+### Lab 13Q — Selective XBAG camera extraction
+
+Constraints (from the brief):
+- `frames.csv` only; no rescan.
+- Both cameras for every event.
+- FFmpeg to full-resolution JPEG with configurable quality.
+- Channel IDs kept in filenames and metadata.
+- Scanner pose interpolation: XYZ linear, SLERP in xyzw order. Extrinsics stay explicitly unknown.
+- Events outside the pose range excluded by default and reported.
+- Graceful FFmpeg and incomplete-frame handling.
+- Output outside Git.
+- `.xbin`, `.las` and `poses.csv` unchanged.
+- Three validation pairs (beginning, middle, end) before about one pair every 10 s.
+- No calibration, training, stitching or UI.
+
+Requirements: `scripts/xgrids/extract_frames.py` as in section 5.12, plus:
+- `scripts/xgrids/README.md` and the `docs/xgrids/` notes;
+- `tests/xgrids/` (synthetic XBAG generator and 13 unittest cases for both scripts);
+- `.gitignore` entries for `*.xbin`, `/reconstruction/`, `*.splat` and `*.ksplat`. `*.ply` is deliberately not ignored, so a tiny fixture can be committed.
+
+Accept: `python3 -m unittest discover tests/xgrids` passes.
+
+Validation run, sequences 53 / 3674 / 7294: 6/6 `ok`. Each image was checked in a separate script:
+- the manifest links it to the right `frames.csv` row;
+- `ffprobe` reports MJPEG 4000 × 3000 and a full decode is clean;
+- PSNR against a fresh decode of the original H.264 bytes is 48.5–50.6 dB;
+- thumbnails aren't blank, and those of the two cameras differ;
+- the pose matches \(q_0 (q_0^{-1} q_1)^t\) to 5·10⁻⁷ m and 4·10⁻¹⁰.
+
+Damaged-frame test, on a throwaway synthetic XBAG holding a real frame truncated, and one with 20 KB zeroed: both give `decoded-with-errors`, the run continues and exits with code 2.
+
+Interval run: 484/484 `ok`, events 9.59–10.39 s apart, PSNR 48.2–51.7 dB, the same pose agreement, and identical SHA-256 values on rerun.
+
+Not done: the images haven't been checked by eye in this lab, because they may show people. The user should look at the validation set.
+
 ## 8. Pitfalls we hit and how they were fixed
 
 | Symptom | Cause | Fix |
@@ -1108,6 +1164,8 @@ Accept: first 64 MiB vs the earlier experiment (116 frames, 56 pairs): 117 frame
 | Thumbnails "not loaded" in a headless check | `loading="lazy"` images below the fold load only when scrolled to | scroll the grid and wait before counting |
 | (Preventive) `RangeError: start offset of Float32Array should be a multiple of 4` (interleaved preview) | 15-byte records leave floats unaligned | read through a `DataView` and de-interleave into planar arrays |
 | XBAG frame indexed with sequence 1086 and a wrong timestamp, another frame missing | protobuf omits fields equal to 0 (sequence 0); a loose backwards search picked up a neighbouring message's varints or found nothing | parse the whole message structure from its `0a` start to the SPS, accept a missing sequence as 0, reject candidates with zero or several possible starts |
+| A damaged H.264 frame decoded "cleanly" (exit 0, no message) | at `-loglevel error`, FFmpeg conceals damaged slices and reports them only as the warning "corrupt decoded frame" | run FFmpeg at `-loglevel warning`, where a clean frame prints nothing; any message → `decoded-with-errors` |
+| "SLERP" was really normalised lerp for almost every pose step | a `dot > 0.9995` shortcut (under about 3.6°) covers nearly all 100 ms steps (median 1.2°); error up to 3·10⁻⁷ | angle from `2·atan2(‖q0 − q1‖, ‖q0 + q1‖)` (precise for small angles); lerp only below 10⁻⁶ rad; test against the closed form for a 0.5° step |
 | (Preventive) Grid and axes jump while another Basel budget loads | the metadata (= offset) was stored with the loaded points, which are cleared on a budget switch | keep the dataset's preview metadata separately (`previewFrame`) and check each new budget's `coordinateCenter` against it |
 | Basel House grid/axes float far above the building | its offset is the bounding-box centre (Z = 32 m), so dataset (0,0,0) is in the air | place the helpers at the LAS origin (−offset); never shift the points |
 | Basel full-cloud view shows a tiny building | outliers stretch the full box to 225 × 208 × 99 m | default to the scan-area view; Frame Entire Cloud stays available |
@@ -1156,7 +1214,17 @@ Techniques used:
 - **Camera poses** (Lab 10B): copy a real project's folder (without `work/`) into a test store; `curl` start / double start / removal while running / cancel (check `pgrep colmap` afterwards) / full run with polling; compare the summary with a manual COLMAP run (`model_analyzer`); when comparing mappers, align camera centres with a similarity (Umeyama) and list photos with few matched points. In Playwright, poll the panel text for the stage changes (a full run is ~4 min), then the 3D view: click over the canvas until a camera is selected, "Look through this camera", screenshot next to the thumbnail.
 - **Training package** (Lab 10C): on a test-store copy (project.json, thumbs, work/poses.json, work/poses/{images,sparse,model}): print the checks; build; unzip and `shasum -a 256 -c SHA256SUMS`; `cmp` the model files; decode every packaged image against COLMAP's copy; read the package with Nerfstudio's `colmap_parsing_utils.py` fetched from the release tag (pure Python + NumPy, no install) and replay the interval split; break things one at a time (remove a photo, hide one, resize one, hide poses.json). Preflight with Nerfstudio itself: a throwaway Python 3.10 venv with `nerfstudio==1.1.5 torch==2.1.2 gsplat==1.4.0` (`--exclude-newer 2024-11-12`, `BUILD_NO_CUDA=1`); run the dataparser (`get_dataparser_outputs("train"/"test")`) and `FullImageDatamanager(device="cpu", test_mode="test").fixed_indices_eval_dataloader` on the unzipped package and compare with the manifest by **basename** (manifest `file` includes `images/`); run the exact `ns-train` command until it stops at CUDA and inspect `config.yml`; `uv pip compile` the lock with itself as input. Test `train.sh` with stand-in commands on PATH (`FAKE_TRAIN=ok|crash|nockpt`, `FAKE_EVAL=fail`, a `flock` stub on macOS, `python` as a wrapper script — a symlink to a venv's python loses the venv). Playwright: block `127.0.0.1:8000`, build → download event → size, then remove a photo and check the outdated state.
 - **Preview datasets** (Basel): numpy reads the `.bin` as a structured dtype (`<f4` ×3, `u1` ×3) for reference values; a temporary `.mts` in the repo root run with `npx tsx` imports `lib/loadPointCloud.ts`, `previewDataset.ts`, `worldFrame.ts`, `initialView.ts` (feed `fetch` from the file system) and prints the parsed points, scan-area fraction, view targets and the map.las regression; delete it afterwards.
-- **XBAG indexer** (Lab 13P): run with `--max-bytes 67108864 --out /tmp/…` at the default chunk size and with `--chunk-mib 0.00390625` (4 KiB, forces many boundary crossings) and `cmp` the two `frames.csv`; compare with an independent decode by offset; in the full run check `rejectedCandidates` (0), `streamAssignment` (all assigned) and `cameraMessagesDeclared` = `decodedFrames`.
+- **XBAG indexer** (Lab 13P): run with `--max-bytes 67108864 --out /tmp/…` at the default chunk size and with `--chunk-mib 0.00390625` (4 KiB, forces many boundary crossings) and `cmp` the two `frames.csv`; compare with an independent decode by offset; in the full run check `rejectedCandidates` (0), `streamAssignment` (all assigned) and `cameraMessagesDeclared` = `decodedFrames`. `python3 -m unittest discover tests/xgrids` covers both XGRIDS scripts on synthetic data.
+- **XBAG extraction** (Lab 13Q):
+  1. Run `--dry-run`, then `--validation` (3 pairs) before any interval run.
+  2. Check each image in a separate throwaway script:
+     - the manifest row matches `frames.csv` by `sps_offset`;
+     - `ffprobe` gives the size, and `ffmpeg -v error -i x.jpg -f null -` is silent;
+     - PSNR of the JPEG against a fresh decode of the H.264 bytes is at least 45 dB;
+     - grey 64 × 48 thumbnails aren't blank, and the two cameras differ;
+     - the pose agrees with \(q_0 (q_0^{-1} q_1)^t\) via axis-angle. Compare component differences, not `acos(dot)`, which is ill-conditioned near 1.
+  3. Test damaged frames by embedding real H.264 bytes, truncated or partly zeroed, in a throwaway file built with `tests/xgrids/synthetic_xbag.py`. Keep that file in `/tmp`, never in the repo.
+  4. Don't look at real photographs unless the user asks: they may show people.
 - Note: FPS numbers from SwiftShader are meaningless; use real hardware for performance conclusions.
 
 ## 10. Adapting Spatial Lab for different web purposes
@@ -1179,7 +1247,7 @@ General scaling rules: raw LAS is never loaded directly; convert offline to a ty
 
 ## 11. Not built yet / roadmap
 
-Explicitly out of scope so far (each would be its own lab): cross-capture alignment (Lab 7C organises captures per property; registration into a property frame via `alignment`/`frame`, using control points/GNSS/CRS, is not built), meshes and photographs as capture representations (splat scenes exist since Lab 8, section 5.7), splat ↔ LiDAR registration, importing SuperSplat `settings.json` (authored cameras/annotations), splat editing/cropping, background import jobs for very large splat files, LAZ/E57 import, LiDAR intensity visualisation, pose animation, clipping/cropping, measurement tools, annotations/hotspots, full Gaussian splatting (Lab 6 projects one Gaussian; Lab 7B composites up to 1,000 with CPU projection, centre sorting and instanced quads; still missing: projection and sorting on the GPU for millions of Gaussians, tile-based rasterisation, spherical-harmonic colour for many Gaussians in our own renderer (Lab 9 evaluates it for one; Lab 8 views real trained scenes with the official viewer), training), running the cloud training and importing its PLY with provenance (Lab 10C stage 2; `output/` reserved), metric scale/gravity for photo reconstructions (e.g. from LiDAR), video frame extraction, linking training projects to a property/capture, RAW/video import, editing/saving trained Gaussians (Lab 9 experiments are preview-only), inspecting a Gaussian among its neighbours, ordinary meshes, WebXR, LOD/octrees, workers.
+Explicitly out of scope so far (each would be its own lab): cross-capture alignment (Lab 7C organises captures per property; registration into a property frame via `alignment`/`frame`, using control points/GNSS/CRS, is not built), meshes and photographs as capture representations (splat scenes exist since Lab 8, section 5.7), splat ↔ LiDAR registration, importing SuperSplat `settings.json` (authored cameras/annotations), splat editing/cropping, background import jobs for very large splat files, LAZ/E57 import, LiDAR intensity visualisation, pose animation, clipping/cropping, measurement tools, annotations/hotspots, full Gaussian splatting (Lab 6 projects one Gaussian; Lab 7B composites up to 1,000 with CPU projection, centre sorting and instanced quads; still missing: projection and sorting on the GPU for millions of Gaussians, tile-based rasterisation, spherical-harmonic colour for many Gaussians in our own renderer (Lab 9 evaluates it for one; Lab 8 views real trained scenes with the official viewer), training), running the cloud training and importing its PLY with provenance (Lab 10C stage 2; `output/` reserved), metric scale/gravity for photo reconstructions (e.g. from LiDAR), XGRIDS camera calibration (fisheye intrinsics and camera-to-scanner extrinsics; Lab 13Q only gives scanner poses at the image times, see `docs/xgrids/calibration-notes.md`) and decoding of the non-camera XBAG channels, video frame extraction, linking training projects to a property/capture, RAW/video import, editing/saving trained Gaussians (Lab 9 experiments are preview-only), inspecting a Gaussian among its neighbours, ordinary meshes, WebXR, LOD/octrees, workers.
 
 ## 12. Prompt templates
 
@@ -1234,3 +1302,4 @@ Explicitly out of scope so far (each would be its own lab): cross-capture alignm
 | Basel.1 | Basel House 5M budget (5,097,774 points) next to 1M: `preview.files` per budget key; preview metadata kept across budget switches (`previewFrame`), a budget with a different `coordinateCenter` is refused; checked: same centre and first point in both files, 67.6% in the scan area for both, camera unchanged 1M ↔ 5M ↔ 1M, Standard/Shader (RGB, Height), geometry count constant; sections 4, 5.1.1, 7, 8 |
 | Basel.2 | Basel House scanner trajectory: `preview.posesUrl` → `public/datasets/basel-house/poses.csv` (copy of `project_data/poses.csv`, gitignored), pose status from `validate_poses` run offline (aligned, median 0.53 m); `Trajectory` draws the path and a new green start sphere on top of the cloud, skips per-pose dots above 2,000 poses (map.las's 208 unchanged); "Show scanner path" label mentions the start sphere; sections 4, 5.1.1, 7 |
 | 13P | `scripts/xgrids/index_xbin.py`: chunked, read-only indexer of the H.264 camera frames in an XGRIDS `.xbin` (SPS heuristic, strict protobuf metadata decode, XBAG record headers → camera channel, sequence + ≤ 5 ms pairing, pose coverage) → `frames.csv` + `index-summary.json`; Basel House: 14,590 frames, 7,295 pairs, 0 rejected; sections 4, 5.12, 7, 8, 9 |
+| 13Q | `scripts/xgrids/extract_frames.py`: selective ch14 + ch18 pair extraction from `frames.csv` (metadata re-checked, exact `h264_bytes` from `sps_offset`, FFmpeg at `-loglevel warning` → JPEG `-q:v`, JPEG SOF/EOI/SHA-256 checks, per-image statuses, exit 2 on incomplete events), scanner pose per image (linear XYZ + exact SLERP xyzw; extrinsics `unknown`), out-of-pose-range events excluded and reported, output refused inside the repo; Basel: validation 3 pairs and 242 pairs every 10 s, all 484 `ok`; `docs/xgrids/` (xbag-format, investigation-log, calibration-notes), `scripts/xgrids/README.md`, `tests/xgrids/` synthetic XBAG unittest suite (13 tests); `.gitignore`: `*.xbin`, `/reconstruction/`, `*.splat`, `*.ksplat` | 4, 5.12, 7, 8, 9, 11 |

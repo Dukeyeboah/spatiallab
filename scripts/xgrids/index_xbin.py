@@ -10,7 +10,8 @@ Writes <out>/frames.csv and <out>/index-summary.json (default out:
 <xbin folder>/reconstruction/xgrids/metadata). Standard library only; the
 recording is opened read-only and read sequentially in chunks.
 
-What was reverse-engineered (from our own recording; provisional, not a spec)
+What was reverse-engineered (from our own recording; provisional, not a spec;
+full notes and what is verified: docs/xgrids/xbag-format.md)
 ----------------------------------------------------------------------------
 Discovery heuristic: every camera image found so far starts with this SPS
 (4000 × 3000 High profile). Images that start differently are not indexed.
