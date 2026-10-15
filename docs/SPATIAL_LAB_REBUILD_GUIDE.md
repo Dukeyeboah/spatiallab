@@ -225,7 +225,7 @@ lib/
   correspondences.ts    Lab 13U: Correspondence record (pixel ↔ LAS, image identity, scanner pose, provisional), validation,
                         localStorage, export/import (schema "spatial-lab/xgrids-correspondences" v1), predict + error stats;
                         Lab 13W optional review fields (excludedFromFit, reviewStatus, scene, history) + withChange
-  correspondenceReview.ts  Lab 13W: LAB_13V_STAGE_B reference + LAB_13V_REVIEW ids, chooseReference, reviewRecords (distance, height,
+  correspondenceReview.ts  Lab 13W: BASELINE_STAGE_B reference + LAB_13V_REVIEW ids, chooseReference, reviewRecords (distance, height,
                         region, sector, off-axis, reference error, flags mirroring the backend audit), coverage (reliable-only)
   pointPicking.ts       Lab 13U: screen-space pick (front surface, nearest point), PCA plane refinement (ray ∩ plane, refusals),
                         surfaceRangeAlongRay, Jacobi eigen-solver
@@ -720,7 +720,15 @@ This is `Euler(roll, −pitch, −yaw, "ZYX")`. The offsets are never used as ca
 
 Nothing in the app applies these values automatically. Hardware reference photographs (Livox MID-360 with two opposing wide-angle modules) support the ≈ ±90° directions and show that the lens centres are displaced from the pose reference point: the zero lever arm is temporary and a measured or estimated camera-to-scanner translation is still required (`docs/xgrids/calibration-notes.md`). The photos are not calibration measurements.
 
-**Correspondence review (Lab 13W).** Records may carry `excludedFromFit`, `reviewStatus`, `scene` and `history`, all optional, so the schema stays v1. Review errors use a named reference: a loaded experiment's Stage B, else Lab 13V Stage B for the Basel export. Image regions are thirds of the usable radius. "Reliable" means in fits with no warning; only reliable matches count towards the 15–25 per-camera target. Refitting without #1, #5 and #16 moved ch14's Stage B by under 1 σ and shrank its roll and f uncertainty about 3×. Held-out error and the photo check did not improve. The expanded dataset is not complete until the user supplies new hand-verified matches.
+**Correspondence review (Lab 13W).** Records may carry `excludedFromFit`, `reviewStatus`, `scene` and `history`, all optional, so the schema stays v1. Review errors use a named reference: a loaded experiment's Stage B, else the latest experimental baseline for the Basel export. Image regions are thirds of the usable radius. "Reliable" means in fits with no warning; only reliable matches count towards the 15–25 per-camera target. Refitting without #1, #5 and #16 moved ch14's Stage B by under 1 σ and shrank its roll and f uncertainty about 3×. Held-out error and the photo check did not improve. The expanded dataset is not complete until the user supplies new hand-verified matches.
+
+**Latest experimental baseline (2026-10-15).** The user's reviewed export kept the ids of corrected matches, deleted #11, added one match and re-picked others. Stage B on it (experiment `x_c69aede71834`) gives:
+- ch14 (−88.95°, 2.89°, 0.37°), f 961 ± 8;
+- ch18 (89.44°, 4.33°, 0.77°), f 962 ± 10;
+- held-out medians of 18 and 16 px, against 28 and 35 px for 13V;
+- parameter shifts under 1 σ, and an unchanged photo check.
+
+`experiments/baseline-latest-2026-10-15.json`, outside the repo, points to it, and 13V's files are kept. The flag for a record on the Lab 13V list clears once the record has a pixel or LiDAR correction in its history. The dataset is still not complete.
 
 ## 6. Rendering pipeline
 
@@ -1326,7 +1334,7 @@ Requirements (sections 4 and 5.12; details in `docs/xgrids/correspondences.md` �
   - shows event, channel, pixel, LAS, method, distance and height from the scanner, image region (thirds of the usable radius), angle from the axis, error under the reference set, flags, quality, scene, notes, review status, and whether the match is in fits;
   - actions: Show, Edit (also replace pixel / LiDAR with history), Exclude with a reason / Restore, Delete;
   - filters: all / to review / excluded / this event.
-- **Reference set** (`chooseReference`): a loaded experiment's Stage B for this dataset and pose hash; else the built-in `LAB_13V_STAGE_B` (Basel export only); else the provisional rotations with the assumed lens. Always named in the panel.
+- **Reference set** (`chooseReference`): a loaded experiment's Stage B for this dataset and pose hash; else the built-in `BASELINE_STAGE_B` (Basel export only; the latest experimental baseline `x_c69aede71834`); else the provisional rotations with the assumed lens. Always named in the panel.
 - **Flags** (`reviewRecords`) mirror the backend audit:
   - *exclude*: user-excluded, wrong-side, too-close;
   - *warn*: the Lab 13V list (#1, #5, #11, #16 by id, until verified or excluded), needs-fix, close-range, may-move, quality, large-error (> max(3 × the channel median, 40 px)), no-projection, duplicate;
@@ -1606,3 +1614,4 @@ Explicitly out of scope so far (each would be its own lab): cross-capture alignm
 | 13V | Experimental camera calibration: `backend/camera_calibration.py` (export validation + run cross-check, audit flags, Stage A rotation / Stage B rotation + f with SciPy robust least squares, leave-one-event-out, sensitivity, identifiability limits, deterministic experiment JSON v1, photo-vs-LiDAR NCC check), stateless `POST /xgrids/calibration/audit` + `/experiments`, `scripts/xgrids/calibrate_cameras.py`, `tests/xgrids/test_camera_calibration.py` (20 tests), `scipy 1.18.1`; third mode "Calibration optimization" on `/camera-calibration` (`CalibrationOptimizationSection`, `useCalibrationOptimization`, `lib/calibrationExperiment.ts`; display-only viewer, presets untouched); Basel: f ≈ 927 / 955 px/rad, held-out median 80 → 28 px (ch14) and 66 → 35 px (ch18), better on 42 of 48 unseen photos; principal point, lever arm and distortion still unknown; `docs/xgrids/calibration-experiments.md`; sections 3.1, 4, 5.12, 7, 8, 9, 11 |
 | 13V.1 | Docs only: hardware reference photographs of the K1 (Livox MID-360, two opposing wide-angle imaging modules) recorded as supporting evidence for the ±90° directions; zero lever arm stated as temporary; future measured/estimated camera-to-scanner translation required; no translations, channel assignment or intrinsics inferred from photos; `calibration-notes.md`, `calibration-experiments.md`, section 5.12 |
 | 13W | Correspondence review and dataset preparation: optional record fields `excludedFromFit` / `reviewStatus` / `scene` / `history` (frontend and backend validation, ids kept), `lib/correspondenceReview.ts` (Lab 13V Stage B reference, flags mirroring the audit, Lab 13V review list #1/#5/#11/#16, reliable-only coverage), `CorrespondenceReview.tsx` (review list with Exclude/Restore, review status, scene, corrections with history, filters; per-camera SVG coverage diagram, 15–25 target, guidance, "not complete" note), scene select and other-event coverage markers; backend `user-excluded` / `needs-fix` flags, `imageRegion`, unknown exclude/include ids refused, CLI prints missing values; `scripts/xgrids/compare_experiments.py`; Basel: without #1/#5/#16 ch14 Stage B moves < 1 σ and its roll/f σ shrink about 3×, but held-out and photo checks don't improve; the ≥ 3 m subset is too small to fit or validate; 22 calibration tests; sections 4, 5.12, 7, 8, 9, 11 |
+| 13W.1 | Latest experimental baseline from the user's reviewed export (#1/#5/#16 corrected, #11 deleted, one match added, others re-picked; all validated): Stage B `x_c69aede71834`, held-out medians 18 / 16 px (13V: 28 / 35), f ≈ 961 for both cameras, shifts < 1 σ, photo check unchanged; pointer file `baseline-latest-2026-10-15.json` outside the repo, 13V kept; `BASELINE_STAGE_B` replaces `LAB_13V_STAGE_B` as the built-in review reference; Lab 13V flags clear on corrected records; dataset still not complete; sections 4, 5.12 |

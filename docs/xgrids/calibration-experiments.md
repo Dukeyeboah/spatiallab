@@ -281,6 +281,45 @@ The same 19-point export, solver unchanged (module `13W.1` only adds review fiel
 
 Conclusion: the Lab 13V Stage B result is not driven by the suspicious matches, but its ch14 roll and f uncertainties are. The next experiment needs the expanded dataset, not a different subset of the same 19 points.
 
+## Latest experimental baseline: reviewed export (experiment `x_c69aede71834`, 2026-10-15)
+
+**Input:** `inputs/correspondences-builtin-basel-house-2026-10-15-reviewed.json` (sha256 `e2f89204…`, read-only), the user's export after the Lab 13W review. It has 19 records:
+- #1, #5 and the old #16 (now #15) were corrected, keeping their ids, with their history logged;
+- the old #11 (the wrong-side window) was deleted, and a new ch18 match was added (`c_bfbbda003715`, 2587 roof, 20 m), so the old #12–#19 are now #11–#18;
+- #2, #6, #7, #8, #9, #14 and #17 were also re-picked.
+
+**Validation:**
+- Every record passes the backend audit and its run manifest, with the pose hash verified.
+- The app's stored predictions are reproduced exactly.
+- Nearest-point LiDAR picks are exact preview-cloud points; the two ray-plane picks lie 9 and 13 mm from the nearest point.
+
+**Run:** nothing excluded, solver `13W.1`, image check on run interval-10s.
+
+**Outputs:** `experiments/13w/reviewed-2026-10-15/`, holding the audit, the experiment and `comparison-vs-13v.json`. `experiments/baseline-latest-2026-10-15.json` points to this experiment and records that 13V's `x_652068cf70da` is kept. Both are read-only.
+
+| | ch14 Stage B: yaw, pitch, roll (°); f | ch14 training / held-out median px | ch18 Stage B | ch18 training / held-out median px | Mean NCC, Stage B (ch14 / ch18) |
+| --- | --- | --- | --- | --- | --- |
+| 13V `x_652068cf70da` | −88.27 ± 1.6, 3.04 ± 1.7, −1.30 ± 2.5; 927 ± 41 | 20.4 / 27.7 (7 folds) | 89.36 ± 0.5, 4.00 ± 0.5, 0.57 ± 0.9; 955 ± 15 | 23.1 / 34.6 (8 folds) | 0.319 / 0.296 |
+| **baseline** `x_c69aede71834` | −88.95 ± 0.26, 2.89 ± 0.28, 0.37 ± 0.41; 961 ± 7.5 | 12.8 / 18.1 (7 folds, RMS 19.4) | 89.44 ± 0.30, 4.33 ± 0.31, 0.77 ± 0.55; 962 ± 9.7 | 12.8 / 16.0 (9 folds, RMS 22.7) | 0.318 / 0.298 |
+
+**What the baseline shows:**
+- **Parameters:** every Stage B parameter moved by less than 1 σ of 13V. ch14's f rose by 35 px/rad, and both cameras now agree on f ≈ 961 px/rad. Every parameter passes the identifiability limits ("estimated (experimental)"), and ch14's leave-one-event-out ranges are small (yaw 0.4°, pitch 0.5°, roll 0.6°, f 9 px/rad).
+- **Held-out error:** the median fell from 28 to 18 px (ch14) and from 35 to 16 px (ch18).
+- **Like-for-like caution:** many coordinates changed, so per-record held-out errors are not a like-for-like comparison with 13V.
+- **Independent checks:**
+  - The photo check is essentially unchanged: 0.318 / 0.298, with Stage B best in 20 of 24 (ch14) and 22 of 24 (ch18) photos.
+  - On the three Lab 13U validation records, none of which is in the fit, the error drops from 20.0, 37.1 and 27.8 px (13V) to 11.4, 32.4 and 24.5 px.
+- **Lever arm:** a ±5 cm lever arm shifts f by about 31 px/rad (ch14) or 11 px/rad (ch18), so f absorbs part of the unknown translation.
+
+**Remaining issues (not addressed in this run):**
+- **Outlier:** ch18 #3 (`c_ca516a0a5228`, 1663 window sill, 1.85 m) is 40 px in training and 48 px held out.
+- **Next largest errors:** ch18 #16 (2317, 36 px held out) and ch14 #7 (0.67 m, 28 px).
+- **Close and sparse picks:** six matches are closer than 3 m. #8 (24.8 m) and several far roof picks sit on sparse LiDAR.
+- **Coverage:** no point lies beyond 1200 px from the image centre. Each camera has about 9–10 usable matches against the 15–25 target, so the expanded dataset is **not complete**.
+- **Not estimated:** the lever arm, principal point, distortion and timing.
+
+The workspace's built-in review reference (`BASELINE_STAGE_B` in `lib/correspondenceReview.ts`) now uses this Stage B. As before, nothing is applied to the main viewer or the Lab 13U presets.
+
 ## Limitations
 
 - One recording and 9 usable points per camera, more than half of them closer than 3 m.

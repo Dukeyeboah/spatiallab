@@ -51,6 +51,10 @@ From 19 correspondences (9 usable per camera, 8 events), fitted with robust leas
 - **Still assumed or unknown:** principal point (image centre assumed), lever arm (0 assumed), distortion beyond equidistant, timing. Not identifiable from these points, most of which are closer than 3 m.
 - Nothing in the app uses these values automatically; the Lab 13U presets are unchanged.
 - **Lab 13W check:** refitting without the suspicious ch14 matches (#1, #5, #16) moves these values by under 1 σ but shrinks ch14's roll and f uncertainty about 3×. The estimates stand; the dataset is the limiting factor. An expanded, hand-verified set of 15–25 reliable matches per camera is being collected; until then the dataset is **not complete**.
+- **Latest experimental baseline** (`x_c69aede71834`, the user's reviewed export of 2026-10-15). Details are in [calibration-experiments.md](calibration-experiments.md#latest-experimental-baseline-reviewed-export-experiment-x_c69aede71834-2026-10-15).
+  - ch14 is about (−89.0°, +2.9°, +0.4°) with f 961 ± 8; ch18 is about (+89.4°, +4.3°, +0.8°) with f 962 ± 10. Every parameter passes the identifiability limits and moved by less than 1 σ from 13V.
+  - Held-out median errors are 18 px (ch14) and 16 px (ch18); the photo check is unchanged.
+  - It is still experimental: the lever arm is assumed zero, and the dataset is not complete.
 
 ## Unknown
 

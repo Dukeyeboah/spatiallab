@@ -98,7 +98,7 @@ Recording: Basel House, `2026-07-15-101012-003.xbin` (13,929,066,496 bytes), Lix
 
 ## Lab 13W: correspondence quality and dataset preparation
 
-- **Review tool:** the correspondence list now shows distance, height, image region, angle from the axis, the error under a reference Stage B set (Lab 13V's, or a loaded experiment's) and flags. Matches can be excluded or restored with a reason, marked verified or needs-fix, tagged with a scene, and corrected with their ids kept and the old values logged ([correspondences.md](correspondences.md#review-and-coverage-lab-13w)).
+- **Review tool:** the correspondence list now shows distance, height, image region, angle from the axis, the error under a reference Stage B set (the built-in baseline, Lab 13V's until 2026-10-15, or a loaded experiment's) and flags. Matches can be excluded or restored with a reason, marked verified or needs-fix, tagged with a scene, and corrected with their ids kept and the old values logged ([correspondences.md](correspondences.md#review-and-coverage-lab-13w)).
 - **Coverage today** (reliable = in fits, no warning): ch14 has 3 (#4, #12, #14) in 2 events, ch18 has 4 (#10, #13, #17, #19) in 4 events, against a 15–25 target. Every reliable match is in the centre third of the image and above the scanner. There is nothing in the outer third and nothing below the scanner. Most other points are flagged only for being closer than 3 m.
 - **To revisit:**
   - #1 (1633 ch14 shelf): its LiDAR point is 17° off-axis but its pixel about 6°. Re-pick the 3D point or exclude it.
@@ -110,6 +110,11 @@ Recording: Basel House, `2026-07-15-101012-003.xbin` (13,929,066,496 bytes), Lix
   - In zsh, `--exclude $IDS` passes one argument, because unquoted variables are not word-split. The CLI silently ran the baseline; unknown ids are now refused.
   - The CLI crashed printing a stage with no held-out error; missing values now print as "—".
 - **Dataset status:** the expanded real-world dataset is **not complete**. Additional matches will be collected and verified by hand; no automatic check replaces that review.
+- **Reviewed export and new baseline (2026-10-15):**
+  - **Corrections:** the user corrected #1, #5 and #16 (now #15), keeping their ids, and deleted #11. A 20 m ch18 roof match was added, and seven other matches were re-picked. All records pass the audit and their manifests.
+  - **Baseline:** Stage B on this export (`x_c69aede71834`) is the latest experimental baseline. Held-out medians are 18 px (ch14) and 16 px (ch18), against 28 and 35 px for 13V, and both cameras now agree on f ≈ 961. The parameters moved by less than 1 σ.
+  - **Independent checks:** the photo check is unchanged, and the three Lab 13U validation records improve slightly.
+  - **Remaining:** the ch18 #3 window sill is an outlier at 48 px held out. Close-range and sparse-LiDAR picks remain, and there is no coverage in the outer image. The dataset is still not complete.
 
 ## Open questions
 

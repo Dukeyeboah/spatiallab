@@ -7,8 +7,8 @@ import type { FisheyeModel } from "@/lib/fisheyeProjection";
  * Lab 13W: review and coverage of saved correspondences.
  *
  * Every number here is a diagnostic under a *reference* parameter set: the
- * Stage B set of a loaded experiment, or the Lab 13V Stage B result for the
- * built-in Basel House export. Both are experimental estimates, not a verified
+ * Stage B set of a loaded experiment, or the latest baseline Stage B result for
+ * the built-in Basel House export. Both are experimental estimates, not a verified
  * calibration. Flags never delete or change a record; only the user's own
  * "exclude" (and the geometric "wrong-side" / "too-close") leave a record out
  * of fits, exactly as in backend/camera_calibration.py `audit`.
@@ -17,17 +17,20 @@ import type { FisheyeModel } from "@/lib/fisheyeProjection";
 export type ReferenceCamera = { orientation: ProvisionalOrientation; model: FisheyeModel };
 export type ReviewReference = { label: string; cameras: Record<string, ReferenceCamera> };
 
-const LAB_13V_MODEL = (focalPx: number): FisheyeModel => ({ model: "equidistant", focalPx, cx: 1999.5, cy: 1449.5, validRadiusPx: 1400, status: "experimental-estimate" });
+const STAGE_B_MODEL = (focalPx: number): FisheyeModel => ({ model: "equidistant", focalPx, cx: 1999.5, cy: 1449.5, validRadiusPx: 1400, status: "experimental-estimate" });
 
-/** Lab 13V Stage B (experiment x_652068cf70da, docs/xgrids/calibration-experiments.md). Experimental. */
-export const LAB_13V_STAGE_B = {
+/**
+ * Latest experimental baseline: Stage B of experiment x_c69aede71834 (reviewed export of
+ * 2026-10-15, docs/xgrids/calibration-experiments.md). Lab 13V's x_652068cf70da is kept for comparison.
+ */
+export const BASELINE_STAGE_B = {
   datasetId: "builtin-basel-house",
   posesSha256: "ba621b73eab425e7b4ad641f9847b51a6b7488189290675bfd3dd3be23e7680d",
   reference: {
-    label: "Lab 13V Stage B (x_652068cf70da), experimental estimate",
+    label: "latest baseline, Stage B of x_c69aede71834 (reviewed 2026-10-15 export), experimental estimate",
     cameras: {
-      ch14: { orientation: { yawDeg: -88.274031, pitchDeg: 3.04465, rollDeg: -1.299551 }, model: LAB_13V_MODEL(926.771825) },
-      ch18: { orientation: { yawDeg: 89.364388, pitchDeg: 4.002105, rollDeg: 0.571641 }, model: LAB_13V_MODEL(955.155377) },
+      ch14: { orientation: { yawDeg: -88.953323, pitchDeg: 2.885573, rollDeg: 0.368913 }, model: STAGE_B_MODEL(961.439824) },
+      ch18: { orientation: { yawDeg: 89.4391, pitchDeg: 4.334841, rollDeg: 0.77412 }, model: STAGE_B_MODEL(961.532298) },
     },
   } satisfies ReviewReference,
 };
@@ -113,7 +116,8 @@ export function reviewRecords(records: Correspondence[], reference: ReviewRefere
     if (distanceM < 0.2) flags.push({ code: "too-close", severity: "exclude", reason: `LiDAR point ${distanceM.toFixed(2)} m from the scanner` });
     if (off !== null && off > FIELD_OF_VIEW_LIMIT_DEG)
       flags.push({ code: "wrong-side", severity: "exclude", reason: `the LiDAR point is ${off.toFixed(0)}° from the camera axis (behind the lens): probably picked on the wrong side` });
-    if (LAB_13V_REVIEW[r.id] && r.reviewStatus !== "verified" && !r.excludedFromFit)
+    const corrected = r.history?.some((h) => h.action === "pixel" || h.action === "lidar");
+    if (LAB_13V_REVIEW[r.id] && r.reviewStatus !== "verified" && !r.excludedFromFit && !corrected)
       flags.push({ code: "lab13v", severity: "warn", reason: LAB_13V_REVIEW[r.id] });
     if (r.reviewStatus === "needs-fix") flags.push({ code: "needs-fix", severity: "warn", reason: "you marked it 'needs fix'" });
     if (distanceM < CLOSE_RANGE_M && model)
@@ -211,13 +215,13 @@ export function coverage(reviews: RecordReview[]): ChannelCoverage[] {
   });
 }
 
-/** The reference used in the workspace: a loaded experiment's Stage B, else Lab 13V for the built-in export, else none. */
+/** The reference used in the workspace: a loaded experiment's Stage B, else the latest baseline for the built-in export, else none. */
 export function chooseReference(
   datasetId: string,
   posesSha256: string | null,
   experimentStageB: { label: string; cameras: Record<string, ReferenceCamera> } | null,
 ): ReviewReference | null {
   if (experimentStageB) return experimentStageB;
-  if (datasetId === LAB_13V_STAGE_B.datasetId && posesSha256 === LAB_13V_STAGE_B.posesSha256) return LAB_13V_STAGE_B.reference;
+  if (datasetId === BASELINE_STAGE_B.datasetId && posesSha256 === BASELINE_STAGE_B.posesSha256) return BASELINE_STAGE_B.reference;
   return null;
 }

@@ -148,7 +148,7 @@ An exported file is the input of the calibration experiments ([calibration-exper
 
 The saved list in the correspondence mode is now a **review list** (`components/calibration/CorrespondenceReview.tsx`, logic in `lib/correspondenceReview.ts`).
 
-**Reference parameters.** Errors and flags use, in order: the Stage B set of an experiment loaded in the *Calibration optimization* mode for this dataset and pose file; else the built-in Lab 13V Stage B result (experiment `x_652068cf70da`) for the Basel House export; else the provisional rotations with the assumed lens. The panel names the reference. All are experimental or assumed, never a verified calibration.
+**Reference parameters.** Errors and flags use, in order: the Stage B set of an experiment loaded in the *Calibration optimization* mode for this dataset and pose file; else the built-in latest experimental baseline (Stage B of experiment `x_c69aede71834`, which replaced Lab 13V's `x_652068cf70da` on 2026-10-15) for the Basel House export; else the provisional rotations with the assumed lens. The panel names the reference. All are experimental or assumed, never a verified calibration.
 
 **Per match:** event and channel, pixel and LAS XYZ, pick method, distance from the scanner and height relative to it, image region (centre / middle / outer = thirds of the 1400 px usable radius; "outside" beyond it), angle from the camera axis, reference error, quality, scene, notes, your review status, and whether it is in fits.
 
@@ -159,7 +159,7 @@ The saved list in the correspondence mode is now a **review list** (`components/
 | excluded from fits | user-excluded | you pressed *Exclude* (reason kept) |
 | | wrong-side | LiDAR point > 110° from the reference camera axis |
 | | too-close | < 0.2 m from the scanner |
-| warning (in fits, not counted as reliable) | Lab 13V list | #1, #5, #11, #16 of the 2026-10-15 export, until marked *verified* or excluded |
+| warning (in fits, not counted as reliable) | Lab 13V list | #1, #5, #11, #16 of the 2026-10-15 export, until marked *verified*, excluded, or corrected (a pixel or LiDAR change in the history) |
 | | needs-fix | your review status |
 | | close-range | < 3 m: a 5 cm lever arm moves the pixel by f·0.05/d |
 | | may-move | vehicle, person, curtain, plant … in the feature or notes |
