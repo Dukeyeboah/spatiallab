@@ -22,8 +22,14 @@ export const CHANNEL_COLOURS: Record<string, string> = { ch14: "#ff9f40", ch18: 
 
 export type ProvisionalCamera = { channel: string; orientation: ProvisionalOrientation; visible: boolean };
 
-/** "marker": orbit around the scanner position; "look": stand there and look along a provisional camera direction. */
-export type CalibrationViewRequest = { kind: "marker" } | { kind: "look"; channel: string };
+/**
+ * "marker": orbit around the scanner position; "look": stand there and look along a provisional camera direction;
+ * "ray": stand at `origin` (dataset coordinates) and look along `direction` (LiDAR frame), orbit target `distance` ahead.
+ */
+export type CalibrationViewRequest =
+  | { kind: "marker" }
+  | { kind: "look"; channel: string }
+  | { kind: "ray"; origin: Vec3; direction: Vec3; distance: number };
 
 type CalibrationLayersProps = {
   /** Scanner position of every event in the run, dataset coordinates (null = no pose). */
@@ -215,10 +221,16 @@ function ApplyCalibrationView({
   const serial = view?.serial ?? 0;
 
   useEffect(() => {
-    if (!view || !scanner || !controls) return;
-    const at = lidarPointToWorld(scanner.position);
+    if (!view || !controls) return;
     let position: THREE.Vector3;
     let target: THREE.Vector3;
+    if (view.request.kind === "ray") {
+      position = lidarPointToWorld(view.request.origin);
+      target = position.clone().addScaledVector(lidarPointToWorld(view.request.direction).normalize(), view.request.distance);
+      return applyView(position, target);
+    }
+    if (!scanner) return;
+    const at = lidarPointToWorld(scanner.position);
     if (view.request.kind === "marker") {
       // Keep the current viewing direction, at a fixed distance from the scanner.
       const direction = camera.getWorldDirection(new THREE.Vector3());
@@ -234,14 +246,19 @@ function ApplyCalibrationView({
       position = at;
       target = at.clone().add(worldForward);
     }
-    // Flush damping momentum first (see CameraFraming.applyView).
-    const damping = controls.enableDamping;
-    controls.enableDamping = false;
-    controls.update();
-    camera.position.copy(position);
-    controls.target.copy(target);
-    controls.update();
-    controls.enableDamping = damping;
+    applyView(position, target);
+
+    function applyView(position: THREE.Vector3, target: THREE.Vector3) {
+      if (!controls) return;
+      // Flush damping momentum first (see CameraFraming.applyView).
+      const damping = controls.enableDamping;
+      controls.enableDamping = false;
+      controls.update();
+      camera.position.copy(position);
+      controls.target.copy(target);
+      controls.update();
+      controls.enableDamping = damping;
+    }
     // Only a new request moves the camera, not a new event or slider value.
   }, [serial]);
 

@@ -14,7 +14,18 @@ import { lasBoxToDataset } from "@/lib/worldFrame";
 import { NEUTRAL_ORIENTATION, STARTING_HYPOTHESIS } from "@/lib/calibration";
 import { DEFAULT_HELPER_SHAPE, type HelperShape } from "@/lib/directionTest";
 import { DirectionTestSection } from "@/components/calibration/DirectionTestSection";
-import { eventReference, fetchRun, fetchRuns, positionAt, sha256Hex, type Run, type RunList } from "@/lib/xgrids";
+import { CorrespondenceSection } from "@/components/calibration/CorrespondenceSection";
+import { CorrespondenceLayers } from "@/components/calibration/CorrespondenceLayers";
+import { CorrespondenceViewer, type ImageMarker } from "@/components/calibration/CorrespondenceViewer";
+import { CHANNEL_COLOURS } from "@/components/calibration/CalibrationLayers";
+import { chosenPick, datasetToLas, useCorrespondenceLab } from "@/components/calibration/useCorrespondenceLab";
+import { predict } from "@/lib/correspondences";
+import { makeProjector, pixelRayDirection, projectCloud } from "@/lib/fisheyeProjection";
+import type { Correspondence } from "@/lib/correspondences";
+import { surfaceRangeAlongRay } from "@/lib/pointPicking";
+import { eventChannels, eventReference, fetchRun, fetchRuns, positionAt, sha256Hex, type Run, type RunList } from "@/lib/xgrids";
+
+type WorkspaceMode = "direction" | "correspondences";
 
 /** Built-in LiDAR datasets with poses: the run's poses.csv must be one of their files (checked by SHA-256). */
 const DATASETS = BUILTIN_DATASETS.filter((d) => d.poses?.status === "aligned");
@@ -36,6 +47,9 @@ function toDataset(p: Vec3 | null, offset: Vec3): Vec3 | null {
  * Lab 13S adds a manual visual extrinsics hypothesis test: per-channel
  * offsets relative to the scanner (default ch14 −90°, ch18 +90° yaw), drawn
  * as direction helpers. That is not calibration.
+ * Lab 13U adds a second mode: collecting image ↔ LiDAR correspondences
+ * (pixel in a fisheye image + LAS point), with a provisional projection
+ * (assumed intrinsics) for diagnostics.
  */
 export default function CameraCalibrationPage() {
   // --- LiDAR dataset -------------------------------------------------------
@@ -177,6 +191,67 @@ export default function CameraCalibrationPage() {
   const fullExtent = useMemo(() => (bounds && offset ? lasBoxToDataset(bounds.min, bounds.max, offset) : null), [bounds, offset]);
   const helperOrigin: Vec3 = dataset.preview && offset ? [-offset[0], -offset[1], -offset[2]] : [0, 0, 0];
 
+  // --- Lab 13U: image ↔ LiDAR correspondences ---------------------------------
+  const [mode, setMode] = useState<WorkspaceMode>("direction");
+  const lab = useCorrespondenceLab();
+  const [viewerSize, setViewerSize] = useState<"large" | "small">("large");
+  const correspondenceMode = mode === "correspondences" && !!run && !!event;
+  const picking = correspondenceMode && lab.pickArmed && frameMatches;
+  const labChannel = event && !eventChannels(event).includes(lab.channel) ? eventChannels(event)[0] : lab.channel;
+  const labImage = event?.images[labChannel] ?? null;
+  const labOrientation = cameras.find((c) => c.channel === labChannel)?.orientation ?? null;
+
+  // LAS ↔ the current cloud's dataset coordinates (picks may come from another budget of the same dataset).
+  const pending = lab.pendingPick?.datasetId === dataset.id ? lab.pendingPick : null;
+  const toView = (las: Vec3) => (offset ? toDataset(las, offset)! : null);
+  const pendingMarker =
+    pending && offset
+      ? {
+          nearest: toView(datasetToLas(pending.result.nearest.position, pending.offset))!,
+          refined: pending.result.plane.ok ? toView(datasetToLas(pending.result.plane.position, pending.offset)) : null,
+          chosen: toView(datasetToLas(chosenPick(pending.result, lab.preferRefined).position, pending.offset))!,
+        }
+      : null;
+  const savedMarkers =
+    offset && frameMatches
+      ? lab.records.flatMap((r, i) =>
+          r.datasetId === dataset.id && r.posesSha256 === datasetPoses?.sha256
+            ? [{ id: r.id, label: `#${i + 1}`, position: toView(r.lidar.las)!, active: r.sequence === event?.sequence && r.runId === run?.id }]
+            : [],
+        )
+      : [];
+  const offsets = useMemo(() => Object.fromEntries(cameras.map((c) => [c.channel, c.orientation])), [cameras]);
+  const imageMarkers: ImageMarker[] = lab.records.flatMap((r, i) => {
+    if (r.runId !== run?.id || r.imageFile !== labImage?.file) return [];
+    const p = lab.showPredictions ? predict(r, offsets, lab.model) : null;
+    return [{ id: r.id, label: `#${i + 1}`, u: r.pixel.u, v: r.pixel.v, predicted: p?.valid ? { u: p.u, v: p.v } : null, active: true }];
+  });
+  const overlay = useMemo(() => {
+    const pose = labImage?.pose;
+    if (!correspondenceMode || !lab.showOverlay || !cloudOfDataset || !frameMatches || !pose?.position || !pose.quaternion || !labOrientation)
+      return null;
+    const projector = makeProjector(pose.position, pose.quaternion, labOrientation, lab.model);
+    return projectCloud(cloudOfDataset.data.positions, cloudOfDataset.data.count, cloudOfDataset.offset, projector);
+  }, [correspondenceMode, lab.showOverlay, lab.model, cloudOfDataset, frameMatches, labImage, labOrientation]);
+
+  // Navigation aids (3D camera moves only; nothing is stored).
+  const lookAlongPixel = () => {
+    const pixel = lab.pendingPixel;
+    const pose = labImage?.pose;
+    if (!pixel || pixel.imageFile !== labImage?.file || !pose?.position || !pose.quaternion || !labOrientation || !offset || !frameMatches) return;
+    const direction = pixelRayDirection(pixel.u, pixel.v, pose.quaternion, labOrientation, lab.model).toArray() as Vec3;
+    const origin = toDataset(pose.position, offset)!;
+    // Orbit target at the scan surface along the ray, so zooming approaches the feature.
+    const range = cloudOfDataset ? surfaceRangeAlongRay(cloudOfDataset.data.positions, cloudOfDataset.data.count, origin, direction) : null;
+    requestView({ kind: "ray", origin, direction, distance: range ?? 3 });
+  };
+  const viewRecord = (r: Correspondence) => {
+    if (!offset || !frameMatches || r.datasetId !== dataset.id) return;
+    const p = r.scannerPose.position;
+    const d: Vec3 = [r.lidar.las[0] - p[0], r.lidar.las[1] - p[1], r.lidar.las[2] - p[2]];
+    requestView({ kind: "ray", origin: toDataset(p, offset)!, direction: d, distance: Math.hypot(...d) });
+  };
+
   return (
     <>
       <SpatialScene
@@ -190,16 +265,34 @@ export default function CameraCalibrationPage() {
         viewRequest={null}
         helperOrigin={helperOrigin}
         lidarLayers={
-          <CalibrationLayers
-            eventPositions={showEvents ? eventPositions : []}
-            selectedIndex={event?.index ?? -1}
-            onSelect={(index) => setEventIndex(run?.events.findIndex((e) => e.index === index) ?? 0)}
-            scanner={scanner}
-            cameras={cameras}
-            shape={helperShape}
-            showAxes={showAxes}
-            view={view}
-          />
+          <>
+            <CalibrationLayers
+              // While picking, a click must reach the point cloud, not select an event.
+              eventPositions={showEvents && !picking ? eventPositions : []}
+              selectedIndex={event?.index ?? -1}
+              onSelect={(index) => setEventIndex(run?.events.findIndex((e) => e.index === index) ?? 0)}
+              scanner={scanner}
+              // The direction-test helpers would clutter picking; "Look along" still uses the orientations.
+              cameras={correspondenceMode ? cameras.map((c) => ({ ...c, visible: false })) : cameras}
+              shape={helperShape}
+              showAxes={showAxes && !correspondenceMode}
+              view={view}
+            />
+            {correspondenceMode && (
+              <CorrespondenceLayers
+                cloud={cloudOfDataset?.data ?? null}
+                armed={picking}
+                options={lab.pickOptions}
+                onPick={(result) =>
+                  cloudOfDataset &&
+                  // The displayed cloud's budget: during a budget switch the previous one is still shown.
+                  lab.setPendingPick({ datasetId: dataset.id, budget: cloudOfDataset.key.split("|")[1], offset: cloudOfDataset.offset, result })
+                }
+                pending={pendingMarker}
+                saved={savedMarkers}
+              />
+            )}
+          </>
         }
       />
       <CalibrationPanel
@@ -238,6 +331,19 @@ export default function CameraCalibrationPage() {
         markerShown={!!scanner}
       >
         {run && event && (
+          <div className="section">
+            <b className="sub">Workspace mode</b>
+            <div className="segmented">
+              <button className={mode === "direction" ? "selected" : ""} onClick={() => (setMode("direction"), lab.setPickArmed(false))}>
+                Direction hypothesis
+              </button>
+              <button className={mode === "correspondences" ? "selected" : ""} onClick={() => setMode("correspondences")}>
+                Image ↔ LiDAR correspondences
+              </button>
+            </div>
+          </div>
+        )}
+        {run && event && mode === "direction" && (
           <DirectionTestSection
             run={run}
             event={event}
@@ -250,8 +356,61 @@ export default function CameraCalibrationPage() {
             onShowAxesChange={setShowAxes}
           />
         )}
+        {run && event && mode === "correspondences" && (
+          <CorrespondenceSection
+            lab={lab}
+            run={run}
+            event={event}
+            onEventIndexChange={setEventIndex}
+            dataset={{ id: dataset.id, name: dataset.name }}
+            posesSha256={frameMatches ? (datasetPoses?.sha256 ?? null) : null}
+            frameMatches={frameMatches}
+            budgetKey={budget.key}
+            cameras={cameras}
+            onCamerasChange={setCameras}
+            onLookAlongPixel={lookAlongPixel}
+            onViewRecord={viewRecord}
+          />
+        )}
       </CalibrationPanel>
-      {run && event && <CameraPairPanel run={run} event={event} size={pairSize} onSizeChange={setPairSize} />}
+      {run && event && mode === "direction" && <CameraPairPanel run={run} event={event} size={pairSize} onSizeChange={setPairSize} />}
+      {correspondenceMode && labImage?.file && (
+        <CorrespondenceViewer
+          key={`${run.id}/${labImage.file}`}
+          runId={run.id}
+          event={event}
+          channel={labChannel}
+          image={labImage}
+          markers={imageMarkers}
+          pending={lab.pendingPixel?.runId === run.id && lab.pendingPixel.imageFile === labImage.file ? lab.pendingPixel : null}
+          onPick={(u, v) => lab.setPendingPixel({ runId: run.id, imageFile: labImage.file!, u, v })}
+          overlay={overlay}
+          model={lab.showOverlay || lab.showPredictions ? lab.model : null}
+          size={viewerSize}
+          header={
+            <>
+              <div className="segmented">
+                {eventChannels(event).map((c) => (
+                  <button key={c} className={c === labChannel ? "selected" : ""} onClick={() => lab.setChannel(c)}>
+                    <span className="swatch" style={{ background: CHANNEL_COLOURS[c] }} /> {c}
+                  </button>
+                ))}
+              </div>
+              <span>
+                Sequence {event.sequence} · {labImage.timestampUtc.slice(11)} UTC · {labImage.file} · fisheye as recorded · click = pick, wheel =
+                zoom, drag = pan
+              </span>
+              <div className="segmented">
+                {(["large", "small"] as const).map((s) => (
+                  <button key={s} className={s === viewerSize ? "selected" : ""} onClick={() => setViewerSize(s)}>
+                    {s === "large" ? "Large" : "Small"}
+                  </button>
+                ))}
+              </div>
+            </>
+          }
+        />
+      )}
     </>
   );
 }

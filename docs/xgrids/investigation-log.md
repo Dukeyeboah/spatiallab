@@ -77,6 +77,15 @@ Recording: Basel House, `2026-07-15-101012-003.xbin` (13,929,066,496 bytes), Lix
 - **Operator position:** the operator appears at the left edge of ch14 and the right edge of ch18. That fits left- and right-looking cameras, whose edges both point backward.
 - **Images viewed:** small thumbnails (480 × 360) of a few test events were viewed to compare scenes. Nothing was saved to the repository.
 
+## Lab 13U: image ↔ LiDAR correspondence lab
+
+- **Tool:** a correspondence mode in `/camera-calibration` ([correspondences.md](correspondences.md)). Image pixels in original coordinates, LiDAR picks converted back to LAS in float64, records exported as `spatial-lab/xgrids-correspondences` v1.
+- **Validation records** (5M preview): 2497 ch14 roof eave end, 2497 ch14 gable apex, 3037 ch18 notice-board corner. Errors under the assumed model and ±90° offsets: 14.8, 104.3 and 180.3 px. A Python check reproduced every LAS point (an exact preview point + offset), scanner pose and predicted pixel.
+- **Picking on real data:** at building corners the plane refinement correctly refuses (rms 12 mm against a 6.6 mm limit at 6 cm), so most useful picks are nearest points, labelled approximate. Planar noise of the 5M preview: median about 6 mm at a 5 cm radius.
+- **Event 3877** is unsuitable: its ch14 view is a window about 0.5 m away, sparse in the LiDAR, where an unknown lever arm of 10 cm shifts the direction by about 11°.
+- **Model hint:** for the ch18 notice board a LiDAR-RGB render through the model is offset from the photo by about (−145, −60) px, matching the app's residual. +100° for ch18 makes that point worse (307.5 px). One point; not a conclusion.
+- **Images viewed:** crops and full frames for the three features were viewed to place the clicks; they stayed in `/tmp`, not in the repository.
+
 ## Open questions
 
 - Which physical camera is channel 14 and which is 18? Clue: `project.json` lists `left_main` and `right_main` at indices 0 and 2. Lab 13S found ch14 looks left, which suggests ch14 = `left_main`, but this is not confirmed.

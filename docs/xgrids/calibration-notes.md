@@ -23,6 +23,11 @@ What is and is not known about the camera geometry of the LixelKity K1 recording
 - **Directions:** relative to the scanner body (X forward, Y left, Z up), **ch14 looks left** and **ch18 looks right**, both roughly level. Best single offsets over 14 events: ch14 yaw −90°, ch18 yaw +100° (±10°), pitch 0° and roll 0° for both. Yaw + = right; see [calibration-workspace.md](calibration-workspace.md#direction-hypothesis-test-lab-13s) for conventions, method and caveats.
 - **Not a calibration:** an assumed equidistant lens, no lever arm, a 10° search grid and one recording.
 
+## Correspondences (Lab 13U)
+
+- `/camera-calibration` has an **Image ↔ LiDAR correspondences** mode that stores manually picked pixel (original 4000 × 3000 coordinates) ↔ LAS point pairs, with the event, image, exact timestamp and scanner pose. See [correspondences.md](correspondences.md).
+- Its projection overlay uses an **assumed** equidistant model (f = 750 px/rad, centre (1999.5, 1449.5)) and the provisional rotations. Its pixel errors are diagnostics, not calibration results. First three validation records: 14.8, 104.3 and 180.3 px.
+
 ## Unknown
 
 - **Extrinsics:** camera-to-scanner rotation and translation for each camera. The manifest says `camera_extrinsics = unknown`. Only the rough viewing directions are narrowed down (above).

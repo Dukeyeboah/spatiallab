@@ -32,7 +32,8 @@ The LiDAR side uses the built-in Basel House preview and its `poses.csv` in `pub
 | `GET /xgrids/runs/{run}/images/{file}` | backend | One JPEG, only if it is listed in that run's manifest and lies inside that run's folder (no paths from the URL are trusted). |
 | `lib/xgrids.ts` | frontend | Types and fetches for the above, `sha256Hex`, `positionAt` (the dataset's own poses at a time). |
 | `lib/calibration.ts` | frontend | Calibration state per camera (`unknown` for both) and the provisional orientation maths. |
-| `components/calibration/` | frontend | `CalibrationPanel` (left), `CameraPairPanel` (images), `CalibrationLayers` (marker, event dots, provisional arrows, camera moves) inside the LiDAR group of `SpatialScene`. |
+| `components/calibration/` | frontend | `CalibrationPanel` (left), `CameraPairPanel` (images), `CalibrationLayers` (marker, event dots, provisional arrows, camera moves) inside the LiDAR group of `SpatialScene`. Lab 13U: `useCorrespondenceLab` (state), `CorrespondenceSection` (panel), `CorrespondenceViewer` (image viewer), `CorrespondenceLayers` (3D picking and markers). |
+| `lib/correspondences.ts`, `lib/pointPicking.ts`, `lib/fisheyeProjection.ts` | frontend | Lab 13U: record schema, validation, storage and export; screen-space LiDAR picking with plane refinement; the assumed equidistant projection. |
 
 ## What the page shows
 
@@ -45,7 +46,9 @@ The LiDAR side uses the built-in Basel House preview and its `poses.csv` in `pub
 - **Marker.** The scanner body (red X forward, green Y left, blue Z up), a white halo, and all events of the run as small dots (the selected one white). Everything is drawn on top of the cloud, so it stays visible inside walls. The trajectory's green sphere marks where the scan started.
 - **Images.** ch14 and ch18 side by side, as recorded (fisheye, not undistorted), Hide / Small / Large, each linking to the full-resolution JPEG. Each caption checks that the file name encodes this event's sequence, channel and timestamp and that the decoded size equals the manifest's (✓ or ⚠).
 - **Calibration status.** Intrinsics and extrinsics for both channels: `unknown`.
+- **Workspace mode.** A switch at the top of the event section: **Direction hypothesis** (Lab 13S, below) or **Image ↔ LiDAR correspondences** (Lab 13U).
 - **Direction hypothesis test (Lab 13S).** Per-channel yaw / pitch / roll offsets with direction helpers, presets, a fixed test set and notes; see the next section. "Look along ch14/ch18" puts the viewer camera at the scanner and looks along that channel's helper, in a perspective view.
+- **Image ↔ LiDAR correspondences (Lab 13U).** A zoomable full-resolution image viewer, pixel picking in original coordinates, robust LiDAR picking, saved records with export/import, and an optional provisional fisheye overlay with pixel errors. The direction helpers and the camera-pair panel are hidden in this mode; the offsets set in the direction mode are the overlay's rotation. Details: [correspondences.md](correspondences.md).
 
 ## Direction hypothesis test (Lab 13S)
 
@@ -143,8 +146,8 @@ Planned additions, in order. The data model in `lib/calibration.ts` (`Intrinsics
 
 1. **Channel identity.** Which physical camera (`left_main` / `right_main` in `project.json`) is ch14 and which is ch18. The Lab 13S result (ch14 looks left) suggests ch14 = `left_main`; confirm it from device documentation or a capture with a known target.
 2. **Intrinsics.** A fisheye model per camera (e.g. Kannala–Brandt or OpenCV fisheye): focal length, principal point, distortion. From a checkerboard capture, the device's factory files if they exist, or structure-from-motion with a fisheye model.
-3. **2D–3D correspondences.** Pick image points and their LiDAR points for several events and store them with the event, channel and source.
+3. **2D–3D correspondences.** The tool exists (Lab 13U, [correspondences.md](correspondences.md)); three validation records so far. Next: 5–10 good, well-spread features per camera over several events, at ≥ 3 m.
 4. **Extrinsics.** Solve camera-to-scanner rotation and lever arm (PnP per event, then one rigid transform shared by all events), with timing offset as an optional unknown. Start from the Lab 13S directions (ch14 ≈ (−90°, 0°, 0°), ch18 ≈ (+100°, 0°, 0°)).
-5. **Reprojection diagnostics.** Project LiDAR points into the fisheye images, report per-point and per-event reprojection errors, and overlay them.
+5. **Reprojection diagnostics.** A provisional version exists (Lab 13U: assumed equidistant model, overlay and per-record errors). Still needed: the same with fitted intrinsics and extrinsics, per event and per camera.
 6. **Frustum and ray visualisation.** Draw the calibrated fisheye field of view and pixel rays in the scene in place of the provisional arrows.
 7. **Alignment diagnostics.** Compare across events and both cameras before any images are used as posed photographs for Gaussian training.
