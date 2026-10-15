@@ -18,6 +18,20 @@ What is and is not known about the camera geometry of the LixelKity K1 recording
   - Between samples the scanner moves up to 105 mm (median 32 mm) and turns up to 11.6° (median 1.2°).
   - Linear and SLERP interpolation assume smooth motion within those 100 ms.
 
+## Hardware reference photographs (October 2026)
+
+Photographs of the LixelKity K1 used for the Basel House capture show a **Livox MID-360** LiDAR and **two opposing imaging modules**. Each module has a prominent wide-angle lens and a smaller optical component next to it.
+
+This is **hardware reference evidence, not a calibration measurement**:
+- **Directions:** the opposing arrangement supports the provisional ≈ ±90° yaw hypotheses (Lab 13S) and the Lab 13V estimates (ch14 ≈ −88°, ch18 ≈ +89°).
+- **Lever arm:** the lens centres are visibly away from the scanner pose reference point (the SLAM body frame, probably the LiDAR/IMU). The zero lever arm used in Labs 13U and 13V is therefore a **temporary assumption**, not a property of the device.
+- **Not inferred from the photos:**
+  - camera translations, which need measurement or estimation;
+  - which module is ch14 and which is ch18;
+  - lens intrinsics (focal parameter, principal point, distortion);
+  - what the smaller optical components are.
+- **Needed later:** a camera-to-scanner translation per camera, either measured (manufacturer drawings or a factory calibration file, or a careful physical measurement related to the pose reference point) or estimated (a validated lever-arm stage with more, farther and better-spread correspondences). Until then, points closer than about 3 m carry the largest unknown error (a 5 cm offset shifts a point at 1 m by about 2.9°, ≈ 47 px at f ≈ 940).
+
 ## Provisional (Lab 13S, manual visual extrinsics hypothesis test)
 
 - **Directions:** relative to the scanner body (X forward, Y left, Z up), **ch14 looks left** and **ch18 looks right**, both roughly level. Best single offsets over 14 events: ch14 yaw −90°, ch18 yaw +100° (±10°), pitch 0° and roll 0° for both. Yaw + = right; see [calibration-workspace.md](calibration-workspace.md#direction-hypothesis-test-lab-13s) for conventions, method and caveats.

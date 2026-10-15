@@ -262,6 +262,8 @@ As a sanity check, f ≈ 940 px/rad with the image circle's radius of about 1425
 - One recording and 9 usable points per camera, more than half of them closer than 3 m.
 - Most picks are nearest-point picks on the preview cloud, approximate to its point spacing.
 - Camera centre = scanner position. The lever arm is unknown, and so is any pose or time offset.
+  - The hardware photographs show the two opposing lens modules physically away from the scanner reference point (next to a Livox MID-360). Zero is therefore only a temporary working assumption ([calibration-notes.md](calibration-notes.md#hardware-reference-photographs-october-2026)).
+  - The photographs support the ≈ ±90° directions. They are not measurements: no translation, channel assignment or intrinsics are taken from them.
 - The lens model has a single parameter. The principal point is assumed.
 - The optimisation never updates the app's presets or the Lab 13U projection. Sets are applied in the image view of this mode only.
 
@@ -269,4 +271,6 @@ As a sanity check, f ≈ 940 px/rad with the image circle's radius of about 1425
 
 - Re-pick #11. Add 10–20 points per camera at 4–15 m, spread over the whole image circle, including 800–1300 px from the centre.
 - Then try cx and cy (Stage C) and a lever arm, each with the same validation.
+  - The camera-to-scanner translation must eventually be **measured** (manufacturer data or factory calibration, or a physical measurement related to the pose reference point) or **estimated** in a validated stage.
+  - Compare an estimated lever arm with the hardware layout only as a plausibility check.
 - Only after that compare against a richer fisheye model, such as Kannala–Brandt with k1.
