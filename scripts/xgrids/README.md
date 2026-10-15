@@ -102,6 +102,16 @@ $PY scripts/xgrids/validate_splat_dataset.py $R/training/lab14a/NAME --correspon
 
 Options: `--layout forward12|centre|forward12+wing` (views per fisheye; the wing layout writes `masks/`), `--lever-arm x,y,z` (body frame, default 0 = assumption), `--cloud-radius`, `--voxel`, `--max-points`, `--eval-interval` (default 9 so both cameras are held out). Method, conventions, Basel results and the Lab 14B steps: [docs/xgrids/splat-dataset.md](../../docs/xgrids/splat-dataset.md).
 
+## Training package (Lab 14B, upload only after approval)
+
+```bash
+backend/.venv/bin/python scripts/xgrids/package_splat_training.py \
+    --dataset $R/training/lab14a/basel-5s-forward12 \
+    --out $R/training/lab14b/basel-xgrids --slug basel-xgrids --zip
+```
+
+Ships images + `sparse/0/*.bin` (1M LiDAR seeds) + Lab 10C `setup_env.sh` + `train_xgrids.sh` + `verify_lidar_init.py`. Do **not** use Lab 10C `train.sh` on this package (wrong world convention and eval interval). Preflight, prices and Pod commands: [docs/xgrids/splat-training.md](../../docs/xgrids/splat-training.md).
+
 ## Tests
 
 ```bash

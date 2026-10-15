@@ -144,6 +144,16 @@ Full write-up: [splat-dataset.md](splat-dataset.md). Data prepared only: no trai
   - **Main risk:** the zero lever arm. 5 cm is about 0.7° at 4 m.
   - **Second run:** with camera-pose refinement.
 
+## Lab 14B: training preflight (no GPU yet)
+
+Full write-up: [splat-training.md](splat-training.md).
+
+- **Scripts:** `train_xgrids.sh` + `verify_lidar_init.py` (Lab 10C `train.sh` is wrong for this package: y-down world remap and eval-interval 8).
+- **Init proof:** Nerfstudio 1.1.5 loads `points3D.bin` into splatfacto `seed_points` via the dataparser metadata; the Pod script refuses to train unless that path is verified. Local count: 1,000,000 points.
+- **Package:** `reconstruction/training/lab14b/basel-xgrids-r2.zip` (outside Git), not uploaded. Smoke stops for review; checkpoint/PLY/eval/logs pack into one result tarball; failed export/eval exits non-zero and blocks proceeding.
+- **Recommend:** 1× RTX 4090 24 GB Secure Cloud, 40 GB volume. RunPod page (2026-10-08): Community $0.34/h, Secure $0.89/h for 4090. Estimate ~$0.90–1.40 for smoke+quick on Secure 4090.
+- **Stopped** before renting or uploading, pending approval.
+
 ## Open questions
 
 - Which physical camera is channel 14 and which is 18? Clue: `project.json` lists `left_main` and `right_main` at indices 0 and 2. Lab 13S found ch14 looks left, which suggests ch14 = `left_main`, but this is not confirmed.
