@@ -58,12 +58,19 @@ XGRIDS camera extraction runs (xgrids_runs.py, Lab 13R; read-only, from SPATIAL_
     GET    /xgrids/runs/{run}                events: per channel image, timestamp, decoder status, scanner pose
     GET    /xgrids/runs/{run}/images/{file}  a JPEG listed in the run's manifest
 
+XGRIDS calibration experiments (camera_calibration.py, Lab 13V; stateless, nothing stored):
+    POST   /xgrids/calibration/audit         body = Lab 13U correspondence export (≤ 5 MB) -> audit + run cross-check
+           ?datasetId=&posesSha256=          optional expected identity (refused on mismatch)
+    POST   /xgrids/calibration/experiments   same body; ?exclude=id,id&include=id&sourceName= -> experiment JSON
+
 Only converted assets are served; original uploads never leave spatial-data/.
 Conversions run one at a time in a separate worker process; budgets added
 after a dataset was converted (e.g. 5M) are generated there at startup.
 """
 
+import asyncio
 import os
+import re
 import secrets
 import shutil
 from concurrent.futures import ProcessPoolExecutor
@@ -71,7 +78,7 @@ from contextlib import asynccontextmanager
 from multiprocessing import get_context
 from typing import Annotated, Optional
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
@@ -89,6 +96,10 @@ import xgrids_runs
 from splat_bounds import robust_bounds
 from catalog import CatalogError
 from converter import NORMALISED_POSES_FILE, backfill_budgets, convert_dataset
+try:
+    import camera_calibration
+except ImportError:  # SciPy missing: everything else still works
+    camera_calibration = None
 from uploads import (
     UploadError,
     infer_project_metadata,
@@ -516,6 +527,73 @@ def get_xgrids_image(run_id: str, filename: str) -> FileResponse:
     except xgrids_runs.RunError as error:
         raise HTTPException(422, str(error)) from error
     return FileResponse(path, media_type="image/jpeg")
+
+
+# ---------------------------------------------------------------------------
+# Lab 13V calibration experiments (camera_calibration.py). Stateless: the body is
+# the Lab 13U correspondence export's text (hashed as sent); nothing is stored.
+
+_calibration_lock = asyncio.Lock()
+
+
+async def _read_correspondences(request: Request, dataset_id: Optional[str], poses_sha256: Optional[str]) -> tuple[dict, list]:
+    if camera_calibration is None:
+        raise HTTPException(503, "Calibration needs SciPy: pip install -r backend/requirements.txt")
+    declared = request.headers.get("content-length")
+    if declared and declared.isdigit() and int(declared) > camera_calibration.MAX_INPUT_BYTES:
+        raise HTTPException(413, "Correspondence file larger than 5 MB.")
+    body = b""
+    async for chunk in request.stream():
+        body += chunk
+        if len(body) > camera_calibration.MAX_INPUT_BYTES:
+            raise HTTPException(413, "Correspondence file larger than 5 MB.")
+    try:
+        loaded = camera_calibration.load_correspondences(body.decode("utf-8"), dataset_id, poses_sha256)
+    except UnicodeDecodeError as error:
+        raise HTTPException(400, "The file is not UTF-8 text.") from error
+    except camera_calibration.CalibrationInputError as error:
+        raise HTTPException(422, f"Refused: {error}") from error
+    problems = []
+    if xgrids_runs.list_runs().get("configured"):
+        problems = camera_calibration.verify_against_runs(loaded["records"], xgrids_runs.read_run)
+    return loaded, problems
+
+
+def _id_list(value: Optional[str]) -> list:
+    ids = [item for item in (value or "").split(",") if item]
+    if len(ids) > 1000 or any(not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", item) for item in ids):
+        raise HTTPException(400, "Invalid record id list.")
+    return ids
+
+
+@app.post("/xgrids/calibration/audit")
+async def audit_correspondences(request: Request, datasetId: Optional[str] = None, posesSha256: Optional[str] = None) -> dict:
+    loaded, problems = await _read_correspondences(request, datasetId, posesSha256)
+    report = await run_in_threadpool(camera_calibration.audit, loaded["records"])
+    return camera_calibration._rounded({
+        "source": {"sha256": loaded["sourceSha256"], "dataset": loaded["dataset"], "exported": loaded["exported"]},
+        "rejected": loaded["rejected"], "runProblems": problems, "audit": report,
+    })
+
+
+@app.post("/xgrids/calibration/experiments")
+async def run_calibration_experiment(request: Request, datasetId: Optional[str] = None, posesSha256: Optional[str] = None,
+                                     exclude: Optional[str] = None, include: Optional[str] = None,
+                                     sourceName: Optional[str] = None) -> dict:
+    exclude_ids, include_ids = _id_list(exclude), _id_list(include)
+    loaded, problems = await _read_correspondences(request, datasetId, posesSha256)
+    if problems:
+        raise HTTPException(422, "Refused: records disagree with their extraction run: " +
+                            "; ".join(f"{p['id']}: {p['reason']}" for p in problems[:5]))
+    if sourceName is not None and not re.fullmatch(r"[\w .()-]{1,120}", sourceName):
+        sourceName = None
+
+    def work() -> dict:
+        report = camera_calibration.audit(loaded["records"])
+        return camera_calibration.run_experiment(loaded, report, exclude_ids=exclude_ids, include_ids=include_ids, source_name=sourceName)
+
+    async with _calibration_lock:  # one fit at a time; each takes seconds of CPU
+        return await run_in_threadpool(work)
 
 
 # ---------------------------------------------------------------------------

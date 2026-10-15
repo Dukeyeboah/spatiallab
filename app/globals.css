@@ -1232,3 +1232,78 @@ body {
 .pick-label {
   border: none;
 }
+
+/* Lab 13V: calibration optimization mode */
+.controls.calibration .optimization details {
+  font-size: 11px;
+}
+
+.controls.calibration .optimization summary {
+  cursor: pointer;
+  color: #ccc;
+}
+
+.controls.calibration .optimization button.primary {
+  border-color: #40e0ff;
+  background: #10404a;
+  color: #fff;
+}
+
+.controls.calibration .optimization .note.warn {
+  color: #fb6;
+}
+
+.controls.calibration .audit-list li.unused {
+  opacity: 0.55;
+  border-style: dashed;
+}
+
+.controls.calibration .corr-list li.outlier {
+  border-color: #c66;
+}
+
+.controls.calibration .flag {
+  font-size: 10px;
+  line-height: 1.35;
+}
+
+.controls.calibration .flag.exclude b {
+  color: #f88;
+}
+
+.controls.calibration .flag.review b {
+  color: #db3;
+}
+
+.controls.calibration .stats tr.selected td {
+  background: rgba(64, 224, 255, 0.12);
+}
+
+.controls.calibration .param-status {
+  font-size: 9px;
+  color: #999;
+}
+
+.controls.calibration .param-status.estimated {
+  color: #8fd18f;
+}
+
+.controls.calibration .param-status.weak {
+  color: #db3;
+}
+
+.controls.calibration .camera-result {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 4px;
+  border: 1px solid #333;
+  border-radius: 4px;
+}
+
+.controls.calibration .optimization ul.warnings {
+  margin: 0;
+  padding-left: 16px;
+  font-size: 11px;
+  color: #fb6;
+}

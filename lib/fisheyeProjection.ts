@@ -25,7 +25,8 @@ export type FisheyeModel = {
   cy: number;
   /** Beyond this distance from (cx, cy) the projection is treated as invalid. */
   validRadiusPx: number;
-  status: "assumed";
+  /** "experimental-estimate": fitted in a Lab 13V experiment, never a verified calibration. */
+  status: "assumed" | "experimental-estimate";
 };
 
 /** Lab 13S test values scaled to 4000 × 3000 (f = 30 px/rad at 160 × 120 → 750). Assumed. */

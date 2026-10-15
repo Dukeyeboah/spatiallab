@@ -114,7 +114,7 @@ export default nextConfig;
 
 ### 3.1 Local dataset backend (Lab 7A)
 
-Python 3.11+ (tested with 3.13), its own virtual environment, pinned in `backend/requirements.txt`: `fastapi 0.143.0`, `uvicorn[standard] 0.54.0`, `python-multipart 0.0.32`, `laspy 2.7.0`, `numpy 2.5.3`, `pillow 12.3.0` (Lab 8: decoding SOG WebP images to measure scenes). After pulling a lab that adds a requirement, run `pip install -r` again and restart the backend.
+Python 3.11+ (tested with 3.13), its own virtual environment, pinned in `backend/requirements.txt`: `fastapi 0.143.0`, `uvicorn[standard] 0.54.0`, `python-multipart 0.0.32`, `laspy 2.7.0`, `numpy 2.5.3`, `pillow 12.3.0` (Lab 8: decoding SOG WebP images to measure scenes), `scipy 1.18.1` (Lab 13V: calibration experiments; without it the backend still runs and `/xgrids/calibration/*` answers 503). After pulling a lab that adds a requirement, run `pip install -r` again and restart the backend.
 
 ```bash
 # once
@@ -159,7 +159,13 @@ components/
                            Pick in 3D (armed toggle), pick result (nearest vs ray ∩ plane, refusal reason), settings, feature/quality/
                            notes + Save, record list (Show/Edit/Delete), projection controls + error stats, export/import
     CorrespondenceViewer.tsx  Lab 13U image viewer (bottom right, Large/Small): wheel zoom about the cursor, drag pan, click = original
-                           pixel (OpenCV), size/file-name check before picking, numbered markers, predicted × + residual, overlay canvas
+                           pixel (OpenCV), size/file-name check before picking, numbered markers, predicted × + residual, overlay canvas;
+                           without onPick it only displays (Lab 13V)
+    useCalibrationOptimization.ts  Lab 13V state (memory only): source export text + parsed records, audit, include/exclude overrides,
+                           experiment, displayed parameter set, overlay toggle
+    CalibrationOptimizationSection.tsx  Lab 13V panel: source (browser records via buildExport, or a file, text kept unchanged), audit
+                           table with flags + use checkboxes, "Run optimization (experimental)", per-camera parameter (± 1σ, status) and
+                           training/held-out error tables, diagnostics, per-point errors, image check, warnings, export/import
     CorrespondenceLayers.tsx  Lab 13U in the LiDAR group: canvas pointer handler (armed only, ≤ 4 px = click) → pickPoint; saved (cyan, #n)
                            and pending (white nearest, green refined, yellow chosen) markers drawn on top
     CalibrationPanel.tsx   run picker, LiDAR settings, frame check, event selection + facts, scanner pose, marker check, calibration status
@@ -168,7 +174,8 @@ components/
                            presets, test-set chips + ◀/▶, per-event verdicts + notes, JSON export
     CameraPairPanel.tsx    ch14 + ch18 images from the backend, Hide/Small/Large, centre cross-hair, per-image file-name + size checks
 app/camera-calibration/page.tsx    Lab 13R client page: LiDAR preview + poses (SHA-256 frame check), runs, event, cross-check, provisional cameras;
-                                   Lab 13U: workspace mode (direction | correspondences), overlay (memoised projectCloud), record markers, ray views
+                                   Lab 13U: workspace mode (direction | correspondences), overlay (memoised projectCloud), record markers, ray views;
+                                   Lab 13V: third mode "optimization" (viewer display-only, markers + overlay from the chosen parameter set)
   Controls.tsx          plain HTML overlay panel (no UI library)
   GaussianShapePanel.tsx    learning panel: sigmas, angle, covariance matrix
   gaussian/                 Labs 6 and 7B only (own pages, own Canvas, own camera)
@@ -215,8 +222,10 @@ lib/
                         localStorage, export/import (schema "spatial-lab/xgrids-correspondences" v1), predict + error stats
   pointPicking.ts       Lab 13U: screen-space pick (front surface, nearest point), PCA plane refinement (ray ∩ plane, refusals),
                         surfaceRangeAlongRay, Jacobi eigen-solver
-  fisheyeProjection.ts  Lab 13U: assumed equidistant model (f, cx, cy, usable radius; status "assumed"), LAS → pixel projector,
-                        projectCloud (overlay), pixelRayDirection (inverse)
+  fisheyeProjection.ts  Lab 13U: assumed equidistant model (f, cx, cy, usable radius; status "assumed" | "experimental-estimate"),
+                        LAS → pixel projector, projectCloud (overlay), pixelRayDirection (inverse)
+  calibrationExperiment.ts  Lab 13V: audit/experiment types, POST calls (export text sent unchanged), experiment validation
+                        (schema "spatial-lab/xgrids-calibration-experiment" v1), predictWith(record, set camera)
   worldFrame.ts         the documented LAS → dataset → world chain: LIDAR_TO_THREE_ROTATION (Z-up → Y-up),
                         lasBoxToDataset, lidarBoxToWorld, lidarPointToWorld, describeVerticalAxis (up-axis check)
   importPlan.ts         folder/files → import plan: role detection, ambiguity flags, preview summary
@@ -234,10 +243,13 @@ scripts/convert_las.py  LAS → browser binary converter (CLI; uses backend/lida
 scripts/xgrids/         standalone XGRIDS .xbin tools (section 5.12; README.md lists commands and options)
   index_xbin.py         Lab 13P: indexer of the camera frames (no image decoding) → frames.csv, index-summary.json
   extract_frames.py     Lab 13Q: decodes chosen ch14 + ch18 pairs to JPEG via FFmpeg, interpolated scanner poses
-tests/xgrids/           unittest suite on synthetic XBAG-like files (synthetic_xbag.py builds them; no real data)
+  calibrate_cameras.py  Lab 13V: audit + experimental calibration of a correspondence export → audit/experiment JSON outside the repo
+tests/xgrids/           unittest suite on synthetic XBAG-like files (synthetic_xbag.py builds them; no real data);
+                        test_camera_calibration.py (Lab 13V, synthetic correspondences, needs SciPy)
 docs/xgrids/            xbag-format.md (format, verified vs provisional), investigation-log.md, calibration-notes.md,
                         calibration-workspace.md (Lab 13R: running, behaviour, assumptions, validation, remaining work),
-                        correspondences.md (Lab 13U: workflow, picking, schema, conventions, projection assumptions, validation)
+                        correspondences.md (Lab 13U: workflow, picking, schema, conventions, projection assumptions, validation),
+                        calibration-experiments.md (Lab 13V: concepts, method, commands, format, Basel results, limits)
 public/data/            built-in dataset: pointcloud-500k/1m/2m/5m.bin (gitignored), poses.csv
 public/datasets/basel-house/  Basel House preview: basel-preview-1m.bin + basel-preview-metadata.json,
                         basel-preview-5m.bin + basel-preview-5m-metadata.json (.bin gitignored, JSON tracked)
@@ -253,6 +265,9 @@ backend/                local FastAPI dataset service (Lab 7A)
   training_poses.py     Lab 10B: COLMAP pose job (preprocess → features → matching → mapper), progress from its logs, cancel, summary + preview
   xgrids_runs.py        Lab 13R: read-only access to extraction runs in SPATIAL_LAB_XGRIDS_DIR (strict manifest parse, events,
                         manifest-listed images only); GET /xgrids/runs, /xgrids/runs/{run}, /xgrids/runs/{run}/images/{file}
+  camera_calibration.py Lab 13V: correspondence loading/validation, run cross-check, audit flags, equidistant projection, Stage A/B
+                        robust fits (SciPy least_squares), leave-one-event-out, sensitivity, identifiability, experiment JSON, image
+                        check (NCC); POST /xgrids/calibration/audit, /xgrids/calibration/experiments (stateless, body ≤ 5 MB)
   training_package.py   Lab 10C: COLMAP binary reader, checks of the shipped files, lossless JPEG metadata removal, zip + manifest + SHA256SUMS
   cloud_training/       Lab 10C files copied into every package: README.md (cloud procedure), setup_env.sh, train.sh,
                         requirements-nerfstudio.lock.txt (239 pins, resolved as of Nerfstudio 1.1.5's release)
@@ -686,6 +701,15 @@ This is `Euler(roll, −pitch, −yaw, "ZYX")`. The offsets are never used as ca
 **Lab 13S result (Basel):** ch14 looks left (yaw −90°) and ch18 looks right (yaw +100°, ±10°); both are level with roll 0°. This is a direction-only hypothesis test; the method and caveats are in `docs/xgrids/calibration-workspace.md`.
 
 **Correspondences (Lab 13U; `docs/xgrids/correspondences.md`).** Image pixels are stored in original coordinates (OpenCV: u right, v down, (0, 0) = centre of the top-left pixel, image spans [−0.5, W − 0.5]); the viewer maps `screen = (pixel + 0.5)·scale + t`. LiDAR picks are made on dataset coordinates and stored as LAS: `LAS = dataset + coordinateCenter`, computed in float64; viewer or dataset coordinates are never saved. The provisional camera frame is X = optical axis, Y = image left, Z = image up, `v_body = R_off · v_cam`, camera at the scanner position (lever arm unknown). The diagnostic projection is an **assumed** equidistant fisheye: `u = cx + f·θ·(−y/s)`, `v = cy + f·θ·(−z/s)`, defaults f 750 px/rad, (1999.5, 1449.5), usable radius 1400 px. Points outside it have no pixel and no error.
+
+**Calibration experiments (Lab 13V; `docs/xgrids/calibration-experiments.md`).** `backend/camera_calibration.py` fits, per camera and with the conventions above (`R_las_camera = R(q) · R_off`, camera at the scanner position), first the rotation (Stage A, lens fixed) and then the rotation plus f (Stage B, cx/cy fixed). It uses `scipy.optimize.least_squares` (trf, bounded, soft-L1, 20 px scale) and validates by leaving one capture event out; the recommended set has the lowest held-out median. Inputs are Lab 13U exports, read only and identified by SHA-256; results are `spatial-lab/xgrids-calibration-experiment` v1 files outside Git. **Basel (experimental):**
+- f ≈ 927 (ch14) and 955 (ch18) px/rad instead of the assumed 750.
+- Held-out median errors 80 → 28 px (ch14) and 66 → 35 px (ch18).
+- Rotations: ch14 (−88.3°, 3.0°, −1.3°), ch18 (89.4°, 4.0°, 0.6°).
+- Better photo–LiDAR agreement on 42 of 48 photos not used for fitting.
+- Principal point, lever arm and distortion stay unknown.
+
+Nothing in the app applies these values automatically.
 
 ## 6. Rendering pipeline
 
@@ -1222,6 +1246,53 @@ Accept:
 - Show, Edit, Delete (cancel keeps), Export → Delete → Import restores and skips duplicates; wrong schema rejected.
 - Direction mode, helpers and the camera-pair panel unchanged; `tsc` and `next build` clean.
 
+### Lab 13V — Image-to-LiDAR camera calibration optimization (experimental)
+
+Constraints (from the brief):
+- Never call the result a verified or precise calibration. Fit only from valid projections; the old model's parameters are not manufacturer intrinsics.
+- Don't treat the scanner direction as the optical axis. Never optimise all unknowns at once. Never train on the validation event.
+- Don't edit the input export; keep results outside Git. Don't apply estimates to the main viewer or overwrite the provisional presets.
+- No XBAG processing, GPU work, Gaussian training, full-frame extraction or LiDAR-to-image texturing.
+
+Requirements (sections 4 and 5.12; details in `docs/xgrids/calibration-experiments.md`):
+- **Input:** a Lab 13U export.
+  - Check its schema and version, its dataset id and pose-file hash (format, plus the expected values when given), every record, and that ids are unique.
+  - Optionally cross-check each record against its run manifest.
+  - Hash the file's exact text.
+- **Audit before fitting:**
+  - per camera: counts, events, distances, image quadrants and radius rings, pick methods, duplicates;
+  - flags with reasons, *exclude* (wrong-side > 110° off-axis, < 0.2 m, unknown channel) or *review* (< 3 m with the 5 cm lever-arm effect in px, may-move keywords, image edge, quality, duplicate, and with the cloud: sparse LiDAR and occluded);
+  - the user can override each flag; nothing is deleted.
+- **Solver** (Python + SciPy, separate from React): Stage A fits the rotation, starting from ±90° with the lens fixed. Stage B adds f, starting from Stage A, with cx/cy fixed and no distortion terms. Both use a robust loss with bounds.
+  - Diagnostics: 1σ and correlation from a central-difference Jacobian, condition number, parameters at bounds, and the solver's status.
+- **Validation and sensitivity:**
+  - leave one event out, with skipped folds reported;
+  - outliers listed and kept;
+  - shifts with a ±5 cm lever arm and with other losses, four starting points, a strict subset, and a refit without outliers;
+  - identifiability limits label each parameter "estimated (experimental)" or "poorly constrained";
+  - the recommendation goes by the held-out median, never by training error.
+- **CLI:** `scripts/xgrids/calibrate_cameras.py` writes `audit-<sha8>.json` and `experiment-<id>.json` with mode "x", and refuses an output folder inside the repo. Optional `--image-check RUN`: NCC of LiDAR renders vs photos on up to 24 events not used for fitting.
+- **Backend:** stateless `POST /xgrids/calibration/audit` and `/xgrids/calibration/experiments`:
+  - body = the export text, at most 5 MB (413 when larger);
+  - query: datasetId, posesSha256, exclude, include, sourceName;
+  - 422 on an identity or run mismatch, 400 on bad id lists, 503 without SciPy;
+  - one fit at a time.
+- **UI:** a third mode, "Calibration optimization". It shows:
+  - the source (this browser's records, or a file);
+  - the audit list with flags and use checkboxes, and a clearly labelled run button;
+  - per camera, the provisional / Stage A / Stage B parameters with status, and the training and held-out errors;
+  - diagnostics, per-point errors, warnings and limitations, and the image check (from CLI experiments);
+  - a parameter-set switch for the image markers (○ measured, × projected, residual line) and the LiDAR overlay;
+  - experiment JSON export and import (schema, dataset and pose hash checked).
+
+  The image viewer is display-only here; presets, offsets and the Lab 13U projection are untouched.
+
+Accept:
+- `backend/.venv/bin/python -m unittest tests/xgrids/test_camera_calibration.py` passes (20 tests, synthetic data). With `SPATIAL_LAB_CORRESPONDENCES` set, the real export's recorded predictions are reproduced.
+- The real Basel export gives the same experiment id from the CLI and from the UI (`x_652068cf70da`).
+- In the UI: the audit shows #11 excluded; Stage B is recommended for both cameras; the image markers and overlay follow the chosen set; experiment import refuses a wrong schema and a wrong dataset; all three modes still work.
+- `tsc` and `next build` clean.
+
 ## 8. Pitfalls we hit and how they were fixed
 
 | Symptom | Cause | Fix |
@@ -1299,6 +1370,10 @@ Accept:
 | Image viewer zoom reset while hovering (Lab 13U) | the footer text wrapped, the viewer resized, and a resize re-fitted the image | fit only on load and on a layout switch; footer `nowrap` |
 | Close features don't match between image and LiDAR (event 3877) | at 0.5 m an unknown lever arm of 10 cm shifts the direction by about 11°, and the LiDAR there is sparse | use features ≥ 3 m away (lever-arm effect ≲ 2°) |
 | Hard to find a small feature in the 3D view | the 3D view is a pinhole perspective, the image a fisheye | "Look along this pixel's ray" (target at the LiDAR surface range); for validation, find the LAS point offline and project it with the scene camera (fov 60°, check against a saved `#n` label) |
+| Fitting the rotation alone made held-out errors worse (Lab 13V) | the assumed lens (f = 750) was wrong: every pixel's angle from the centre was 1.2–1.3 × the point's angle from the axis, and a rotation can't fix a scale error | look at the pattern of residuals before fitting; free f (Stage B) after the rotation, and judge by held-out error |
+| A "perfect" correspondence 172° behind the camera (Lab 13V) | the LiDAR pick landed on a façade across the courtyard (scanner's other side) | audit off-axis angle vs pixel angle before fitting; exclude, don't delete |
+| NumPy import fails with `IndexError` in a scratch script's code | a scratch file named `inspect.py` in the working folder shadowed the standard `inspect` module | never name scratch files after standard modules |
+| Photo-vs-LiDAR image check takes > 20 min (Lab 13V) | 242 events × 3 parameter sets, each selecting points from 5M again | select the points near the scanner once per image and cap at 24 evenly spaced events |
 | (Preventive) Calibration markers in the wrong place for another dataset | a run's scanner positions are LAS coordinates of *its* recording | place them only when the run's `posesSha256` equals the dataset's `poses.csv` hash; hide markers and viewer position otherwise |
 
 ## 9. Validation playbook
@@ -1371,6 +1446,13 @@ Techniques used:
   3. In the browser: zoom the image with synthetic `WheelEvent`s, click with screenshot coordinates, read the pick result and the records via `Runtime.evaluate`/localStorage. Fill inputs with the native setter. Capture the export by wrapping `URL.createObjectURL` and `HTMLAnchorElement.prototype.click`; import by assigning a `DataTransfer` file to the input; answer `window.confirm` by overriding it.
   4. Verify each saved record in Python: the LAS point is a preview point + `coordinateCenter` (0 mm), the pose equals the manifest row, and the projection reproduces the app's predicted pixel and statistics.
   5. Image crops for placing clicks stay in `/tmp`; don't embed photos showing people in reports.
+- **Calibration experiments** (Lab 13V):
+  1. `backend/.venv/bin/python -m unittest tests/xgrids/test_camera_calibration.py -v`, synthetic data with known parameters. Also run it with `SPATIAL_LAB_CORRESPONDENCES=<real export>` to reproduce the app's predictions.
+  2. Copy the export read-only (chmod 444) to `<recording>/reconstruction/xgrids/calibration/inputs/`. Run the CLI with `--poses`, `--runs-dir`, the 5M cloud and `--image-check interval-10s`. Read the audit before the fits.
+  3. Independent checks, on data the solver never saw: earlier validation records from another export, and the image check's NCC.
+  4. Test backend :8001 (with `SPATIAL_LAB_XGRIDS_DIR`) and a :3011 build, as for Lab 13U. Use `curl --data-binary @export.json` for the endpoints, including a wrong `datasetId` (422), a body over 5 MB (413) and a bad id list (400).
+  5. In the browser, load files by assigning a `DataTransfer` file to the input. To get the file text into the page without uploading it anywhere, serve a /tmp copy from a throwaway local HTTP server with CORS for :3011.
+  6. Check that the UI's experiment id equals the CLI's.
 - Note: FPS numbers from SwiftShader are meaningless; use real hardware for performance conclusions.
 
 ## 10. Adapting Spatial Lab for different web purposes
@@ -1393,7 +1475,7 @@ General scaling rules: raw LAS is never loaded directly; convert offline to a ty
 
 ## 11. Not built yet / roadmap
 
-Explicitly out of scope so far (each would be its own lab): cross-capture alignment (Lab 7C organises captures per property; registration into a property frame via `alignment`/`frame`, using control points/GNSS/CRS, is not built), meshes and photographs as capture representations (splat scenes exist since Lab 8, section 5.7), splat ↔ LiDAR registration, importing SuperSplat `settings.json` (authored cameras/annotations), splat editing/cropping, background import jobs for very large splat files, LAZ/E57 import, LiDAR intensity visualisation, pose animation, clipping/cropping, measurement tools, annotations/hotspots, full Gaussian splatting (Lab 6 projects one Gaussian; Lab 7B composites up to 1,000 with CPU projection, centre sorting and instanced quads; still missing: projection and sorting on the GPU for millions of Gaussians, tile-based rasterisation, spherical-harmonic colour for many Gaussians in our own renderer (Lab 9 evaluates it for one; Lab 8 views real trained scenes with the official viewer), training), running the cloud training and importing its PLY with provenance (Lab 10C stage 2; `output/` reserved), metric scale/gravity for photo reconstructions (e.g. from LiDAR), XGRIDS camera calibration (fisheye intrinsics and camera-to-scanner extrinsics; Lab 13Q only gives scanner poses at the image times, Lab 13R only inspects them, Lab 13S only narrows the viewing directions and Lab 13U only collects 2D–3D correspondences with provisional error diagnostics, see `docs/xgrids/calibration-notes.md`; next steps in `docs/xgrids/calibration-workspace.md`: channel identity, intrinsics, 2D–3D correspondences, extrinsics, reprojection errors, frustums/rays, alignment diagnostics) and decoding of the non-camera XBAG channels, video frame extraction, linking training projects to a property/capture, RAW/video import, editing/saving trained Gaussians (Lab 9 experiments are preview-only), inspecting a Gaussian among its neighbours, ordinary meshes, WebXR, LOD/octrees, workers.
+Explicitly out of scope so far (each would be its own lab): cross-capture alignment (Lab 7C organises captures per property; registration into a property frame via `alignment`/`frame`, using control points/GNSS/CRS, is not built), meshes and photographs as capture representations (splat scenes exist since Lab 8, section 5.7), splat ↔ LiDAR registration, importing SuperSplat `settings.json` (authored cameras/annotations), splat editing/cropping, background import jobs for very large splat files, LAZ/E57 import, LiDAR intensity visualisation, pose animation, clipping/cropping, measurement tools, annotations/hotspots, full Gaussian splatting (Lab 6 projects one Gaussian; Lab 7B composites up to 1,000 with CPU projection, centre sorting and instanced quads; still missing: projection and sorting on the GPU for millions of Gaussians, tile-based rasterisation, spherical-harmonic colour for many Gaussians in our own renderer (Lab 9 evaluates it for one; Lab 8 views real trained scenes with the official viewer), training), running the cloud training and importing its PLY with provenance (Lab 10C stage 2; `output/` reserved), metric scale/gravity for photo reconstructions (e.g. from LiDAR), XGRIDS camera calibration (fisheye intrinsics and camera-to-scanner extrinsics; Lab 13Q only gives scanner poses at the image times, Lab 13R only inspects them, Lab 13S only narrows the viewing directions, Lab 13U only collects 2D–3D correspondences with provisional error diagnostics, and Lab 13V only makes experimental estimates of the rotations and one focal parameter (principal point, lever arm, distortion and timing still unknown), see `docs/xgrids/calibration-notes.md`; next steps in `docs/xgrids/calibration-workspace.md`: channel identity, intrinsics, 2D–3D correspondences, extrinsics, reprojection errors, frustums/rays, alignment diagnostics) and decoding of the non-camera XBAG channels, video frame extraction, linking training projects to a property/capture, RAW/video import, editing/saving trained Gaussians (Lab 9 experiments are preview-only), inspecting a Gaussian among its neighbours, ordinary meshes, WebXR, LOD/octrees, workers.
 
 ## 12. Prompt templates
 
@@ -1453,3 +1535,4 @@ Explicitly out of scope so far (each would be its own lab): cross-capture alignm
 | 13S | Manual visual extrinsics hypothesis test on `/camera-calibration`. Per-channel direction helpers: origin, dashed ray, translucent cone with adjustable length and half-angle, up tick, label. Labelled scanner X/Y/Z gizmo. Yaw/pitch/roll per channel as slider + number (new convention: yaw + = right, pitch + = up, roll + = clockwise; defaults ch14 −90°, ch18 +90°), reset/mirror/swap, localStorage presets, Basel test set (3 seeds, 8 courtyard, 3 indoor) with chips and ◀/▶, per-event verdicts and notes, JSON export, image centre cross-hairs (`DirectionTestSection.tsx`, `lib/directionTest.ts`). Result: ch14 ≈ −90°, ch18 ≈ +100°, level, roll 0, across the set; sections 4, 5.12, 7, 8, 9, 11 |
 | 13S.1 | `docs/xgrids/provisional-camera-directions.json`: export of the provisional offsets, with R_offset = Rz(−yaw)·Ry(−pitch)·Rx(roll) (checked against `provisionalRotation`), quaternions, frame conventions incl. the OpenCV conversion, the test method and observations |
 | 13U | Image ↔ LiDAR correspondence mode on `/camera-calibration`: zoomable full-resolution image viewer with original-pixel picking (`CorrespondenceViewer`), armed screen-space LiDAR picking with front-surface filter, approximate nearest point and optional ray ∩ PCA-plane refinement with refusals (`lib/pointPicking.ts`, `CorrespondenceLayers`), LAS conversion in float64, provisional records with edit/delete in localStorage, JSON export/import with schema v1 and validation (`lib/correspondences.ts`), optional assumed equidistant overlay with per-record errors and mean/median/RMS (`lib/fisheyeProjection.ts`), "look along this pixel's ray" and "Show" camera moves; validated with 3 Basel features (14.8 / 104.3 / 180.3 px under the assumed model); `docs/xgrids/correspondences.md`; sections 4, 5.12, 7, 8, 9, 11 |
+| 13V | Experimental camera calibration: `backend/camera_calibration.py` (export validation + run cross-check, audit flags, Stage A rotation / Stage B rotation + f with SciPy robust least squares, leave-one-event-out, sensitivity, identifiability limits, deterministic experiment JSON v1, photo-vs-LiDAR NCC check), stateless `POST /xgrids/calibration/audit` + `/experiments`, `scripts/xgrids/calibrate_cameras.py`, `tests/xgrids/test_camera_calibration.py` (20 tests), `scipy 1.18.1`; third mode "Calibration optimization" on `/camera-calibration` (`CalibrationOptimizationSection`, `useCalibrationOptimization`, `lib/calibrationExperiment.ts`; display-only viewer, presets untouched); Basel: f ≈ 927 / 955 px/rad, held-out median 80 → 28 px (ch14) and 66 → 35 px (ch18), better on 42 of 48 unseen photos; principal point, lever arm and distortion still unknown; `docs/xgrids/calibration-experiments.md`; sections 3.1, 4, 5.12, 7, 8, 9, 11 |

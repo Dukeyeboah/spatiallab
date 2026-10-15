@@ -133,3 +133,7 @@ All: mean 99.8, median 104.3, RMS 120.5 px (ch14: 59.5 / 59.5 / 74.5; ch18: 180.
 - **Timing:** the scanner pose is interpolated at the image timestamp; exposure timing and rolling shutter are unknown.
 - **Storage is per browser.** Export to keep records; clearing site data deletes them.
 - **No automatic registration**, no nonlinear calibration and no Gaussian training here (out of scope for Lab 13U).
+
+## Using an export for calibration (Lab 13V)
+
+An exported file is the input of the calibration experiments ([calibration-experiments.md](calibration-experiments.md)): load it in the *Calibration optimization* mode or pass it to `scripts/xgrids/calibrate_cameras.py`. The file is only read; its SHA-256 identifies it in every result. Keep a read-only copy outside Git (e.g. `<recording>/reconstruction/xgrids/calibration/inputs/`). The audit flags points that are behind the camera, closer than 3 m, on things that may move, near the image edge, or (with the point cloud) isolated or occluded; it never deletes them.

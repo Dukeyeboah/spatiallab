@@ -1,6 +1,6 @@
 # Camera calibration workspace (Lab 13R, phase 1)
 
-A separate page, `/camera-calibration` (Lab 13R, extended by the direction test of Lab 13S), for inspecting the XGRIDS camera pairs against the LiDAR scan. It shows one capture event at a time: both fisheye images, their exact timestamps, and the scanner pose at that moment as a marker in the point cloud. **It is not a calibration.** Camera intrinsics and extrinsics stay unknown (see [calibration-notes.md](calibration-notes.md)); the orientation sliders are a labelled experiment.
+A separate page, `/camera-calibration` (Lab 13R, extended by the direction test of Lab 13S, the correspondences of Lab 13U and the calibration optimization of Lab 13V), for inspecting the XGRIDS camera pairs against the LiDAR scan. It shows one capture event at a time: both fisheye images, their exact timestamps, and the scanner pose at that moment as a marker in the point cloud. **It is not a calibration.** Camera intrinsics and extrinsics stay unknown (see [calibration-notes.md](calibration-notes.md)); the orientation sliders are a labelled experiment.
 
 The main LiDAR viewer (`/`) is unchanged apart from a link to this page.
 
@@ -34,6 +34,8 @@ The LiDAR side uses the built-in Basel House preview and its `poses.csv` in `pub
 | `lib/calibration.ts` | frontend | Calibration state per camera (`unknown` for both) and the provisional orientation maths. |
 | `components/calibration/` | frontend | `CalibrationPanel` (left), `CameraPairPanel` (images), `CalibrationLayers` (marker, event dots, provisional arrows, camera moves) inside the LiDAR group of `SpatialScene`. Lab 13U: `useCorrespondenceLab` (state), `CorrespondenceSection` (panel), `CorrespondenceViewer` (image viewer), `CorrespondenceLayers` (3D picking and markers). |
 | `lib/correspondences.ts`, `lib/pointPicking.ts`, `lib/fisheyeProjection.ts` | frontend | Lab 13U: record schema, validation, storage and export; screen-space LiDAR picking with plane refinement; the assumed equidistant projection. |
+| `backend/camera_calibration.py`, `POST /xgrids/calibration/audit`, `POST /xgrids/calibration/experiments` | backend | Lab 13V: audit and experimental calibration of a correspondence export (stateless, SciPy). See [calibration-experiments.md](calibration-experiments.md). |
+| `lib/calibrationExperiment.ts`, `CalibrationOptimizationSection`, `useCalibrationOptimization` | frontend | Lab 13V: the "Calibration optimization" mode: source, audit with include/exclude, run, per-camera parameter and error tables, image markers and overlay per parameter set, experiment export/import. |
 
 ## What the page shows
 
@@ -146,8 +148,8 @@ Planned additions, in order. The data model in `lib/calibration.ts` (`Intrinsics
 
 1. **Channel identity.** Which physical camera (`left_main` / `right_main` in `project.json`) is ch14 and which is ch18. The Lab 13S result (ch14 looks left) suggests ch14 = `left_main`; confirm it from device documentation or a capture with a known target.
 2. **Intrinsics.** A fisheye model per camera (e.g. Kannala–Brandt or OpenCV fisheye): focal length, principal point, distortion. From a checkerboard capture, the device's factory files if they exist, or structure-from-motion with a fisheye model.
-3. **2D–3D correspondences.** The tool exists (Lab 13U, [correspondences.md](correspondences.md)); three validation records so far. Next: 5–10 good, well-spread features per camera over several events, at ≥ 3 m.
-4. **Extrinsics.** Solve camera-to-scanner rotation and lever arm (PnP per event, then one rigid transform shared by all events), with timing offset as an optional unknown. Start from the Lab 13S directions (ch14 ≈ (−90°, 0°, 0°), ch18 ≈ (+100°, 0°, 0°)).
-5. **Reprojection diagnostics.** A provisional version exists (Lab 13U: assumed equidistant model, overlay and per-record errors). Still needed: the same with fitted intrinsics and extrinsics, per event and per camera.
+3. **2D–3D correspondences.** The tool exists (Lab 13U, [correspondences.md](correspondences.md)); 19 records over 8 events were used in Lab 13V. Next: 10–20 more per camera at 4–15 m, spread over the whole image circle (also 800–1300 px from the centre), and re-pick the excluded #11.
+4. **Extrinsics.** Lab 13V estimates the rotations and one focal parameter (experimental, [calibration-experiments.md](calibration-experiments.md)). Still to do: principal point, lever arm and timing offset, each added as its own validated stage, once the farther, wider-spread points exist.
+5. **Reprojection diagnostics.** Lab 13V shows measured vs projected pixels and the LiDAR overlay for the provisional and fitted sets, with training and held-out errors per camera. Still needed: per-event diagnostics with a richer lens model.
 6. **Frustum and ray visualisation.** Draw the calibrated fisheye field of view and pixel rays in the scene in place of the provisional arrows.
 7. **Alignment diagnostics.** Compare across events and both cameras before any images are used as posed photographs for Gaussian training.

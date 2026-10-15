@@ -8,6 +8,7 @@ Standalone Python tools for raw XGRIDS LixelKity K1 recordings (`.xbin`, contain
 |---|---|---|
 | `index_xbin.py` | finds and decodes the metadata of every camera image (no image decoding) | `reconstruction/xgrids/metadata/frames.csv`, `index-summary.json` |
 | `extract_frames.py` | decodes chosen synchronised pairs to JPEG, using `frames.csv`, with interpolated scanner poses | `reconstruction/xgrids/images/<run>/*.jpg`, `manifest.csv`, `extraction-summary.json` |
+| `calibrate_cameras.py` | Lab 13V: audits a Lab 13U correspondence export and runs an **experimental** calibration (rotation, then + one focal parameter) with leave-one-event-out validation; needs NumPy + SciPy (`backend/.venv`) | `--out` (required, outside the repo): `audit-<sha8>.json`, `experiment-<id>.json`, never overwritten |
 
 The recording, LAS and `poses.csv` are only ever opened read-only.
 
@@ -66,10 +67,25 @@ One row per image:
 
 The app's `/camera-calibration` page (Lab 13R) reads these runs through the local backend: start it with `SPATIAL_LAB_XGRIDS_DIR=<recording>/reconstruction/xgrids/images`. See [docs/xgrids/calibration-workspace.md](../../docs/xgrids/calibration-workspace.md).
 
+## Calibration experiments
+
+```bash
+REC=<recording>/reconstruction/xgrids
+backend/.venv/bin/python scripts/xgrids/calibrate_cameras.py "$REC/calibration/inputs/correspondences-….json" \
+    --out "$REC/calibration/experiments" --dataset-id builtin-basel-house \
+    --poses public/datasets/basel-house/poses.csv --runs-dir "$REC/images" \
+    --cloud-bin public/datasets/basel-house/basel-preview-5m.bin \
+    --cloud-metadata public/datasets/basel-house/basel-preview-5m-metadata.json \
+    [--image-check interval-10s] [--exclude ID …] [--include ID …] [--audit-only]
+```
+
+Method, output format and the Basel results: [docs/xgrids/calibration-experiments.md](../../docs/xgrids/calibration-experiments.md).
+
 ## Tests
 
 ```bash
-python3 -m unittest discover tests/xgrids -v
+python3 -m unittest discover tests/xgrids -v                                   # XBAG tools (calibration tests skip without SciPy)
+backend/.venv/bin/python -m unittest tests/xgrids/test_camera_calibration.py -v  # Lab 13V, synthetic data
 ```
 
 The tests use synthetic XBAG-like files built by `tests/xgrids/synthetic_xbag.py`, with no real scans or photographs. They cover:

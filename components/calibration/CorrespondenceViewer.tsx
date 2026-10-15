@@ -17,7 +17,8 @@ type CorrespondenceViewerProps = {
   image: RunImage;
   markers: ImageMarker[];
   pending: { u: number; v: number } | null;
-  onPick: (u: number, v: number) => void;
+  /** Without it the viewer only displays (Lab 13V optimization mode). */
+  onPick?: (u: number, v: number) => void;
   /** Projected LiDAR points: (u, v, range m) triplets, original pixels. */
   overlay: Float32Array | null;
   /** Drawn as the usable circle + principal point when set. */
@@ -47,7 +48,7 @@ export function CorrespondenceViewer({ runId, event, channel, image, markers, pe
 
   const nameOk = imageNameMatches(event, channel, image);
   const sizeOk = !!natural && natural.width === image.width && natural.height === image.height;
-  const canPick = nameOk && sizeOk;
+  const canPick = nameOk && sizeOk && !!onPick;
 
   useEffect(() => {
     const element = box.current;
@@ -165,7 +166,7 @@ export function CorrespondenceViewer({ runId, event, channel, image, markers, pe
         onPointerUp={(e) => {
           const d = drag.current;
           drag.current = null;
-          if (!d || d.moved || !view || !canPick || !natural) return;
+          if (!d || d.moved || !view || !canPick || !natural || !onPick) return;
           const q = local(e);
           const p = toPixel(q.x, q.y, view);
           if (p.u < -0.5 || p.v < -0.5 || p.u > natural.width - 0.5 || p.v > natural.height - 0.5) return;
@@ -233,13 +234,13 @@ export function CorrespondenceViewer({ runId, event, channel, image, markers, pe
             : "—"}
           {view && ` · zoom ${Math.round(view.scale * 100)}%`}
         </span>
-        <span className={canPick ? "check ok" : natural ? "check bad" : "check"}>
+        <span className={nameOk && sizeOk ? "check ok" : natural ? "check bad" : "check"}>
           {!nameOk
             ? "⚠ file name doesn't match this event: picking disabled"
             : !natural
               ? "loading full resolution…"
               : sizeOk
-                ? `✓ ${natural.width}×${natural.height} as recorded`
+                ? `✓ ${natural.width}×${natural.height} as recorded${onPick ? "" : " · display only"}`
                 : `⚠ ${natural.width}×${natural.height}, expected ${image.width}×${image.height}: picking disabled`}
         </span>
         <span className="zoom-buttons">

@@ -1,6 +1,6 @@
 # XGRIDS camera calibration notes
 
-What is and is not known about the camera geometry of the LixelKity K1 recording. **No calibration has been done yet.** The extracted images can't be used as posed photographs for Gaussian training until it is.
+What is and is not known about the camera geometry of the LixelKity K1 recording. **No verified calibration exists.** Lab 13V made first *experimental* estimates of the rotations and one focal parameter (below). The extracted images can't be used as posed photographs for Gaussian training until a validated calibration exists.
 
 ## Known
 
@@ -28,10 +28,19 @@ What is and is not known about the camera geometry of the LixelKity K1 recording
 - `/camera-calibration` has an **Image ↔ LiDAR correspondences** mode that stores manually picked pixel (original 4000 × 3000 coordinates) ↔ LAS point pairs, with the event, image, exact timestamp and scanner pose. See [correspondences.md](correspondences.md).
 - Its projection overlay uses an **assumed** equidistant model (f = 750 px/rad, centre (1999.5, 1449.5)) and the provisional rotations. Its pixel errors are diagnostics, not calibration results. First three validation records: 14.8, 104.3 and 180.3 px.
 
+## Experimental estimates (Lab 13V)
+
+From 19 correspondences (9 usable per camera, 8 events), fitted with robust least squares and validated by leaving one event out. Full method and numbers: [calibration-experiments.md](calibration-experiments.md).
+
+- **Focal parameter:** f ≈ 930–960 px/rad for both cameras (ch14 927 ± 41, ch18 955 ± 15), not the assumed 750. Held-out median errors fall from 80 → 28 px (ch14) and 66 → 35 px (ch18). On 24 photos per camera that no point came from, the LiDAR lines up better with the photo in 20/24 (ch14) and 22/24 (ch18).
+- **Rotations** (yaw, pitch, roll): ch18 ≈ (+89.4°, +4.0°, +0.6°), each passing the identifiability limits; ch14 ≈ (−88.3°, +3.0°, −1.3°), with roll and f poorly constrained.
+- **Still assumed or unknown:** principal point (image centre assumed), lever arm (0 assumed), distortion beyond equidistant, timing. Not identifiable from these points, most of which are closer than 3 m.
+- Nothing in the app uses these values automatically; the Lab 13U presets are unchanged.
+
 ## Unknown
 
-- **Extrinsics:** camera-to-scanner rotation and translation for each camera. The manifest says `camera_extrinsics = unknown`. Only the rough viewing directions are narrowed down (above).
-- **Intrinsics:** the fisheye model and its parameters (focal length, principal point, distortion) for each camera.
+- **Extrinsics:** camera-to-scanner translation (lever arm) for each camera; the rotation has only experimental estimates (above). The manifest says `camera_extrinsics = unknown`.
+- **Intrinsics:** principal point and distortion for each camera; the focal parameter has only an experimental estimate (above).
 - **Timing:**
   - whether image timestamps mark the start, middle or end of the exposure;
   - exposure time, and rolling-shutter readout, if any;

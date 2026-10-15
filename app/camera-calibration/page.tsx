@@ -24,8 +24,11 @@ import { makeProjector, pixelRayDirection, projectCloud } from "@/lib/fisheyePro
 import type { Correspondence } from "@/lib/correspondences";
 import { surfaceRangeAlongRay } from "@/lib/pointPicking";
 import { eventChannels, eventReference, fetchRun, fetchRuns, positionAt, sha256Hex, type Run, type RunList } from "@/lib/xgrids";
+import { CalibrationOptimizationSection } from "@/components/calibration/CalibrationOptimizationSection";
+import { useCalibrationOptimization } from "@/components/calibration/useCalibrationOptimization";
+import { predictWith, setLabel } from "@/lib/calibrationExperiment";
 
-type WorkspaceMode = "direction" | "correspondences";
+type WorkspaceMode = "direction" | "correspondences" | "optimization";
 
 /** Built-in LiDAR datasets with poses: the run's poses.csv must be one of their files (checked by SHA-256). */
 const DATASETS = BUILTIN_DATASETS.filter((d) => d.poses?.status === "aligned");
@@ -50,6 +53,9 @@ function toDataset(p: Vec3 | null, offset: Vec3): Vec3 | null {
  * Lab 13U adds a second mode: collecting image ↔ LiDAR correspondences
  * (pixel in a fisheye image + LAS point), with a provisional projection
  * (assumed intrinsics) for diagnostics.
+ * Lab 13V adds a third mode: an experimental calibration of the rotations
+ * and one focal parameter from those correspondences (local backend, SciPy),
+ * shown in the image viewer only; presets and offsets are never changed.
  */
 export default function CameraCalibrationPage() {
   // --- LiDAR dataset -------------------------------------------------------
@@ -201,6 +207,11 @@ export default function CameraCalibrationPage() {
   const labImage = event?.images[labChannel] ?? null;
   const labOrientation = cameras.find((c) => c.channel === labChannel)?.orientation ?? null;
 
+  // --- Lab 13V: calibration optimization (display only) ------------------------
+  const opt = useCalibrationOptimization();
+  const optimizationMode = mode === "optimization" && !!run && !!event;
+  const optCamera = opt.cameras?.[labChannel] ?? null;
+
   // LAS ↔ the current cloud's dataset coordinates (picks may come from another budget of the same dataset).
   const pending = lab.pendingPick?.datasetId === dataset.id ? lab.pendingPick : null;
   const toView = (las: Vec3) => (offset ? toDataset(las, offset)! : null);
@@ -221,18 +232,32 @@ export default function CameraCalibrationPage() {
         )
       : [];
   const offsets = useMemo(() => Object.fromEntries(cameras.map((c) => [c.channel, c.orientation])), [cameras]);
-  const imageMarkers: ImageMarker[] = lab.records.flatMap((r, i) => {
-    if (r.runId !== run?.id || r.imageFile !== labImage?.file) return [];
-    const p = lab.showPredictions ? predict(r, offsets, lab.model) : null;
-    return [{ id: r.id, label: `#${i + 1}`, u: r.pixel.u, v: r.pixel.v, predicted: p?.valid ? { u: p.u, v: p.v } : null, active: true }];
-  });
+  const imageMarkers: ImageMarker[] = optimizationMode
+    ? (opt.source?.records ?? []).flatMap((r, i) => {
+        if (r.runId !== run?.id || r.imageFile !== labImage?.file) return [];
+        const p = opt.experiment ? predictWith(r, optCamera ?? undefined) : null;
+        const used = !opt.experiment || opt.experiment.cameras[r.channel]?.records.includes(r.id);
+        return [{ id: r.id, label: `#${i + 1}`, u: r.pixel.u, v: r.pixel.v, predicted: p?.valid ? { u: p.u, v: p.v } : null, active: !!used }];
+      })
+    : lab.records.flatMap((r, i) => {
+        if (r.runId !== run?.id || r.imageFile !== labImage?.file) return [];
+        const p = lab.showPredictions ? predict(r, offsets, lab.model) : null;
+        return [{ id: r.id, label: `#${i + 1}`, u: r.pixel.u, v: r.pixel.v, predicted: p?.valid ? { u: p.u, v: p.v } : null, active: true }];
+      });
+  const overlayCamera = correspondenceMode
+    ? lab.showOverlay && labOrientation
+      ? { orientation: labOrientation, model: lab.model }
+      : null
+    : optimizationMode && opt.showOverlay && optCamera
+      ? optCamera
+      : null;
   const overlay = useMemo(() => {
     const pose = labImage?.pose;
-    if (!correspondenceMode || !lab.showOverlay || !cloudOfDataset || !frameMatches || !pose?.position || !pose.quaternion || !labOrientation)
-      return null;
-    const projector = makeProjector(pose.position, pose.quaternion, labOrientation, lab.model);
+    if (!overlayCamera || !cloudOfDataset || !frameMatches || !pose?.position || !pose.quaternion) return null;
+    const projector = makeProjector(pose.position, pose.quaternion, overlayCamera.orientation, overlayCamera.model);
     return projectCloud(cloudOfDataset.data.positions, cloudOfDataset.data.count, cloudOfDataset.offset, projector);
-  }, [correspondenceMode, lab.showOverlay, lab.model, cloudOfDataset, frameMatches, labImage, labOrientation]);
+    // overlayCamera is rebuilt every render; its contents are the real dependencies.
+  }, [overlayCamera?.orientation, overlayCamera?.model, cloudOfDataset, frameMatches, labImage]);
 
   // Navigation aids (3D camera moves only; nothing is stored).
   const lookAlongPixel = () => {
@@ -340,6 +365,9 @@ export default function CameraCalibrationPage() {
               <button className={mode === "correspondences" ? "selected" : ""} onClick={() => setMode("correspondences")}>
                 Image ↔ LiDAR correspondences
               </button>
+              <button className={mode === "optimization" ? "selected" : ""} onClick={() => (setMode("optimization"), lab.setPickArmed(false))}>
+                Calibration optimization
+              </button>
             </div>
           </div>
         )}
@@ -372,9 +400,23 @@ export default function CameraCalibrationPage() {
             onViewRecord={viewRecord}
           />
         )}
+        {run && event && mode === "optimization" && (
+          <CalibrationOptimizationSection
+            opt={opt}
+            run={run}
+            onEventIndexChange={setEventIndex}
+            onChannelChange={lab.setChannel}
+            onViewRecord={viewRecord}
+            dataset={{ id: dataset.id, name: dataset.name }}
+            posesSha256={frameMatches ? (datasetPoses?.sha256 ?? null) : null}
+            browserRecords={lab.records}
+            model={lab.model}
+            offsets={offsets}
+          />
+        )}
       </CalibrationPanel>
       {run && event && mode === "direction" && <CameraPairPanel run={run} event={event} size={pairSize} onSizeChange={setPairSize} />}
-      {correspondenceMode && labImage?.file && (
+      {(correspondenceMode || optimizationMode) && run && event && labImage?.file && (
         <CorrespondenceViewer
           key={`${run.id}/${labImage.file}`}
           runId={run.id}
@@ -382,10 +424,12 @@ export default function CameraCalibrationPage() {
           channel={labChannel}
           image={labImage}
           markers={imageMarkers}
-          pending={lab.pendingPixel?.runId === run.id && lab.pendingPixel.imageFile === labImage.file ? lab.pendingPixel : null}
-          onPick={(u, v) => lab.setPendingPixel({ runId: run.id, imageFile: labImage.file!, u, v })}
+          pending={
+            correspondenceMode && lab.pendingPixel?.runId === run.id && lab.pendingPixel.imageFile === labImage.file ? lab.pendingPixel : null
+          }
+          onPick={correspondenceMode ? (u, v) => lab.setPendingPixel({ runId: run.id, imageFile: labImage.file!, u, v }) : undefined}
           overlay={overlay}
-          model={lab.showOverlay || lab.showPredictions ? lab.model : null}
+          model={optimizationMode ? (optCamera?.model ?? null) : lab.showOverlay || lab.showPredictions ? lab.model : null}
           size={viewerSize}
           header={
             <>
@@ -397,8 +441,12 @@ export default function CameraCalibrationPage() {
                 ))}
               </div>
               <span>
-                Sequence {event.sequence} · {labImage.timestampUtc.slice(11)} UTC · {labImage.file} · fisheye as recorded · click = pick, wheel =
-                zoom, drag = pan
+                Sequence {event.sequence} · {labImage.timestampUtc.slice(11)} UTC · {labImage.file} · fisheye as recorded ·{" "}
+                {optimizationMode
+                  ? opt.experiment
+                    ? `○ measured, × projected with ${setLabel(opt.displaySet)} (experiment ${opt.experiment.experimentId}) · wheel = zoom, drag = pan`
+                    : "○ measured pixels of the loaded correspondences · wheel = zoom, drag = pan"
+                  : "click = pick, wheel = zoom, drag = pan"}
               </span>
               <div className="segmented">
                 {(["large", "small"] as const).map((s) => (

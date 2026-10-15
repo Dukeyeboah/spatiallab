@@ -86,6 +86,16 @@ Recording: Basel House, `2026-07-15-101012-003.xbin` (13,929,066,496 bytes), Lix
 - **Model hint:** for the ch18 notice board a LiDAR-RGB render through the model is offset from the photo by about (−145, −60) px, matching the app's residual. +100° for ch18 makes that point worse (307.5 px). One point; not a conclusion.
 - **Images viewed:** crops and full frames for the three features were viewed to place the clicks; they stayed in `/tmp`, not in the repository.
 
+## Lab 13V: calibration optimization (experimental)
+
+- **Input:** `correspondences-builtin-basel-house-2026-10-15.json` (19 records, 8 events). Pose hash and all run manifests matched; the Python projection reproduces the app's recorded predictions.
+- **Audit:** #11 (3037 ch18 window pane) excluded: its LiDAR point lies 16 m away on the scanner's left, 172° from ch18's axis, while the pixel is 12° from the centre; probably picked across the courtyard. 11 of 19 points are closer than 3 m. #16 (vehicle) flagged close-range and may-move.
+- **Pattern before fitting:** under f = 750 each pixel's angle from the centre was 1.2–1.3 × the LiDAR point's angle from the axis. That pointed at the lens, not the rotation.
+- **Result:** rotation alone (Stage A) doesn't help; rotation + f (Stage B) does, on held-out events and on whole photos not used for fitting. f ≈ 927 (ch14) and 955 (ch18) px/rad. Details: [calibration-experiments.md](calibration-experiments.md).
+- **ch14 outliers** are the three closest points (0.68–1.22 m). Refitting without them changes f by 20 px/rad.
+- **Pitfall:** a scratch script named `inspect.py` in the working folder shadowed Python's `inspect` module and broke the NumPy import. Don't name scratch files after standard modules.
+- **Images viewed:** one ch18 frame in the browser to check the overlay; nothing saved.
+
 ## Open questions
 
 - Which physical camera is channel 14 and which is 18? Clue: `project.json` lists `left_main` and `right_main` at indices 0 and 2. Lab 13S found ch14 looks left, which suggests ch14 = `left_main`, but this is not confirmed.
