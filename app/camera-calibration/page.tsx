@@ -27,6 +27,7 @@ import { eventChannels, eventReference, fetchRun, fetchRuns, positionAt, sha256H
 import { CalibrationOptimizationSection } from "@/components/calibration/CalibrationOptimizationSection";
 import { useCalibrationOptimization } from "@/components/calibration/useCalibrationOptimization";
 import { predictWith, setLabel } from "@/lib/calibrationExperiment";
+import { chooseReference } from "@/lib/correspondenceReview";
 
 type WorkspaceMode = "direction" | "correspondences" | "optimization";
 
@@ -239,11 +240,21 @@ export default function CameraCalibrationPage() {
         const used = !opt.experiment || opt.experiment.cameras[r.channel]?.records.includes(r.id);
         return [{ id: r.id, label: `#${i + 1}`, u: r.pixel.u, v: r.pixel.v, predicted: p?.valid ? { u: p.u, v: p.v } : null, active: !!used }];
       })
-    : lab.records.flatMap((r, i) => {
+    : lab.records.flatMap((r, i): ImageMarker[] => {
+        if (lab.showCoverage && r.channel === labChannel && r.datasetId === dataset.id && r.imageFile !== labImage?.file)
+          return [{ id: r.id, label: `#${i + 1}`, u: r.pixel.u, v: r.pixel.v, predicted: null, active: false, kind: "coverage" }];
         if (r.runId !== run?.id || r.imageFile !== labImage?.file) return [];
         const p = lab.showPredictions ? predict(r, offsets, lab.model) : null;
         return [{ id: r.id, label: `#${i + 1}`, u: r.pixel.u, v: r.pixel.v, predicted: p?.valid ? { u: p.u, v: p.v } : null, active: true }];
       });
+  // Lab 13W review reference: a loaded experiment's Stage B for this dataset, else Lab 13V for the built-in export.
+  const stageB = opt.experiment?.parameterSets.stageB;
+  const experimentMatches = opt.experiment?.source.dataset.id === dataset.id && opt.experiment.source.dataset.posesSha256 === datasetPoses?.sha256;
+  const reviewReference = chooseReference(
+    dataset.id,
+    frameMatches ? (datasetPoses?.sha256 ?? null) : null,
+    stageB && experimentMatches ? { label: `Stage B of experiment ${opt.experiment!.experimentId}, experimental estimate`, cameras: stageB.cameras } : null,
+  );
   const overlayCamera = correspondenceMode
     ? lab.showOverlay && labOrientation
       ? { orientation: labOrientation, model: lab.model }
@@ -398,6 +409,7 @@ export default function CameraCalibrationPage() {
             onCamerasChange={setCameras}
             onLookAlongPixel={lookAlongPixel}
             onViewRecord={viewRecord}
+            reference={reviewReference}
           />
         )}
         {run && event && mode === "optimization" && (

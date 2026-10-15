@@ -12,7 +12,7 @@ Reference conventions: [provisional-camera-directions.json](provisional-camera-d
 4. Optionally **"Look along this pixel's ray in 3D"**: the viewer camera moves to the scanner position at that image's time and looks along the pixel's provisional ray, with the orbit target at the LiDAR surface along the ray (10th-percentile range within 1.5°; 3 m if none). The ray uses the assumed model and provisional rotation, so the feature is *near* the centre, not exactly on it.
 5. **"Pick in 3D"** arms LiDAR picking (cross-hair cursor; orbiting still works, a press that moves more than 4 px is a drag, not a pick). Click the feature. The preview shows the nearest point (white) and, when accepted, the ray ∩ plane point (green); the chosen one has a yellow halo. Choose which to keep.
 6. Describe the feature, set quality (good / fair / poor), optional notes, **Save correspondence**. The button lists anything still missing.
-7. Saved records: numbered markers in the image (cyan circles) and in 3D (cyan spheres, `#n` labels), only on the matching image and dataset. Each record has **Show** (switches to its event and channel, views its LiDAR point from the scanner), **Edit** (feature, quality, notes; replace the pixel or the LiDAR point with a new pending one) and **Delete** (with confirmation).
+7. Saved records: numbered markers in the image (cyan circles) and in 3D (cyan spheres, `#n` labels), only on the matching image and dataset. Each record has **Show** (switches to its event and channel, views its LiDAR point from the scanner), **Edit** (feature, quality, notes; replace the pixel or the LiDAR point with a new pending one), **Exclude / Restore** and **Delete** (with confirmation). Lab 13W added review details, flags and coverage: see [Review and coverage](#review-and-coverage-lab-13w).
 8. **Export JSON** regularly. Records live in this browser's localStorage (`spatial-lab.correspondences.v1`); the exported file is the durable copy. **Import JSON** (≤ 5 MB) validates every record and skips ids already present.
 
 **Good features:** sharp, point-like and the same in both data sources: building corners, window and door corners, roof eave ends, the corners of flat signs on walls. Prefer features **3 m or more** from the camera (see limits), spread across the whole image circle and both channels. Avoid moving or thin things (people, foliage, wires), sky edges, and anything the LiDAR barely sampled.
@@ -74,6 +74,12 @@ Record (`Correspondence` in `lib/correspondences.ts`):
 | `feature`, `quality`, `notes` | description; `good` / `fair` / `poor`; free text |
 | `calibrationStatus` | always `"provisional"` |
 | `created`, `updated` | ISO times |
+| `excludedFromFit` *(optional, Lab 13W)* | `{reason ≤ 500 chars, at}` or null: left out of calibration fits by default, record kept |
+| `reviewStatus` *(optional, 13W)* | `unreviewed` (default) / `verified` / `needs-fix`: your own verdict after looking |
+| `scene` *(optional, 13W)* | `courtyard` / `corridor` / `indoor` / `exterior` / `other` |
+| `history` *(optional, 13W)* | ≤ 100 entries `{at, action: pixel / lidar / exclude / restore, previous}`; corrections keep the id and log the replaced value |
+
+The optional fields are still schema version 1: older files load unchanged, and the backend (`camera_calibration.record_problem`) validates the same fields.
 
 **Validation on import** (`invalidReason`): wrong `schema` or `version` rejects the file; each record needs a safe id, string fields (≤ 2000 characters), a channel matching `ch<digits>`, non-negative integer sequence/timestamp/size, a pixel inside `[−0.5, W − 0.5] × [−0.5, H − 0.5]`, a finite LAS triple, a known method, a finite pose and quaternion, a known quality and `calibrationStatus: "provisional"`. Invalid records are listed and not imported.
 
@@ -136,4 +142,34 @@ All: mean 99.8, median 104.3, RMS 120.5 px (ch14: 59.5 / 59.5 / 74.5; ch18: 180.
 
 ## Using an export for calibration (Lab 13V)
 
-An exported file is the input of the calibration experiments ([calibration-experiments.md](calibration-experiments.md)): load it in the *Calibration optimization* mode or pass it to `scripts/xgrids/calibrate_cameras.py`. The file is only read; its SHA-256 identifies it in every result. Keep a read-only copy outside Git (e.g. `<recording>/reconstruction/xgrids/calibration/inputs/`). The audit flags points that are behind the camera, closer than 3 m, on things that may move, near the image edge, or (with the point cloud) isolated or occluded; it never deletes them.
+An exported file is the input of the calibration experiments ([calibration-experiments.md](calibration-experiments.md)): load it in the *Calibration optimization* mode or pass it to `scripts/xgrids/calibrate_cameras.py`. The file is only read; its SHA-256 identifies it in every result. Keep a read-only copy outside Git (e.g. `<recording>/reconstruction/xgrids/calibration/inputs/`). The audit flags points that are behind the camera, closer than 3 m, on things that may move, near the image edge, or (with the point cloud) isolated or occluded; it never deletes them. Records you excluded during review (`excludedFromFit`) are left out by default (flag `user-excluded`); `--include ID` still forces one in.
+
+## Review and coverage (Lab 13W)
+
+The saved list in the correspondence mode is now a **review list** (`components/calibration/CorrespondenceReview.tsx`, logic in `lib/correspondenceReview.ts`).
+
+**Reference parameters.** Errors and flags use, in order: the Stage B set of an experiment loaded in the *Calibration optimization* mode for this dataset and pose file; else the built-in Lab 13V Stage B result (experiment `x_652068cf70da`) for the Basel House export; else the provisional rotations with the assumed lens. The panel names the reference. All are experimental or assumed, never a verified calibration.
+
+**Per match:** event and channel, pixel and LAS XYZ, pick method, distance from the scanner and height relative to it, image region (centre / middle / outer = thirds of the 1400 px usable radius; "outside" beyond it), angle from the camera axis, reference error, quality, scene, notes, your review status, and whether it is in fits.
+
+**Flags** (nothing is deleted; the rules match the backend audit):
+
+| Severity | Flag | Rule |
+| --- | --- | --- |
+| excluded from fits | user-excluded | you pressed *Exclude* (reason kept) |
+| | wrong-side | LiDAR point > 110° from the reference camera axis |
+| | too-close | < 0.2 m from the scanner |
+| warning (in fits, not counted as reliable) | Lab 13V list | #1, #5, #11, #16 of the 2026-10-15 export, until marked *verified* or excluded |
+| | needs-fix | your review status |
+| | close-range | < 3 m: a 5 cm lever arm moves the pixel by f·0.05/d |
+| | may-move | vehicle, person, curtain, plant … in the feature or notes |
+| | quality | fair or poor |
+| | large-error | > max(3 × the channel's median, 40 px) under the reference |
+| | no-projection, duplicate | no valid reference prediction; same LAS point within 2 cm or same image pixel within 5 px |
+| info | image-edge | > 90 % of the usable radius (useful, but check it) |
+
+**Reliable** = in fits with no warning. **Coverage** counts only reliable matches per camera against a 15–25 target. It shows events, image regions, eight image directions (middle and outer rings), distance bins (< 3, 3–4, 4–15, > 15 m), height (above / level / below the scanner, ±0.3 m) and scenes, and draws them over the fisheye frame (shaded cells hold reliable matches; dots green reliable, amber flagged, grey excluded, red ring = Lab 13V list; click a dot to show it). The guidance names the gaps and never asks for a match you're unsure of.
+
+**Actions:** *Show* (switches to the event and channel and views the LiDAR point from the scanner), *Edit* (feature, quality, scene, review status, notes; replace the pixel with a new click in the same image or the LiDAR point with a new pick; the history keeps previous values), *Exclude* (asks for a reason) / *Restore*, *Delete* (confirms; prefer Exclude). Filters: all / to review / excluded / this event. *Mark this camera's matches from other events* draws grey circles on the image to show the spread. A scene selector sits next to quality in the new-match form.
+
+The expanded real-world dataset is **not complete** until new matches have been collected and verified by hand; the panel says so.

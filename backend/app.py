@@ -593,7 +593,10 @@ async def run_calibration_experiment(request: Request, datasetId: Optional[str] 
         return camera_calibration.run_experiment(loaded, report, exclude_ids=exclude_ids, include_ids=include_ids, source_name=sourceName)
 
     async with _calibration_lock:  # one fit at a time; each takes seconds of CPU
-        return await run_in_threadpool(work)
+        try:
+            return await run_in_threadpool(work)
+        except ValueError as error:
+            raise HTTPException(400, str(error)) from error
 
 
 # ---------------------------------------------------------------------------

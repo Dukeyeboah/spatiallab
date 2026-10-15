@@ -278,6 +278,36 @@ class Experiment(unittest.TestCase):
         self.assertNotIn(recs[0]["id"], experiment["cameras"][recs[0]["channel"]]["records"])
         self.assertEqual(experiment["source"]["excluded"][0]["id"], recs[0]["id"])
 
+    def test_review_fields(self):
+        data = json.loads(synthetic_export())
+        recs = data["correspondences"]
+        recs[0]["excludedFromFit"] = {"reason": "wrong window", "at": "2026-10-15T00:00:00Z"}
+        recs[0]["history"] = [{"at": "2026-10-15T00:00:00Z", "action": "exclude"}]
+        recs[1]["reviewStatus"] = "needs-fix"
+        recs[2]["reviewStatus"] = "verified"
+        recs[2]["scene"] = "courtyard"
+        recs[3]["scene"] = "garden"
+        recs[4]["excludedFromFit"] = {"reason": 3}
+        loaded = cc.load_correspondences(json.dumps(data))
+        self.assertEqual({r["id"]: r["reason"] for r in loaded["rejected"]}, {recs[3]["id"]: "bad scene", recs[4]["id"]: "bad excludedFromFit"})
+        report = cc.audit(loaded["records"])
+        self.assertEqual(report["excludedByDefault"], [recs[0]["id"]])
+        rows = {row["id"]: row for row in report["records"]}
+        self.assertIn("needs-fix", {f["code"] for f in rows[recs[1]["id"]]["flags"]})
+        self.assertEqual((rows[recs[2]["id"]]["reviewStatus"], rows[recs[2]["id"]]["scene"]), ("verified", "courtyard"))
+        experiment = cc.run_experiment(loaded, report, now="x")
+        self.assertNotIn(recs[0]["id"], experiment["cameras"][recs[0]["channel"]]["records"])
+        forced = cc.run_experiment(loaded, report, include_ids=[recs[0]["id"]], now="x")
+        self.assertIn(recs[0]["id"], forced["cameras"][recs[0]["channel"]]["records"])
+        # A mistyped id (or several ids glued into one argument) must not silently run the baseline.
+        with self.assertRaisesRegex(ValueError, "unknown record id"):
+            cc.run_experiment(loaded, report, exclude_ids=[f"{recs[1]['id']} {recs[2]['id']}"], now="x")
+
+    def test_image_region(self):
+        m = cc.PROVISIONAL_MODEL
+        self.assertEqual([cc.image_region(r, m) for r in (0, 466, 467, 933, 934, 1400, 1401)],
+                         ["centre", "centre", "middle", "middle", "outer", "outer", "outside"])
+
     def test_image_agreement_prefers_true_parameters(self):
         rng = np.random.default_rng(3)
         cloud = rng.uniform(-12, 12, (60000, 3))

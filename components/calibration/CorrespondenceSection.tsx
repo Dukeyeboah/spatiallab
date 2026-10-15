@@ -12,12 +12,16 @@ import {
   parseCorrespondenceFile,
   predict,
   QUALITIES,
+  SCENES,
   type Correspondence,
   type FeatureQuality,
+  type Scene,
 } from "@/lib/correspondences";
+import { reviewRecords, type ReviewReference } from "@/lib/correspondenceReview";
 import { DEFAULT_FISHEYE_MODEL, type FisheyeModel } from "@/lib/fisheyeProjection";
 import { eventChannels, type Run, type RunEvent } from "@/lib/xgrids";
 import { CHANNEL_COLOURS, type ProvisionalCamera } from "./CalibrationLayers";
+import { CoveragePanel, ReviewList } from "./CorrespondenceReview";
 import { chosenPick, datasetToLas, type CorrespondenceLab } from "./useCorrespondenceLab";
 
 /** Suggested events (Basel House, interval-10s run). Any other event works too. */
@@ -54,6 +58,8 @@ type CorrespondenceSectionProps = {
   onLookAlongPixel: () => void;
   /** Point the 3D view from a record's scanner pose at its LiDAR point. */
   onViewRecord: (record: Correspondence) => void;
+  /** Lab 13W: parameters for review errors (a loaded experiment's Stage B or Lab 13V); null = the provisional ones. */
+  reference: ReviewReference | null;
 };
 
 const fmt = (p: Vec3) => p.map((x) => x.toFixed(3)).join(", ");
@@ -68,6 +74,7 @@ export function CorrespondenceSection(props: CorrespondenceSectionProps) {
   const [feature, setFeature] = useState("");
   const [quality, setQuality] = useState<FeatureQuality>("good");
   const [notes, setNotes] = useState("");
+  const [scene, setScene] = useState<Scene | "">("");
   const [message, setMessage] = useState<string | null>(null);
 
   const channels = eventChannels(event);
@@ -77,6 +84,11 @@ export function CorrespondenceSection(props: CorrespondenceSectionProps) {
   const pick = lab.pendingPick && lab.pendingPick.datasetId === dataset.id ? lab.pendingPick : null;
   const chosen = pick ? chosenPick(pick.result, lab.preferRefined) : null;
   const offsets = Object.fromEntries(cameras.map((c) => [c.channel, c.orientation]));
+  const reference: ReviewReference = props.reference ?? {
+    label: "the provisional rotations with the assumed lens (no experiment loaded)",
+    cameras: Object.fromEntries(cameras.map((c) => [c.channel, { orientation: c.orientation, model: lab.model }])),
+  };
+  const reviews = reviewRecords(lab.records, reference);
 
   const missing = [
     !frameMatches && "the run's poses.csv isn't this dataset's (frame check)",
@@ -110,6 +122,7 @@ export function CorrespondenceSection(props: CorrespondenceSectionProps) {
       calibrationStatus: "provisional",
       created: now,
       updated: now,
+      ...(scene ? { scene } : {}),
     };
     lab.setRecords([...lab.records, record]);
     lab.setPendingPixel(null);
@@ -132,8 +145,8 @@ export function CorrespondenceSection(props: CorrespondenceSectionProps) {
       <b className="sub">Image ↔ LiDAR correspondences · provisional</b>
       <div className="note">
         1. Choose an event and a channel. 2. Click a sharp feature in the image (wheel = zoom, drag = pan). 3. Press{" "}
-        <i>Pick in 3D</i>, navigate the LiDAR and click the same feature. 4. Describe it and save. Aim for 5–10 reliable
-        features per camera, spread over the image; quality beats quantity.
+        <i>Pick in 3D</i>, navigate the LiDAR and click the same feature. 4. Describe it and save. Aim for 15–25 reliable
+        features per camera over several events, spread over the image; quality beats quantity.
       </div>
       <details>
         <summary>What makes a good feature?</summary>
@@ -141,7 +154,10 @@ export function CorrespondenceSection(props: CorrespondenceSectionProps) {
           <b>Good:</b> window and door corners, wall corners, pillar edges, roof/eave intersections, other sharp
           geometric corners that the LiDAR also shows clearly. <br />
           <b>Avoid:</b> sky, grass, vegetation, people, reflections, glass, motion blur, the extreme fisheye edge, and
-          anything that may have moved.
+          anything that may have moved. <br />
+          <b>Prefer:</b> fixed architecture 4–15 m away (closer points suffer from the unknown camera offset), at different
+          heights and directions, in the middle and outer parts of the image, from courtyard, corridor and indoor events.
+          Check the 3D pick lands on the same surface the pixel shows, not on something behind or in front of it.
         </div>
       </details>
 
@@ -253,6 +269,12 @@ export function CorrespondenceSection(props: CorrespondenceSectionProps) {
             <option key={q}>{q}</option>
           ))}
         </select>
+        <select value={scene} title="Scene (kept for the next match)" onChange={(e) => setScene(e.target.value as Scene | "")}>
+          <option value="">scene…</option>
+          {SCENES.map((s) => (
+            <option key={s}>{s}</option>
+          ))}
+        </select>
       </div>
       <textarea rows={2} placeholder="Notes (optional)" value={notes} maxLength={2000} onChange={(e) => setNotes(e.target.value)} />
       <div className="dataset-actions">
@@ -263,102 +285,25 @@ export function CorrespondenceSection(props: CorrespondenceSectionProps) {
       {missing.length > 0 && <div className="unit">Needs: {missing.join(", ")}.</div>}
       {message && <div className="note">{message}</div>}
 
-      <RecordList {...props} offsets={offsets} goTo={goTo} setMessage={setMessage} pixel={pixel} chosenLas={pick && chosen ? datasetToLas(chosen.position, pick.offset) : null} chosen={chosen} budget={pick?.budget ?? budgetKey} />
+      {lab.records.length > 0 && <CoveragePanel reviews={reviews} reference={reference} onSelect={goTo} />}
+      <label>
+        <input type="checkbox" checked={lab.showCoverage} onChange={(e) => lab.setShowCoverage(e.target.checked)} />
+        Mark this camera&apos;s matches from other events on the image (grey, spread only)
+      </label>
+      <ReviewList
+        lab={lab}
+        run={run}
+        event={event}
+        reviews={reviews}
+        goTo={goTo}
+        pixel={pixel}
+        chosenLas={pick && chosen ? datasetToLas(chosen.position, pick.offset) : null}
+        chosen={chosen}
+        budget={pick?.budget ?? budgetKey}
+      />
       <ProjectionControls {...props} offsets={offsets} />
       <ExportImport {...props} offsets={offsets} setMessage={setMessage} />
     </div>
-  );
-}
-
-function RecordList({
-  lab,
-  run,
-  event,
-  offsets,
-  goTo,
-  pixel,
-  chosenLas,
-  chosen,
-  budget,
-}: CorrespondenceSectionProps & {
-  offsets: Record<string, ProvisionalOrientation>;
-  goTo: (r: Correspondence) => void;
-  setMessage: (m: string) => void;
-  pixel: { u: number; v: number; imageFile: string } | null;
-  chosenLas: Vec3 | null;
-  chosen: ReturnType<typeof chosenPick> | null;
-  budget: string;
-}) {
-  const [editing, setEditing] = useState<string | null>(null);
-  const update = (id: string, change: Partial<Correspondence>) =>
-    lab.setRecords(lab.records.map((r) => (r.id === id ? { ...r, ...change, updated: new Date().toISOString() } : r)));
-
-  if (lab.records.length === 0) return <div className="unit">No correspondences saved yet.</div>;
-  return (
-    <>
-      <b className="sub">Saved ({lab.records.length}, this browser)</b>
-      <ol className="corr-list">
-        {lab.records.map((r, i) => {
-          const p = predict(r, offsets, lab.model);
-          const here = r.runId === run.id && r.sequence === event.sequence;
-          return (
-            <li key={r.id} className={here ? "here" : ""}>
-              <div className="inline-row">
-                <b>#{i + 1}</b>
-                <span className="swatch" style={{ background: CHANNEL_COLOURS[r.channel] }} />
-                <span className="corr-title" title={r.feature}>
-                  {r.sequence} {r.channel} · {r.feature}
-                </span>
-                <span className={`quality ${r.quality}`}>{r.quality}</span>
-              </div>
-              <div className="unit">
-                px ({r.pixel.u.toFixed(1)}, {r.pixel.v.toFixed(1)}) · LAS ({fmt(r.lidar.las)}) · {r.lidar.method === "nearest-point" ? "nearest point, approximate" : "ray ∩ plane"}
-                {" · "}
-                {p.valid ? `predicted (${p.u.toFixed(0)}, ${p.v.toFixed(0)}), error ${p.errorPx.toFixed(1)} px` : `no prediction: ${p.reason}`}
-              </div>
-              <div className="dataset-actions">
-                <button onClick={() => goTo(r)}>Show</button>
-                <button onClick={() => setEditing(editing === r.id ? null : r.id)}>{editing === r.id ? "Done" : "Edit"}</button>
-                <button
-                  onClick={() => {
-                    if (window.confirm(`Delete #${i + 1} (${r.feature})?`)) lab.setRecords(lab.records.filter((x) => x.id !== r.id));
-                  }}
-                >
-                  Delete
-                </button>
-              </div>
-              {editing === r.id && (
-                <div className="corr-edit">
-                  <input type="text" value={r.feature} maxLength={200} onChange={(e) => update(r.id, { feature: e.target.value })} />
-                  <select value={r.quality} onChange={(e) => update(r.id, { quality: e.target.value as FeatureQuality })}>
-                    {QUALITIES.map((q) => (
-                      <option key={q}>{q}</option>
-                    ))}
-                  </select>
-                  <textarea rows={2} value={r.notes} maxLength={2000} onChange={(e) => update(r.id, { notes: e.target.value })} />
-                  <div className="dataset-actions">
-                    <button
-                      disabled={!pixel || pixel.imageFile !== r.imageFile}
-                      title="Needs a new click in this record's image"
-                      onClick={() => pixel && update(r.id, { pixel: { u: pixel.u, v: pixel.v } })}
-                    >
-                      Replace pixel with the new click
-                    </button>
-                    <button
-                      disabled={!chosenLas || !chosen || r.datasetId !== lab.pendingPick?.datasetId}
-                      onClick={() => chosenLas && chosen && update(r.id, { lidar: { las: chosenLas, method: chosen.method, detail: chosen.detail, budget } })}
-                    >
-                      Replace LiDAR with the new pick
-                    </button>
-                  </div>
-                  <div className="unit">id {r.id} · created {r.created.slice(0, 19)}Z</div>
-                </div>
-              )}
-            </li>
-          );
-        })}
-      </ol>
-    </>
   );
 }
 

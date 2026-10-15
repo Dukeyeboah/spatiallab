@@ -77,9 +77,12 @@ backend/.venv/bin/python scripts/xgrids/calibrate_cameras.py "$REC/calibration/i
     --cloud-bin public/datasets/basel-house/basel-preview-5m.bin \
     --cloud-metadata public/datasets/basel-house/basel-preview-5m-metadata.json \
     [--image-check interval-10s] [--exclude ID …] [--include ID …] [--audit-only]
+
+# Lab 13W: compare experiments (first = baseline); prints and optionally writes JSON outside the repo
+python3 scripts/xgrids/compare_experiments.py BASELINE.json OTHER.json … [--out report.json]
 ```
 
-Method, output format and the Basel results: [docs/xgrids/calibration-experiments.md](../../docs/xgrids/calibration-experiments.md).
+Ids after `--exclude` / `--include` are separate arguments; unknown ids are refused. In zsh, pass an array (`"${IDS[@]}"`), because `$IDS` is not split. Method, output format and the Basel results: [docs/xgrids/calibration-experiments.md](../../docs/xgrids/calibration-experiments.md).
 
 ## Tests
 

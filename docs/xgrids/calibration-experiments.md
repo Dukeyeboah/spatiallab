@@ -1,4 +1,4 @@
-# XGRIDS camera calibration experiments (Lab 13V)
+# XGRIDS camera calibration experiments (Labs 13V–13W)
 
 **Status: experimental.** These are first estimates from 19 hand-picked
 correspondences in one recording (Basel House). They are not a verified or
@@ -129,6 +129,10 @@ backend/.venv/bin/python scripts/xgrids/calibrate_cameras.py "$REC/calibration/i
     --cloud-metadata public/datasets/basel-house/basel-preview-5m-metadata.json \
     --image-check interval-10s            # optional, about 3 minutes
 # --audit-only, --exclude ID …, --include ID … (force an excluded record in)
+# ids are separate arguments; an unknown id is refused (in zsh, "${IDS[@]}" from an array, not "$IDS")
+
+# Lab 13W: compare experiments (first = baseline); --out outside the repo, never overwritten
+python3 scripts/xgrids/compare_experiments.py BASELINE.json OTHER.json … [--out report.json]
 
 backend/.venv/bin/python -m unittest tests/xgrids/test_camera_calibration.py -v
 SPATIAL_LAB_CORRESPONDENCES=<export.json> backend/.venv/bin/python -m unittest tests/xgrids/test_camera_calibration.py
@@ -142,7 +146,7 @@ and everything except `created` is identical.
 
 **In the app**: `/camera-calibration` → *Calibration optimization*.
 1. Load a correspondence export, or use this browser's records.
-2. The audit runs automatically. Tick or untick points if needed.
+2. The audit runs automatically. Tick or untick points if needed. Points excluded in the correspondence review (Lab 13W) start unticked, flagged `user-excluded`.
 3. Press *Run optimization (experimental)*.
 4. Compare the tables, and switch the image markers and overlay between Provisional, Stage A and Stage B.
 5. Export or import experiment JSON.
@@ -152,7 +156,7 @@ CLI experiment to see them. Backend: `POST /xgrids/calibration/audit` and
 `POST /xgrids/calibration/experiments` are stateless: the body is the export's text (≤ 5 MB), nothing is
 stored, and identity mismatches give 422.
 
-**Tests** (`tests/xgrids/test_camera_calibration.py`, 20, synthetic data, skipped without SciPy):
+**Tests** (`tests/xgrids/test_camera_calibration.py`, 22, synthetic data, skipped without SciPy; Lab 13W added review fields, user exclusion, unknown exclude ids and image regions):
 - conventions: quaternion order against SciPy, the documented offset matrices, angle meanings, projection axes and inverse, agreement with the frontend, the lever-arm frame;
 - input checks: identity and hash, per-record rejection, run cross-check;
 - recovery: Stage A recovers the rotation; Stage B recovers f with noise and with deliberate 300 px outliers;
@@ -257,6 +261,26 @@ equals `public/datasets/basel-house/poses.csv`, and all 19 records match their r
 
 As a sanity check, f ≈ 940 px/rad with the image circle's radius of about 1425 px gives a field of view of about 174°, plausible for these fisheye modules.
 
+## Lab 13W: sensitivity to the suspicious matches (2026-10-15)
+
+The same 19-point export, solver unchanged (module `13W.1` only adds review fields), image check on run interval-10s. Outputs are in `<recording>/reconstruction/xgrids/calibration/experiments/13w/` (13V's files are untouched); `scripts/xgrids/compare_experiments.py` wrote `13w/comparison-13w.json`.
+
+| Experiment | ch14 Stage B: yaw, pitch, roll (°); f | ch14 training / held-out median px | ch18 Stage B | ch18 training / held-out median px | Mean NCC, Stage B (ch14 / ch18) |
+| --- | --- | --- | --- | --- | --- |
+| 13V `x_652068cf70da` (#11 auto-excluded) | −88.27 ± 1.6, 3.04 ± 1.7, −1.30 ± 2.5; 927 ± 41 | 20.4 / 27.7 (7 folds) | 89.36 ± 0.5, 4.00 ± 0.5, 0.57 ± 0.9; 955 ± 15 | 23.1 / 34.6 (8 folds) | 0.319 / 0.296 |
+| `base` `x_1d7e32542b3e` (13W code, same input) | identical | identical | identical | identical | identical |
+| `without-1-5-11-16` `x_e098292b80fe` | −88.94 ± 0.4, 2.69 ± 0.4, 0.23 ± 0.7; 947 ± 12 | 12.2 / 25.9 (5 folds) | unchanged (none of the four is ch18-usable) | unchanged | 0.313 / 0.296 |
+| `far-only-3m` `x_1e2813bc4975` (11 points < 3 m excluded) | **not run**: 3 points in 2 events | — | 89.62 ± 0.4, 3.90 ± 0.4, 1.63 ± 0.7; 939 ± 13, **not validated** (0 of 4 folds possible) | 10.4 / — | — / 0.294 |
+
+**Do the unreliable points materially affect the solution? Not the values, mainly the uncertainty.**
+- Removing #1, #5 and #16 moves ch14's Stage B parameters by 0.2–0.6 σ (yaw −0.7°, pitch −0.4°, roll +1.5°, f +20 px/rad). The σ of roll and f shrink by more than 3× (2.5° → 0.7°, 41 → 12 px/rad). All four ch14 parameters then pass the identifiability limits.
+- Training error halves (20 → 12 px). **That is not evidence of a better calibration**: the hardest points were simply removed.
+- Held-out error on the six points both experiments share is *slightly worse*: 25.9 px vs 22.6 px. The photo check is unchanged (0.313 vs 0.319; Stage B best in 20 of 24 photos either way).
+- Under the experiment without them, #1, #5 and #16 are truly held out at 257, 93 and 109 px. #1 sits 17° from the axis while its pixel is about 6° from the centre (f ≈ 940). Its 3D pick is the likely problem, not the model.
+- **The ≥ 3 m subset is too small to say anything.** ch14 has 3 points in 2 events, and ch18's 4 points cannot be validated (leaving one event out leaves too few to fit 4 parameters). ch18's unvalidated values stay within about 1 σ of 13V.
+
+Conclusion: the Lab 13V Stage B result is not driven by the suspicious matches, but its ch14 roll and f uncertainties are. The next experiment needs the expanded dataset, not a different subset of the same 19 points.
+
 ## Limitations
 
 - One recording and 9 usable points per camera, more than half of them closer than 3 m.
@@ -269,7 +293,8 @@ As a sanity check, f ≈ 940 px/rad with the image circle's radius of about 1425
 
 ## Next steps
 
-- Re-pick #11. Add 10–20 points per camera at 4–15 m, spread over the whole image circle, including 800–1300 px from the centre.
+- Re-pick #11. Add 10–20 points per camera at 4–15 m, spread over the whole image circle, including 800–1300 px from the centre. The Lab 13W review list and coverage panel ([correspondences.md](correspondences.md#review-and-coverage-lab-13w)) track this; the expanded dataset is **not complete** until those matches are collected and verified by hand.
+- Then rerun the same experiment on the new export and compare it with `compare_experiments.py 13V.json NEW.json`.
 - Then try cx and cy (Stage C) and a lever arm, each with the same validation.
   - The camera-to-scanner translation must eventually be **measured** (manufacturer data or factory calibration, or a physical measurement related to the pose reference point) or **estimated** in a validated stage.
   - Compare an estimated lever arm with the hardware layout only as a plausibility check.

@@ -34,7 +34,7 @@ import numpy as np
 import scipy
 from scipy.optimize import least_squares
 
-MODULE_VERSION = "13V.1"
+MODULE_VERSION = "13W.1"
 CORRESPONDENCE_SCHEMA = "spatial-lab/xgrids-correspondences"
 CORRESPONDENCE_VERSION = 1
 EXPERIMENT_SCHEMA = "spatial-lab/xgrids-calibration-experiment"
@@ -60,6 +60,10 @@ CONVENTIONS = {
 }
 
 # Keywords in the feature text that suggest an object that may move or deform.
+# Lab 13W review fields on records (same values as lib/correspondences.ts).
+REVIEW_STATUSES = ("unreviewed", "verified", "needs-fix")
+SCENES = ("courtyard", "corridor", "indoor", "exterior", "other")
+MAX_HISTORY = 100
 MOVABLE_PATTERN = re.compile(r"\b(vehicle|car|truck|van|bus|bike|person|people|man|woman|curtain|cloth|flag|leaf|leaves|palm|plant|tree|branch|brank|stem|bush)\b", re.I)
 
 
@@ -177,6 +181,19 @@ def record_problem(r) -> Optional[str]:
         return "bad quality"
     if r.get("calibrationStatus") != "provisional":
         return "calibrationStatus must be provisional"
+    # Lab 13W review fields (optional).
+    excluded = r.get("excludedFromFit")
+    if excluded is not None and not (isinstance(excluded, dict) and isinstance(excluded.get("reason"), str)
+                                     and len(excluded["reason"]) <= 500 and isinstance(excluded.get("at"), str)):
+        return "bad excludedFromFit"
+    if r.get("reviewStatus") not in (None,) + REVIEW_STATUSES:
+        return "bad reviewStatus"
+    if r.get("scene") not in (None,) + SCENES:
+        return "bad scene"
+    history = r.get("history")
+    if history is not None and not (isinstance(history, list) and len(history) <= MAX_HISTORY
+                                    and all(isinstance(h, dict) and isinstance(h.get("at"), str) and isinstance(h.get("action"), str) for h in history)):
+        return "bad history"
     return None
 
 
@@ -269,6 +286,12 @@ CLOSE_RANGE_M = 3.0
 FIELD_OF_VIEW_LIMIT_DEG = 110.0
 
 
+def image_region(radius_px: float, model: dict) -> str:
+    """Thirds of the usable radius: centre / middle / outer; beyond it: outside (same as lib/correspondenceReview.ts)."""
+    limit = model["validRadiusPx"]
+    return "centre" if radius_px < limit / 3 else "middle" if radius_px < 2 * limit / 3 else "outer" if radius_px <= limit else "outside"
+
+
 def _flag(code: str, severity: str, reason: str) -> dict:
     return {"code": code, "severity": severity, "reason": reason}
 
@@ -300,6 +323,10 @@ def audit(records: list, cloud_las: Optional[np.ndarray] = None,
         radius = math.hypot(du, dv)
         prediction = predict_record(r, nominal, model) if nominal else None
         flags = []
+        if r.get("excludedFromFit"):
+            flags.append(_flag("user-excluded", "exclude", f"excluded during review: {r['excludedFromFit']['reason'] or 'no reason given'}"))
+        if r.get("reviewStatus") == "needs-fix":
+            flags.append(_flag("needs-fix", "review", "marked 'needs fix' during review"))
         if nominal is None:
             flags.append(_flag("unknown-channel", "exclude", f"no provisional orientation for {r['channel']}"))
         if distance < 0.2:
@@ -347,6 +374,9 @@ def audit(records: list, cloud_las: Optional[np.ndarray] = None,
             "bodyElevationDeg": math.degrees(math.asin(np.clip(body[2] / distance, -1, 1))) if distance > 0 else None,
             "offAxisDeg": off_axis,
             "pixelRadiusPx": radius,
+            "imageRegion": image_region(radius, model),
+            "reviewStatus": r.get("reviewStatus", "unreviewed"),
+            "scene": r.get("scene"),
             "pixelAngleDegAssumedF": math.degrees(radius / model["focalPx"]),
             "leverArm5cmPx": lever_px,
             "provisional": prediction,
@@ -698,6 +728,9 @@ def run_experiment(loaded: dict, audit_report: dict, config: Optional[SolverConf
     """
     config = config or SolverConfig()
     records = loaded["records"]
+    unknown = sorted((set(exclude_ids or []) | set(include_ids or [])) - {r["id"] for r in records})
+    if unknown:
+        raise ValueError(f"unknown record id(s) in exclude/include: {', '.join(unknown[:5])}")
     excluded = set(audit_report["excludedByDefault"]) | set(exclude_ids or [])
     excluded -= set(include_ids or [])
     review = set(audit_report["reviewFlagged"])

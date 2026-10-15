@@ -78,6 +78,9 @@ def main() -> int:
           f"{len(loaded['records'])} records, {len(loaded['rejected'])} rejected" + (", pose-file hash verified" if poses_sha else ""))
     for item in loaded["rejected"]:
         print(f"  rejected #{item['index']} {item['id']}: {item['reason']}")
+    unknown = sorted(set((args.exclude or []) + (args.include or [])) - {r["id"] for r in loaded["records"]})
+    if unknown:
+        parser.error(f"unknown record id(s) in --exclude/--include: {', '.join(unknown[:5])} (separate ids with spaces)")
 
     if args.runs_dir:
         os.environ["SPATIAL_LAB_XGRIDS_DIR"] = str(args.runs_dir)
@@ -128,10 +131,13 @@ def main() -> int:
     else:
         write_new(path, experiment)
         print(f"Experiment → {path}")
+    def px(value) -> str:
+        return "—" if value is None else f"{value:.1f}"
+
     for channel, camera in experiment["cameras"].items():
         print(f"\n{channel}: {len(camera['records'])} records in {len(camera['events'])} events")
         p = camera["provisional"]["stats"]
-        print(f"  provisional            median {p['median']:.1f}  mean {p['mean']:.1f}  RMS {p['rms']:.1f} px")
+        print(f"  provisional            median {px(p['median'])}  mean {px(p['mean'])}  RMS {px(p['rms'])} px")
         for stage, result in camera["stages"].items():
             if not result.get("ok"):
                 print(f"  Stage {stage}: not run ({result.get('reason')})")
@@ -139,7 +145,7 @@ def main() -> int:
             t, h = result["training"]["stats"], result["validation"]["heldOutStats"]
             o, m = result["orientation"], result["model"]
             print(f"  Stage {stage}: yaw {o['yawDeg']:.2f}° pitch {o['pitchDeg']:.2f}° roll {o['rollDeg']:.2f}° f {m['focalPx']:.1f}")
-            print(f"    training median {t['median']:.1f} RMS {t['rms']:.1f} px · held-out median {h['median']:.1f} RMS {h['rms']:.1f} px "
+            print(f"    training median {px(t['median'])} RMS {px(t['rms'])} px · held-out median {px(h['median'])} RMS {px(h['rms'])} px "
                   f"({result['validation']['foldsOk']} folds, {result['validation']['foldsSkipped']} skipped)")
             for name, status in result["identifiability"].items():
                 print(f"    {name}: {status['status']}" + (f" ({'; '.join(status['reasons'])})" if status["reasons"] else ""))

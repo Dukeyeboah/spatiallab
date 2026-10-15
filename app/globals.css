@@ -1076,6 +1076,24 @@ body {
   stroke-dasharray: 3 3;
 }
 
+.corr-viewer .marker.coverage {
+  opacity: 0.55;
+}
+
+.corr-viewer .marker.coverage circle {
+  stroke: #bbb;
+  stroke-dasharray: 2 2;
+}
+
+.corr-viewer .marker.coverage circle.dot {
+  fill: #bbb;
+}
+
+.corr-viewer .marker.coverage text {
+  fill: #bbb;
+  font-size: 10px;
+}
+
 .corr-viewer .pending {
   stroke: #ffe040;
   stroke-width: 2;
@@ -1306,4 +1324,153 @@ body {
   padding-left: 16px;
   font-size: 11px;
   color: #fb6;
+}
+
+/* Lab 13W: correspondence review and coverage */
+.controls.calibration .coverage,
+.controls.calibration .coverage-camera {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.controls.calibration .coverage-camera {
+  padding: 4px;
+  border: 1px solid #333;
+  border-radius: 4px;
+}
+
+.controls.calibration .coverage-body {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  align-items: center;
+}
+
+.controls.calibration .coverage-body table {
+  width: 100%;
+}
+
+.controls.calibration .coverage-body td:first-child {
+  white-space: nowrap;
+  vertical-align: top;
+}
+
+.controls.calibration .coverage .note.warn {
+  color: #fb6;
+}
+
+.controls.calibration .coverage ul.warnings {
+  margin: 0;
+  padding-left: 16px;
+  font-size: 11px;
+  color: #fb6;
+}
+
+.coverage-diagram {
+  width: 220px;
+  height: auto;
+}
+
+.coverage-diagram .frame {
+  fill: #111;
+  stroke: #444;
+  stroke-width: 12;
+}
+
+.coverage-diagram .cell {
+  fill: #4caf50;
+  stroke: none;
+}
+
+.coverage-diagram .ring {
+  fill: none;
+  stroke: #555;
+  stroke-width: 10;
+  stroke-dasharray: 30 30;
+}
+
+.coverage-diagram .dot-group {
+  cursor: pointer;
+}
+
+.coverage-diagram .dot {
+  stroke: #000;
+  stroke-width: 12;
+}
+
+.coverage-diagram .dot.reliable {
+  fill: #8fd18f;
+}
+
+.coverage-diagram .dot.flagged {
+  fill: #db3;
+}
+
+.coverage-diagram .dot.excluded {
+  fill: #777;
+}
+
+.coverage-diagram .dot.lab13v {
+  stroke: #f44;
+  stroke-width: 28;
+}
+
+.controls.calibration .review-list li.unused {
+  opacity: 0.6;
+  border-style: dashed;
+}
+
+.controls.calibration .review-list li.lab13v {
+  border-color: #c66;
+}
+
+.controls.calibration .status-chip {
+  font-size: 9px;
+  padding: 0 4px;
+  border: 1px solid #555;
+  border-radius: 3px;
+  color: #aaa;
+  white-space: nowrap;
+}
+
+.controls.calibration .status-chip.verified,
+.controls.calibration .status-chip.reliable {
+  color: #8fd18f;
+  border-color: #4a7a4a;
+}
+
+.controls.calibration .status-chip.needs-fix,
+.controls.calibration .status-chip.flagged {
+  color: #db3;
+  border-color: #7a6a2a;
+}
+
+.controls.calibration .status-chip.excluded {
+  color: #f88;
+  border-color: #7a3a3a;
+}
+
+.controls.calibration ul.flags {
+  margin: 0;
+  padding-left: 14px;
+  font-size: 10px;
+  line-height: 1.35;
+}
+
+.controls.calibration ul.flags li {
+  border: none;
+  padding: 0;
+}
+
+.controls.calibration ul.flags li.exclude {
+  color: #f88;
+}
+
+.controls.calibration ul.flags li.warn {
+  color: #db3;
+}
+
+.controls.calibration ul.flags li.info {
+  color: #999;
 }

@@ -54,7 +54,34 @@ export type Correspondence = {
   calibrationStatus: "provisional";
   created: string;
   updated: string;
+  // --- Lab 13W review fields (optional; absent in older files) ---
+  /** Left out of calibration fits (the record is kept). */
+  excludedFromFit?: { reason: string; at: string } | null;
+  /** Your own verdict after looking at the match; absent = "unreviewed". */
+  reviewStatus?: ReviewStatus;
+  scene?: Scene;
+  /** Corrections and exclusions, oldest first; previous values are kept here. */
+  history?: HistoryEntry[];
 };
+
+export type ReviewStatus = "unreviewed" | "verified" | "needs-fix";
+export const REVIEW_STATUSES: ReviewStatus[] = ["unreviewed", "verified", "needs-fix"];
+export type Scene = "courtyard" | "corridor" | "indoor" | "exterior" | "other";
+export const SCENES: Scene[] = ["courtyard", "corridor", "indoor", "exterior", "other"];
+export type HistoryEntry = {
+  at: string;
+  action: "pixel" | "lidar" | "exclude" | "restore";
+  /** The replaced pixel / LiDAR value, or the exclusion reason. */
+  previous?: unknown;
+};
+export const MAX_HISTORY = 100;
+
+/** A changed copy of `r` with the change logged in its history (id and created are kept). */
+export function withChange(r: Correspondence, change: Partial<Correspondence>, action: HistoryEntry["action"], previous?: unknown): Correspondence {
+  const now = new Date().toISOString();
+  const history = [...(r.history ?? []), { at: now, action, previous }].slice(-MAX_HISTORY);
+  return { ...r, ...change, id: r.id, created: r.created, updated: now, history };
+}
 
 const STORAGE_KEY = "spatial-lab.correspondences.v1";
 
@@ -105,6 +132,13 @@ export function invalidReason(r: unknown): string | null {
     return "bad scannerPose";
   if (!QUALITIES.includes(c.quality as FeatureQuality)) return "bad quality";
   if (c.calibrationStatus !== "provisional") return "calibrationStatus must be provisional";
+  const ex = c.excludedFromFit as Record<string, unknown> | null | undefined;
+  if (ex !== undefined && ex !== null && !(typeof ex === "object" && isString(ex.reason, 500) && isString(ex.at, 64))) return "bad excludedFromFit";
+  if (c.reviewStatus !== undefined && !REVIEW_STATUSES.includes(c.reviewStatus as ReviewStatus)) return "bad reviewStatus";
+  if (c.scene !== undefined && !SCENES.includes(c.scene as Scene)) return "bad scene";
+  const history = c.history;
+  const validEntry = (e: unknown) => typeof e === "object" && e !== null && isString((e as HistoryEntry).at, 64) && isString((e as HistoryEntry).action, 32);
+  if (history !== undefined && !(Array.isArray(history) && history.length <= MAX_HISTORY && history.every(validEntry))) return "bad history";
   return null;
 }
 

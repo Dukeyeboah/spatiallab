@@ -8,7 +8,16 @@ import { imageNameMatches, runImageUrl, type RunEvent, type RunImage } from "@/l
 const CLICK_TOLERANCE_PX = 4;
 const MAX_SCALE = 16;
 
-export type ImageMarker = { id: string; label: string; u: number; v: number; predicted: { u: number; v: number } | null; active: boolean };
+export type ImageMarker = {
+  id: string;
+  label: string;
+  u: number;
+  v: number;
+  predicted: { u: number; v: number } | null;
+  active: boolean;
+  /** "coverage": a match from another image of the same camera, shown for spread only. */
+  kind?: "coverage";
+};
 
 type CorrespondenceViewerProps = {
   runId: string;
@@ -199,7 +208,7 @@ export function CorrespondenceViewer({ runId, event, channel, image, markers, pe
               const o = toScreen(m.u, m.v, view);
               const p = m.predicted && toScreen(m.predicted.u, m.predicted.v, view);
               return (
-                <g key={m.id} className={m.active ? "marker active" : "marker"}>
+                <g key={m.id} className={`marker${m.active ? " active" : ""}${m.kind ? ` ${m.kind}` : ""}`}>
                   {p && (
                     <>
                       <line x1={o.x} y1={o.y} x2={p.x} y2={p.y} className="residual" />

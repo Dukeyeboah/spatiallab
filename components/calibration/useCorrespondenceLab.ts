@@ -39,8 +39,12 @@ export function useCorrespondenceLab() {
   const [model, setModel] = useState<FisheyeModel>(DEFAULT_FISHEYE_MODEL);
   const [showOverlay, setShowOverlay] = useState(false);
   const [showPredictions, setShowPredictions] = useState(true);
+  /** Lab 13W: also mark this camera's matches from other events on the image (spread only). */
+  const [showCoverage, setShowCoverage] = useState(false);
 
   return {
+    showCoverage,
+    setShowCoverage,
     records,
     setRecords,
     channel,

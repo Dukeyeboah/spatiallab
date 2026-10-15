@@ -96,6 +96,21 @@ Recording: Basel House, `2026-07-15-101012-003.xbin` (13,929,066,496 bytes), Lix
 - **Pitfall:** a scratch script named `inspect.py` in the working folder shadowed Python's `inspect` module and broke the NumPy import. Don't name scratch files after standard modules.
 - **Images viewed:** one ch18 frame in the browser to check the overlay; nothing saved.
 
+## Lab 13W: correspondence quality and dataset preparation
+
+- **Review tool:** the correspondence list now shows distance, height, image region, angle from the axis, the error under a reference Stage B set (Lab 13V's, or a loaded experiment's) and flags. Matches can be excluded or restored with a reason, marked verified or needs-fix, tagged with a scene, and corrected with their ids kept and the old values logged ([correspondences.md](correspondences.md#review-and-coverage-lab-13w)).
+- **Coverage today** (reliable = in fits, no warning): ch14 has 3 (#4, #12, #14) in 2 events, ch18 has 4 (#10, #13, #17, #19) in 4 events, against a 15–25 target. Every reliable match is in the centre third of the image and above the scanner. There is nothing in the outer third and nothing below the scanner. Most other points are flagged only for being closer than 3 m.
+- **To revisit:**
+  - #1 (1633 ch14 shelf): its LiDAR point is 17° off-axis but its pixel about 6°. Re-pick the 3D point or exclude it.
+  - #5 (3187 ch14 whiteboard, 0.68 m): too close; exclude unless re-picked on something farther.
+  - #11 (3037 ch18 window pane): wrong side; re-pick the LiDAR point on the window the pixel shows, about 6–7 m away like #10.
+  - #16 (2317 ch14 vehicle, 1.2 m): close and possibly moved; exclude.
+- **Sensitivity** ([calibration-experiments.md](calibration-experiments.md#lab-13w-sensitivity-to-the-suspicious-matches-2026-10-15)): without #1, #5 and #16, ch14 Stage B moves by under 1 σ and its σ shrinks 3×. Training error halves, but held-out error on shared points and the photo check don't improve. The ≥ 3 m-only subset is too small to fit ch14 or validate ch18.
+- **Pitfalls:**
+  - In zsh, `--exclude $IDS` passes one argument, because unquoted variables are not word-split. The CLI silently ran the baseline; unknown ids are now refused.
+  - The CLI crashed printing a stage with no held-out error; missing values now print as "—".
+- **Dataset status:** the expanded real-world dataset is **not complete**. Additional matches will be collected and verified by hand; no automatic check replaces that review.
+
 ## Open questions
 
 - Which physical camera is channel 14 and which is 18? Clue: `project.json` lists `left_main` and `right_main` at indices 0 and 2. Lab 13S found ch14 looks left, which suggests ch14 = `left_main`, but this is not confirmed.

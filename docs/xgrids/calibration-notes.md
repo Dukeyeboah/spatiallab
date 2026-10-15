@@ -50,6 +50,7 @@ From 19 correspondences (9 usable per camera, 8 events), fitted with robust leas
 - **Rotations** (yaw, pitch, roll): ch18 ≈ (+89.4°, +4.0°, +0.6°), each passing the identifiability limits; ch14 ≈ (−88.3°, +3.0°, −1.3°), with roll and f poorly constrained.
 - **Still assumed or unknown:** principal point (image centre assumed), lever arm (0 assumed), distortion beyond equidistant, timing. Not identifiable from these points, most of which are closer than 3 m.
 - Nothing in the app uses these values automatically; the Lab 13U presets are unchanged.
+- **Lab 13W check:** refitting without the suspicious ch14 matches (#1, #5, #16) moves these values by under 1 σ but shrinks ch14's roll and f uncertainty about 3×. The estimates stand; the dataset is the limiting factor. An expanded, hand-verified set of 15–25 reliable matches per camera is being collected; until then the dataset is **not complete**.
 
 ## Unknown
 

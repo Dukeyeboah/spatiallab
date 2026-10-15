@@ -157,7 +157,11 @@ components/
                            assumed fisheye model, overlay toggles; chosenPick (nearest = "approximate"), datasetToLas (float64)
     CorrespondenceSection.tsx Lab 13U panel: workflow note, feature guidance, event chips, channel, pending pixel + "look along its ray",
                            Pick in 3D (armed toggle), pick result (nearest vs ray ∩ plane, refusal reason), settings, feature/quality/
-                           notes + Save, record list (Show/Edit/Delete), projection controls + error stats, export/import
+                           notes + Save, record list (Show/Edit/Delete), projection controls + error stats, export/import;
+                           Lab 13W: scene select, CoveragePanel + ReviewList, "other events" coverage toggle, `reference` prop
+    CorrespondenceReview.tsx  Lab 13W: CoveragePanel (per-camera reliable counts vs 15–25, SVG fisheye coverage diagram, guidance,
+                           "dataset not complete" note) and ReviewList (details, flags, Exclude/Restore, review status, scene,
+                           corrections with history, filters)
     CorrespondenceViewer.tsx  Lab 13U image viewer (bottom right, Large/Small): wheel zoom about the cursor, drag pan, click = original
                            pixel (OpenCV), size/file-name check before picking, numbered markers, predicted × + residual, overlay canvas;
                            without onPick it only displays (Lab 13V)
@@ -219,7 +223,10 @@ lib/
                         (yaw + = right, pitch + = up, roll + = clockwise) → rotation/axes/words, STARTING_HYPOTHESIS (ch14 −90°, ch18 +90°)
   directionTest.ts      Lab 13S: Basel test set (courtyard/indoor), helper shape, notes + presets in localStorage, JSON export
   correspondences.ts    Lab 13U: Correspondence record (pixel ↔ LAS, image identity, scanner pose, provisional), validation,
-                        localStorage, export/import (schema "spatial-lab/xgrids-correspondences" v1), predict + error stats
+                        localStorage, export/import (schema "spatial-lab/xgrids-correspondences" v1), predict + error stats;
+                        Lab 13W optional review fields (excludedFromFit, reviewStatus, scene, history) + withChange
+  correspondenceReview.ts  Lab 13W: LAB_13V_STAGE_B reference + LAB_13V_REVIEW ids, chooseReference, reviewRecords (distance, height,
+                        region, sector, off-axis, reference error, flags mirroring the backend audit), coverage (reliable-only)
   pointPicking.ts       Lab 13U: screen-space pick (front surface, nearest point), PCA plane refinement (ray ∩ plane, refusals),
                         surfaceRangeAlongRay, Jacobi eigen-solver
   fisheyeProjection.ts  Lab 13U: assumed equidistant model (f, cx, cy, usable radius; status "assumed" | "experimental-estimate"),
@@ -244,12 +251,14 @@ scripts/xgrids/         standalone XGRIDS .xbin tools (section 5.12; README.md l
   index_xbin.py         Lab 13P: indexer of the camera frames (no image decoding) → frames.csv, index-summary.json
   extract_frames.py     Lab 13Q: decodes chosen ch14 + ch18 pairs to JPEG via FFmpeg, interpolated scanner poses
   calibrate_cameras.py  Lab 13V: audit + experimental calibration of a correspondence export → audit/experiment JSON outside the repo
+  compare_experiments.py  Lab 13W: compares experiment files against a baseline (parameters, σ shifts, errors, folds, image check)
 tests/xgrids/           unittest suite on synthetic XBAG-like files (synthetic_xbag.py builds them; no real data);
                         test_camera_calibration.py (Lab 13V, synthetic correspondences, needs SciPy)
 docs/xgrids/            xbag-format.md (format, verified vs provisional), investigation-log.md, calibration-notes.md,
                         calibration-workspace.md (Lab 13R: running, behaviour, assumptions, validation, remaining work),
                         correspondences.md (Lab 13U: workflow, picking, schema, conventions, projection assumptions, validation),
-                        calibration-experiments.md (Lab 13V: concepts, method, commands, format, Basel results, limits)
+                        calibration-experiments.md (Lab 13V: concepts, method, commands, format, Basel results, limits;
+                        Lab 13W sensitivity), correspondences.md § Review and coverage (Lab 13W)
 public/data/            built-in dataset: pointcloud-500k/1m/2m/5m.bin (gitignored), poses.csv
 public/datasets/basel-house/  Basel House preview: basel-preview-1m.bin + basel-preview-metadata.json,
                         basel-preview-5m.bin + basel-preview-5m-metadata.json (.bin gitignored, JSON tracked)
@@ -710,6 +719,8 @@ This is `Euler(roll, −pitch, −yaw, "ZYX")`. The offsets are never used as ca
 - Principal point, lever arm and distortion stay unknown.
 
 Nothing in the app applies these values automatically. Hardware reference photographs (Livox MID-360 with two opposing wide-angle modules) support the ≈ ±90° directions and show that the lens centres are displaced from the pose reference point: the zero lever arm is temporary and a measured or estimated camera-to-scanner translation is still required (`docs/xgrids/calibration-notes.md`). The photos are not calibration measurements.
+
+**Correspondence review (Lab 13W).** Records may carry `excludedFromFit`, `reviewStatus`, `scene` and `history`, all optional, so the schema stays v1. Review errors use a named reference: a loaded experiment's Stage B, else Lab 13V Stage B for the Basel export. Image regions are thirds of the usable radius. "Reliable" means in fits with no warning; only reliable matches count towards the 15–25 per-camera target. Refitting without #1, #5 and #16 moved ch14's Stage B by under 1 σ and shrank its roll and f uncertainty about 3×. Held-out error and the photo check did not improve. The expanded dataset is not complete until the user supplies new hand-verified matches.
 
 ## 6. Rendering pipeline
 
@@ -1293,6 +1304,54 @@ Accept:
 - In the UI: the audit shows #11 excluded; Stage B is recommended for both cameras; the image markers and overlay follow the chosen set; experiment import refuses a wrong schema and a wrong dataset; all three modes still work.
 - `tsc` and `next build` clean.
 
+### Lab 13W — Correspondence quality and calibration dataset preparation
+
+Constraints (from the brief):
+- No rebuild of the app, no Gaussian training, no change to the extraction pipeline.
+- Keep LAS coordinates, timestamps and axis conventions; all values stay experimental or provisional.
+- Don't fit a lever arm, distortion or time offset; don't overwrite earlier experiment outputs.
+- Flag suspicious matches; never delete them automatically; keep record ids.
+- Don't push the user to pick unreliable features to reach a count.
+- Don't call the expanded real-world dataset complete until the user has collected and verified the new matches.
+
+Requirements (sections 4 and 5.12; details in `docs/xgrids/correspondences.md` § Review and coverage):
+- **Record fields** (optional, schema still v1, validated in `lib/correspondences.ts` and `camera_calibration.record_problem`):
+  - `excludedFromFit {reason, at}`;
+  - `reviewStatus` (unreviewed / verified / needs-fix);
+  - `scene`;
+  - `history` (≤ 100 `{at, action, previous}`).
+
+  `withChange` keeps `id` and `created`.
+- **Review list** (`CorrespondenceReview.tsx` `ReviewList`, replaces Lab 13U's list):
+  - shows event, channel, pixel, LAS, method, distance and height from the scanner, image region (thirds of the usable radius), angle from the axis, error under the reference set, flags, quality, scene, notes, review status, and whether the match is in fits;
+  - actions: Show, Edit (also replace pixel / LiDAR with history), Exclude with a reason / Restore, Delete;
+  - filters: all / to review / excluded / this event.
+- **Reference set** (`chooseReference`): a loaded experiment's Stage B for this dataset and pose hash; else the built-in `LAB_13V_STAGE_B` (Basel export only); else the provisional rotations with the assumed lens. Always named in the panel.
+- **Flags** (`reviewRecords`) mirror the backend audit:
+  - *exclude*: user-excluded, wrong-side, too-close;
+  - *warn*: the Lab 13V list (#1, #5, #11, #16 by id, until verified or excluded), needs-fix, close-range, may-move, quality, large-error (> max(3 × the channel median, 40 px)), no-projection, duplicate;
+  - *info*: image edge.
+
+  Reliable = in fits with no warning.
+- **Coverage** (`coverage`, `CoveragePanel`):
+  - per camera: reliable / verified / events against 15–25 (≥ 5 events);
+  - regions, eight directions (middle and outer rings), distance bins, height, scenes;
+  - an SVG of the fisheye frame with shaded cells and clickable dots (red ring = the Lab 13V list);
+  - guidance that names gaps but never asks for unsure picks;
+  - a "dataset not complete" note.
+- **Collection:** a scene select in the new-match form; an optional grey overlay of the camera's matches from other events.
+- **Backend:**
+  - audit flags `user-excluded` (exclude by default; `--include` forces the record back in) and `needs-fix`;
+  - audit rows carry `imageRegion`, `reviewStatus` and `scene`;
+  - unknown ids in exclude/include are refused (400 from the endpoint; error from the CLI); `MODULE_VERSION` "13W.1".
+- **Experiments:** rerun 13V's input as the baseline (same numbers, new id), without #1/#5/#16, and ≥ 3 m only, into `experiments/13w/<name>/`. `scripts/xgrids/compare_experiments.py` compares parameters ± σ, training and held-out errors, fold ranges, identifiability, image check, change vs the baseline in σ, and held-out error on shared records.
+
+Accept:
+- 22 calibration tests pass.
+- In the UI, the 19 Basel records show #1, #5 and #16 flagged with Lab 13V errors (245, 95, 67 px) and #11 excluded as wrong-side. Coverage reads ch14 3 reliable and ch18 4.
+- Exclude then restore keeps the id and logs both steps; loading an experiment switches the reference.
+- `tsc` and `next build` clean.
+
 ## 8. Pitfalls we hit and how they were fixed
 
 | Symptom | Cause | Fix |
@@ -1374,6 +1433,9 @@ Accept:
 | A "perfect" correspondence 172° behind the camera (Lab 13V) | the LiDAR pick landed on a façade across the courtyard (scanner's other side) | audit off-axis angle vs pixel angle before fitting; exclude, don't delete |
 | NumPy import fails with `IndexError` in a scratch script's code | a scratch file named `inspect.py` in the working folder shadowed the standard `inspect` module | never name scratch files after standard modules |
 | Photo-vs-LiDAR image check takes > 20 min (Lab 13V) | 242 events × 3 parameter sets, each selecting points from 5M again | select the points near the scanner once per image and cap at 24 evenly spaced events |
+| A "≥ 3 m only" experiment came out identical to the baseline (Lab 13W) | zsh doesn't word-split `$IDS`, so `--exclude $IDS` passed one argument holding 11 ids, which matched nothing | the CLI and endpoint now refuse unknown ids; pass ids as an array (`"${IDS[@]}"`) |
+| CLI crash `NoneType.__format__` after a fit with no held-out folds (Lab 13W) | the summary printed `None` medians with `:.1f` | print missing values as "—"; small subsets legitimately have no held-out error |
+| Lower training error after removing hard points looked like progress (Lab 13W) | removing the worst points always lowers training error | compare held-out error on the records both experiments share, and the photo check (`compare_experiments.py`) |
 | (Preventive) Calibration markers in the wrong place for another dataset | a run's scanner positions are LAS coordinates of *its* recording | place them only when the run's `posesSha256` equals the dataset's `poses.csv` hash; hide markers and viewer position otherwise |
 
 ## 9. Validation playbook
@@ -1453,6 +1515,12 @@ Techniques used:
   4. Test backend :8001 (with `SPATIAL_LAB_XGRIDS_DIR`) and a :3011 build, as for Lab 13U. Use `curl --data-binary @export.json` for the endpoints, including a wrong `datasetId` (422), a body over 5 MB (413) and a bad id list (400).
   5. In the browser, load files by assigning a `DataTransfer` file to the input. To get the file text into the page without uploading it anywhere, serve a /tmp copy from a throwaway local HTTP server with CORS for :3011.
   6. Check that the UI's experiment id equals the CLI's.
+- **Correspondence review** (Lab 13W):
+  1. Put the real export's records into the :3011 test origin's localStorage (`spatial-lab.correspondences.v1`) via a throwaway CORS file server, then reload.
+  2. Check the review list against the experiment: the Lab 13V errors for #1/#5/#16, #11 excluded as wrong-side, and the coverage counts.
+  3. Override `window.prompt`/`window.confirm`, then Exclude → Restore. The stored record must keep its `id`/`created` and log both actions.
+  4. Import an experiment in the optimization mode and confirm that the review's reference label switches to it.
+  5. Rerun the CLI for each subset into a new folder (never over earlier outputs) and compare them with `compare_experiments.py`. Judge by held-out error on shared records and the photo check, not training error.
 - Note: FPS numbers from SwiftShader are meaningless; use real hardware for performance conclusions.
 
 ## 10. Adapting Spatial Lab for different web purposes
@@ -1475,7 +1543,7 @@ General scaling rules: raw LAS is never loaded directly; convert offline to a ty
 
 ## 11. Not built yet / roadmap
 
-Explicitly out of scope so far (each would be its own lab): cross-capture alignment (Lab 7C organises captures per property; registration into a property frame via `alignment`/`frame`, using control points/GNSS/CRS, is not built), meshes and photographs as capture representations (splat scenes exist since Lab 8, section 5.7), splat ↔ LiDAR registration, importing SuperSplat `settings.json` (authored cameras/annotations), splat editing/cropping, background import jobs for very large splat files, LAZ/E57 import, LiDAR intensity visualisation, pose animation, clipping/cropping, measurement tools, annotations/hotspots, full Gaussian splatting (Lab 6 projects one Gaussian; Lab 7B composites up to 1,000 with CPU projection, centre sorting and instanced quads; still missing: projection and sorting on the GPU for millions of Gaussians, tile-based rasterisation, spherical-harmonic colour for many Gaussians in our own renderer (Lab 9 evaluates it for one; Lab 8 views real trained scenes with the official viewer), training), running the cloud training and importing its PLY with provenance (Lab 10C stage 2; `output/` reserved), metric scale/gravity for photo reconstructions (e.g. from LiDAR), XGRIDS camera calibration (fisheye intrinsics and camera-to-scanner extrinsics; Lab 13Q only gives scanner poses at the image times, Lab 13R only inspects them, Lab 13S only narrows the viewing directions, Lab 13U only collects 2D–3D correspondences with provisional error diagnostics, and Lab 13V only makes experimental estimates of the rotations and one focal parameter (principal point, lever arm, distortion and timing still unknown), see `docs/xgrids/calibration-notes.md`; next steps in `docs/xgrids/calibration-workspace.md`: channel identity, intrinsics, 2D–3D correspondences, extrinsics, reprojection errors, frustums/rays, alignment diagnostics) and decoding of the non-camera XBAG channels, video frame extraction, linking training projects to a property/capture, RAW/video import, editing/saving trained Gaussians (Lab 9 experiments are preview-only), inspecting a Gaussian among its neighbours, ordinary meshes, WebXR, LOD/octrees, workers.
+Explicitly out of scope so far (each would be its own lab): cross-capture alignment (Lab 7C organises captures per property; registration into a property frame via `alignment`/`frame`, using control points/GNSS/CRS, is not built), meshes and photographs as capture representations (splat scenes exist since Lab 8, section 5.7), splat ↔ LiDAR registration, importing SuperSplat `settings.json` (authored cameras/annotations), splat editing/cropping, background import jobs for very large splat files, LAZ/E57 import, LiDAR intensity visualisation, pose animation, clipping/cropping, measurement tools, annotations/hotspots, full Gaussian splatting (Lab 6 projects one Gaussian; Lab 7B composites up to 1,000 with CPU projection, centre sorting and instanced quads; still missing: projection and sorting on the GPU for millions of Gaussians, tile-based rasterisation, spherical-harmonic colour for many Gaussians in our own renderer (Lab 9 evaluates it for one; Lab 8 views real trained scenes with the official viewer), training), running the cloud training and importing its PLY with provenance (Lab 10C stage 2; `output/` reserved), metric scale/gravity for photo reconstructions (e.g. from LiDAR), XGRIDS camera calibration (fisheye intrinsics and camera-to-scanner extrinsics; Lab 13Q only gives scanner poses at the image times, Lab 13R only inspects them, Lab 13S only narrows the viewing directions, Lab 13U only collects 2D–3D correspondences with provisional error diagnostics, and Lab 13V only makes experimental estimates of the rotations and one focal parameter (principal point, lever arm, distortion and timing still unknown); Lab 13W adds review and coverage tools, but the expanded, hand-verified correspondence set (15–25 reliable per camera) is not collected yet, see `docs/xgrids/calibration-notes.md`; next steps in `docs/xgrids/calibration-workspace.md`: channel identity, intrinsics, 2D–3D correspondences, extrinsics, reprojection errors, frustums/rays, alignment diagnostics) and decoding of the non-camera XBAG channels, video frame extraction, linking training projects to a property/capture, RAW/video import, editing/saving trained Gaussians (Lab 9 experiments are preview-only), inspecting a Gaussian among its neighbours, ordinary meshes, WebXR, LOD/octrees, workers.
 
 ## 12. Prompt templates
 
@@ -1537,3 +1605,4 @@ Explicitly out of scope so far (each would be its own lab): cross-capture alignm
 | 13U | Image ↔ LiDAR correspondence mode on `/camera-calibration`: zoomable full-resolution image viewer with original-pixel picking (`CorrespondenceViewer`), armed screen-space LiDAR picking with front-surface filter, approximate nearest point and optional ray ∩ PCA-plane refinement with refusals (`lib/pointPicking.ts`, `CorrespondenceLayers`), LAS conversion in float64, provisional records with edit/delete in localStorage, JSON export/import with schema v1 and validation (`lib/correspondences.ts`), optional assumed equidistant overlay with per-record errors and mean/median/RMS (`lib/fisheyeProjection.ts`), "look along this pixel's ray" and "Show" camera moves; validated with 3 Basel features (14.8 / 104.3 / 180.3 px under the assumed model); `docs/xgrids/correspondences.md`; sections 4, 5.12, 7, 8, 9, 11 |
 | 13V | Experimental camera calibration: `backend/camera_calibration.py` (export validation + run cross-check, audit flags, Stage A rotation / Stage B rotation + f with SciPy robust least squares, leave-one-event-out, sensitivity, identifiability limits, deterministic experiment JSON v1, photo-vs-LiDAR NCC check), stateless `POST /xgrids/calibration/audit` + `/experiments`, `scripts/xgrids/calibrate_cameras.py`, `tests/xgrids/test_camera_calibration.py` (20 tests), `scipy 1.18.1`; third mode "Calibration optimization" on `/camera-calibration` (`CalibrationOptimizationSection`, `useCalibrationOptimization`, `lib/calibrationExperiment.ts`; display-only viewer, presets untouched); Basel: f ≈ 927 / 955 px/rad, held-out median 80 → 28 px (ch14) and 66 → 35 px (ch18), better on 42 of 48 unseen photos; principal point, lever arm and distortion still unknown; `docs/xgrids/calibration-experiments.md`; sections 3.1, 4, 5.12, 7, 8, 9, 11 |
 | 13V.1 | Docs only: hardware reference photographs of the K1 (Livox MID-360, two opposing wide-angle imaging modules) recorded as supporting evidence for the ±90° directions; zero lever arm stated as temporary; future measured/estimated camera-to-scanner translation required; no translations, channel assignment or intrinsics inferred from photos; `calibration-notes.md`, `calibration-experiments.md`, section 5.12 |
+| 13W | Correspondence review and dataset preparation: optional record fields `excludedFromFit` / `reviewStatus` / `scene` / `history` (frontend and backend validation, ids kept), `lib/correspondenceReview.ts` (Lab 13V Stage B reference, flags mirroring the audit, Lab 13V review list #1/#5/#11/#16, reliable-only coverage), `CorrespondenceReview.tsx` (review list with Exclude/Restore, review status, scene, corrections with history, filters; per-camera SVG coverage diagram, 15–25 target, guidance, "not complete" note), scene select and other-event coverage markers; backend `user-excluded` / `needs-fix` flags, `imageRegion`, unknown exclude/include ids refused, CLI prints missing values; `scripts/xgrids/compare_experiments.py`; Basel: without #1/#5/#16 ch14 Stage B moves < 1 σ and its roll/f σ shrink about 3×, but held-out and photo checks don't improve; the ≥ 3 m subset is too small to fit or validate; 22 calibration tests; sections 4, 5.12, 7, 8, 9, 11 |
