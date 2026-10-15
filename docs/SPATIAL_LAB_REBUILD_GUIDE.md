@@ -252,13 +252,20 @@ scripts/xgrids/         standalone XGRIDS .xbin tools (section 5.12; README.md l
   extract_frames.py     Lab 13Q: decodes chosen ch14 + ch18 pairs to JPEG via FFmpeg, interpolated scanner poses
   calibrate_cameras.py  Lab 13V: audit + experimental calibration of a correspondence export → audit/experiment JSON outside the repo
   compare_experiments.py  Lab 13W: compares experiment files against a baseline (parameters, σ shifts, errors, folds, image check)
+  select_splat_frames.py  Lab 14A: capture events for a splatting dataset (window, slots, steadiest event, anchors, near-duplicates)
+  prepare_splat_dataset.py  Lab 14A: fisheye frames → perspective views + COLMAP PINHOLE model + LiDAR initial points + manifest
+  validate_splat_dataset.py  Lab 14A: independent preflight checks + visual checks → <dataset>/checks/
+  splat_geometry.py     Lab 14A: LAS / body / fisheye / OpenCV / view frames, view layouts, COLMAP pose conversion
+  splat_colmap.py       Lab 14A: COLMAP cameras/images/points3D text + binary writer and readers (PINHOLE, no tracks), PLY
 tests/xgrids/           unittest suite on synthetic XBAG-like files (synthetic_xbag.py builds them; no real data);
-                        test_camera_calibration.py (Lab 13V, synthetic correspondences, needs SciPy)
+                        test_camera_calibration.py (Lab 13V, synthetic correspondences, needs SciPy);
+                        test_splat_dataset.py (Lab 14A geometry, COLMAP files, resampling, selection)
 docs/xgrids/            xbag-format.md (format, verified vs provisional), investigation-log.md, calibration-notes.md,
                         calibration-workspace.md (Lab 13R: running, behaviour, assumptions, validation, remaining work),
                         correspondences.md (Lab 13U: workflow, picking, schema, conventions, projection assumptions, validation),
                         calibration-experiments.md (Lab 13V: concepts, method, commands, format, Basel results, limits;
-                        Lab 13W sensitivity), correspondences.md § Review and coverage (Lab 13W)
+                        Lab 13W sensitivity), correspondences.md § Review and coverage (Lab 13W),
+                        splat-dataset.md (Lab 14A: beginner explanation, commands, conventions, validation, preflight report)
 public/data/            built-in dataset: pointcloud-500k/1m/2m/5m.bin (gitignored), poses.csv
 public/datasets/basel-house/  Basel House preview: basel-preview-1m.bin + basel-preview-metadata.json,
                         basel-preview-5m.bin + basel-preview-5m-metadata.json (.bin gitignored, JSON tracked)
@@ -729,6 +736,42 @@ Nothing in the app applies these values automatically. Hardware reference photog
 - parameter shifts under 1 σ, and an unchanged photo check.
 
 `experiments/baseline-latest-2026-10-15.json`, outside the repo, points to it, and 13V's files are kept. The flag for a record on the Lab 13V list clears once the record has a pixel or LiDAR correction in its history. The dataset is still not complete.
+
+### 5.13 Gaussian splatting dataset from XGRIDS frames (Lab 14A)
+
+Full description: `docs/xgrids/splat-dataset.md`. The dataset is a plain COLMAP model, so any COLMAP-PINHOLE trainer can read it; it targets Nerfstudio 1.1.5 `splatfacto` (Lab 10C).
+
+**Layout** (`<recording>/reconstruction/training/lab14a/<name>/`, outside Git, never overwritten):
+- `images/seq<NNNNN>_<channel>_<view>.jpg`;
+- `sparse/0/` with `cameras`, `images` and `points3D`, in both `.bin` and `.txt`:
+  - one PINHOLE camera;
+  - world→camera poses;
+  - LiDAR points without tracks;
+- `sparse/poses-only/` (no points);
+- `lidar_init.ply`;
+- `manifest.json` (schema `spatial-lab/xgrids-splat-dataset` v1);
+- `SHA256SUMS`;
+- `checks/` (`validation.json`, `topdown-cameras.png`, `reprojection/*.png`, `contact-sheet.jpg`).
+
+**Frames** (`scripts/xgrids/splat_geometry.py`, built on `backend/camera_calibration.py`):
+- **LAS world:** unchanged, Z up.
+- **Scanner pose:** `v_las = R(q)·v_body + p`.
+- **Fisheye frame F:** X optical, Y image left, Z image up; `v_body = R_off·v_F`.
+- **OpenCV conversion:** `R_F_CV = [[0,0,1],[−1,0,0],[0,−1,0]]`.
+- **View:** `R_cv_view = Ry(yaw)·Rx(pitch)`.
+- **Camera-to-world:** `R(q)·R_off·R_F_CV·R_cv_view`, centre `p + R(q)·leverArm`, with the lever arm 0 (an assumption).
+- **COLMAP:** stores `Rᵀ`, `−Rᵀ·C`, quaternion w, x, y, z. Its principal point is OpenCV + 0.5 (corner origin), so a 1600 × 1200 view has cx, cy = 800, 600.
+
+**Views:**
+- The `forward12` layout gives one 1600 × 1200, 110° × 94.4° view (f 560.17 px) per fisheye frame, about the same optical centre, turned 12° towards the scanner's forward direction.
+- The sign comes from the calibration: image right for ch14, image left for ch18.
+- Every pixel lies within 1183 px of the fisheye centre (usable radius 1400 px), so no masks are needed.
+- Pixels are resampled bilinearly through the equidistant model after a 0.8 px blur.
+
+**Frames and points (Basel):**
+- **Selection:** minutes 7.5–18, 5 s slots with the steadiest event within ±1 s, plus the 9 correspondence events: 127 pairs, 254 views.
+- **Split:** every 9th image id held out (Nerfstudio interval split), so both cameras are held out.
+- **Initial points:** the 5 M preview, then within 25 m of a camera, a 5 cm voxel mean, at least 2 neighbours within 20 cm, and 1 M random: 1,000,000 points.
 
 ## 6. Rendering pipeline
 
@@ -1360,6 +1403,50 @@ Accept:
 - Exclude then restore keeps the id and logs both steps; loading an experiment switches the reference.
 - `tsc` and `next build` clean.
 
+### Lab 14A — Gaussian splatting dataset preparation
+
+Constraints (from the brief):
+- Dataset preparation and validation only: no GPU, no cloud, no upload, no training.
+- Don't modify the XBIN, LAS, photographs, `poses.csv`, correspondence exports or calibration experiments; use the latest baseline (`x_c69aede71834`) without overwriting it.
+- Keep large outputs outside Git; don't extract the whole recording.
+- Keep scanner poses and camera poses distinct. The lever arm is an explicit zero assumption.
+- Don't label fisheye images as pinhole; don't invent viewpoints.
+
+Requirements (section 5.13; `docs/xgrids/splat-dataset.md`):
+- **Selection** (`select_splat_frames.py`):
+  - a time window with one event per slot, the lowest turn rate within ±search;
+  - correspondence events kept, and an anchor replaces its slot;
+  - near-duplicates dropped (< 0.3 m and < 10°);
+  - an interval comparison;
+  - JSON with timestamps, pair Δt, positions, steps, reasons, and a `sequences` string for `extract_frames.py --sequences`.
+- **Extraction:** reuse `extract_frames.py` unchanged, with a new run name.
+- **Dataset** (`prepare_splat_dataset.py`):
+  - **Run checks:** checks the run against the selection (same sequences, all `ok`, same `poses.csv` hash).
+  - **Views:** for each image, builds the view(s) of the layout from the scanner pose in the manifest and the experiment's Stage B.
+  - **Resampling:** done in parallel; out-of-circle pixels are masked into `masks/`, only for layouts that reach the edge.
+  - **Files:** writes the COLMAP model (`.txt` and `.bin`), the poses-only model, the PLY, the manifest (provenance, conventions, assumptions, calibration with its hash, layout, point-cloud provenance, split) and `SHA256SUMS`.
+- **Validation** (`validate_splat_dataset.py`), which reads only the written files and the sources:
+  - **Files:** checksums; COLMAP `.bin` = `.txt`; ids, names, files and manifest agree; split.
+  - **Images:** image count, size and format; pair Δt; time order; pose range; `poses.csv` and source hashes.
+  - **Geometry:**
+    - proper rotations;
+    - centres against an independent SciPy Slerp interpolation;
+    - ch14 left and ch18 right of the scanner;
+    - image-up · world-up;
+    - rigid rig.
+  - **Correspondences:** projected through the COLMAP files.
+  - **Pixels:** view pixels against the fisheye through the files, with a 180° control.
+  - **LiDAR agreement:** grey NCC between the LiDAR rendering and the photo, with rolled-180° and other-camera controls.
+  - **Covisibility:** z-buffered 20 cm voxels.
+  - **Quality and motion:** depth; sharpness, with its turn-rate correlation; exposure; near-duplicates; continuity, including turnarounds covered by the other camera.
+  - **Visual outputs:** a top-down map, reprojection overlays and a contact sheet.
+
+Accept:
+- 13 new tests (48 XGRIDS tests in total, 1 skipped).
+- Basel: 254 views, verdict "pass with warnings", no failed check.
+- Correspondence error in the views equals the Stage B fisheye residual (median 0.74°). The dataset pose is best in ≥ 90 % of views by NCC.
+- Nothing written inside the repository.
+
 ## 8. Pitfalls we hit and how they were fixed
 
 | Symptom | Cause | Fix |
@@ -1444,6 +1531,12 @@ Accept:
 | A "≥ 3 m only" experiment came out identical to the baseline (Lab 13W) | zsh doesn't word-split `$IDS`, so `--exclude $IDS` passed one argument holding 11 ids, which matched nothing | the CLI and endpoint now refuse unknown ids; pass ids as an array (`"${IDS[@]}"`) |
 | CLI crash `NoneType.__format__` after a fit with no held-out folds (Lab 13W) | the summary printed `None` medians with `:.1f` | print missing values as "—"; small subsets legitimately have no held-out error |
 | Lower training error after removing hard points looked like progress (Lab 13W) | removing the worst points always lowers training error | compare held-out error on the records both experiments share, and the photo check (`compare_experiments.py`) |
+| A fisheye COLMAP camera would be unusable in splatfacto (Lab 14A) | Nerfstudio 1.1.5 rasterises pinhole only and undistorts `OPENCV_FISHEYE` on load with OpenCV `balance=0` into an image of the same size, which fails at ~167° | write our own perspective views about the same optical centre, with documented geometry (`splat_geometry.py`) |
+| Operator and device in the fisheye periphery (Lab 14A) | the handheld rig puts the operator on the scanner's backward side, so it appears on image left (ch14) and image right (ch18) | per-pixel dark frequency over all frames; turn views 12° forward (sign from the calibration) so no view pixel enters the ≥ 30 % zone |
+| Half-pixel shift between conventions (Lab 14A) | COLMAP's pixel origin is the top-left corner; ours (OpenCV) is the centre of the top-left pixel | COLMAP cx, cy = OpenCV + 0.5 (`W/2`, `H/2`); a test checks it, and the validator projects through the files |
+| Held-out views all from one camera (Lab 14A) | image ids alternate ch14/ch18, so Nerfstudio's interval split with an even interval (8) picks one channel only | eval interval 9; the manifest records the same split |
+| Nerfstudio would rotate a Z-up world (Lab 14A) | the COLMAP dataparser assumes COLMAP's y-down world by default (`assume_colmap_world_coordinate_convention`) and re-orients by camera "up" | for LAS-frame data pass `--assume-colmap-world-coordinate-convention False --orientation-method none` (centring and scaling are recorded in `dataparser_transforms.json`) |
+| "Blurry" views were plain walls (Lab 14A) | Laplacian variance measures texture as well as blur | check its correlation with the turn rate (−0.10 here) and look at the flagged views before dropping any |
 | (Preventive) Calibration markers in the wrong place for another dataset | a run's scanner positions are LAS coordinates of *its* recording | place them only when the run's `posesSha256` equals the dataset's `poses.csv` hash; hide markers and viewer position otherwise |
 
 ## 9. Validation playbook
@@ -1529,6 +1622,12 @@ Techniques used:
   3. Override `window.prompt`/`window.confirm`, then Exclude → Restore. The stored record must keep its `id`/`created` and log both actions.
   4. Import an experiment in the optimization mode and confirm that the review's reference label switches to it.
   5. Rerun the CLI for each subset into a new folder (never over earlier outputs) and compare them with `compare_experiments.py`. Judge by held-out error on shared records and the photo check, not training error.
+- **Gaussian splatting dataset** (Lab 14A):
+  1. `backend/.venv/bin/python -m unittest tests/xgrids/test_splat_dataset.py -v`. This checks pinhole projection against the fisheye mapping, COLMAP round trips and conventions, resampling, and selection.
+  2. Before choosing a layout, compute each camera's per-pixel dark frequency over the extracted frames, so the views avoid the operator and device zone.
+  3. Run `validate_splat_dataset.py`. It must report no failures, and its controls (view rotated 180°, camera rolled 180°, other camera) must score clearly worse than the dataset poses.
+  4. Look at `checks/topdown-cameras.png` and the reprojection overlays: LiDAR edges should coincide with photo edges. Keep the overlays and the contact sheet out of reports if they show people.
+  5. Confirm the trainer's option names against its pinned source (Nerfstudio 1.1.5) before writing the training command.
 - Note: FPS numbers from SwiftShader are meaningless; use real hardware for performance conclusions.
 
 ## 10. Adapting Spatial Lab for different web purposes
@@ -1551,7 +1650,7 @@ General scaling rules: raw LAS is never loaded directly; convert offline to a ty
 
 ## 11. Not built yet / roadmap
 
-Explicitly out of scope so far (each would be its own lab): cross-capture alignment (Lab 7C organises captures per property; registration into a property frame via `alignment`/`frame`, using control points/GNSS/CRS, is not built), meshes and photographs as capture representations (splat scenes exist since Lab 8, section 5.7), splat ↔ LiDAR registration, importing SuperSplat `settings.json` (authored cameras/annotations), splat editing/cropping, background import jobs for very large splat files, LAZ/E57 import, LiDAR intensity visualisation, pose animation, clipping/cropping, measurement tools, annotations/hotspots, full Gaussian splatting (Lab 6 projects one Gaussian; Lab 7B composites up to 1,000 with CPU projection, centre sorting and instanced quads; still missing: projection and sorting on the GPU for millions of Gaussians, tile-based rasterisation, spherical-harmonic colour for many Gaussians in our own renderer (Lab 9 evaluates it for one; Lab 8 views real trained scenes with the official viewer), training), running the cloud training and importing its PLY with provenance (Lab 10C stage 2; `output/` reserved), metric scale/gravity for photo reconstructions (e.g. from LiDAR), XGRIDS camera calibration (fisheye intrinsics and camera-to-scanner extrinsics; Lab 13Q only gives scanner poses at the image times, Lab 13R only inspects them, Lab 13S only narrows the viewing directions, Lab 13U only collects 2D–3D correspondences with provisional error diagnostics, and Lab 13V only makes experimental estimates of the rotations and one focal parameter (principal point, lever arm, distortion and timing still unknown); Lab 13W adds review and coverage tools, but the expanded, hand-verified correspondence set (15–25 reliable per camera) is not collected yet, see `docs/xgrids/calibration-notes.md`; next steps in `docs/xgrids/calibration-workspace.md`: channel identity, intrinsics, 2D–3D correspondences, extrinsics, reprojection errors, frustums/rays, alignment diagnostics) and decoding of the non-camera XBAG channels, video frame extraction, linking training projects to a property/capture, RAW/video import, editing/saving trained Gaussians (Lab 9 experiments are preview-only), inspecting a Gaussian among its neighbours, ordinary meshes, WebXR, LOD/octrees, workers.
+Explicitly out of scope so far (each would be its own lab): cross-capture alignment (Lab 7C organises captures per property; registration into a property frame via `alignment`/`frame`, using control points/GNSS/CRS, is not built), meshes and photographs as capture representations (splat scenes exist since Lab 8, section 5.7), splat ↔ LiDAR registration, importing SuperSplat `settings.json` (authored cameras/annotations), splat editing/cropping, background import jobs for very large splat files, LAZ/E57 import, LiDAR intensity visualisation, pose animation, clipping/cropping, measurement tools, annotations/hotspots, full Gaussian splatting (Lab 6 projects one Gaussian; Lab 7B composites up to 1,000 with CPU projection, centre sorting and instanced quads; still missing: projection and sorting on the GPU for millions of Gaussians, tile-based rasterisation, spherical-harmonic colour for many Gaussians in our own renderer (Lab 9 evaluates it for one; Lab 8 views real trained scenes with the official viewer), training), running the cloud training and importing its PLY with provenance (Lab 10C stage 2; `output/` reserved), metric scale/gravity for photo reconstructions (e.g. from LiDAR), XGRIDS camera calibration (fisheye intrinsics and camera-to-scanner extrinsics; Lab 13Q only gives scanner poses at the image times, Lab 13R only inspects them, Lab 13S only narrows the viewing directions, Lab 13U only collects 2D–3D correspondences with provisional error diagnostics, and Lab 13V only makes experimental estimates of the rotations and one focal parameter (principal point, lever arm, distortion and timing still unknown); Lab 13W adds review and coverage tools, but the expanded, hand-verified correspondence set (15–25 reliable per camera) is not collected yet, see `docs/xgrids/calibration-notes.md`; Lab 14A prepares and validates a first splatting dataset from these estimates, but training it (Lab 14B) needs the user's approval of a GPU rental; next steps in `docs/xgrids/calibration-workspace.md`: channel identity, intrinsics, 2D–3D correspondences, extrinsics, reprojection errors, frustums/rays, alignment diagnostics) and decoding of the non-camera XBAG channels, video frame extraction, linking training projects to a property/capture, RAW/video import, editing/saving trained Gaussians (Lab 9 experiments are preview-only), inspecting a Gaussian among its neighbours, ordinary meshes, WebXR, LOD/octrees, workers.
 
 ## 12. Prompt templates
 
@@ -1615,3 +1714,4 @@ Explicitly out of scope so far (each would be its own lab): cross-capture alignm
 | 13V.1 | Docs only: hardware reference photographs of the K1 (Livox MID-360, two opposing wide-angle imaging modules) recorded as supporting evidence for the ±90° directions; zero lever arm stated as temporary; future measured/estimated camera-to-scanner translation required; no translations, channel assignment or intrinsics inferred from photos; `calibration-notes.md`, `calibration-experiments.md`, section 5.12 |
 | 13W | Correspondence review and dataset preparation: optional record fields `excludedFromFit` / `reviewStatus` / `scene` / `history` (frontend and backend validation, ids kept), `lib/correspondenceReview.ts` (Lab 13V Stage B reference, flags mirroring the audit, Lab 13V review list #1/#5/#11/#16, reliable-only coverage), `CorrespondenceReview.tsx` (review list with Exclude/Restore, review status, scene, corrections with history, filters; per-camera SVG coverage diagram, 15–25 target, guidance, "not complete" note), scene select and other-event coverage markers; backend `user-excluded` / `needs-fix` flags, `imageRegion`, unknown exclude/include ids refused, CLI prints missing values; `scripts/xgrids/compare_experiments.py`; Basel: without #1/#5/#16 ch14 Stage B moves < 1 σ and its roll/f σ shrink about 3×, but held-out and photo checks don't improve; the ≥ 3 m subset is too small to fit or validate; 22 calibration tests; sections 4, 5.12, 7, 8, 9, 11 |
 | 13W.1 | Latest experimental baseline from the user's reviewed export (#1/#5/#16 corrected, #11 deleted, one match added, others re-picked; all validated): Stage B `x_c69aede71834`, held-out medians 18 / 16 px (13V: 28 / 35), f ≈ 961 for both cameras, shifts < 1 σ, photo check unchanged; pointer file `baseline-latest-2026-10-15.json` outside the repo, 13V kept; `BASELINE_STAGE_B` replaces `LAB_13V_STAGE_B` as the built-in review reference; Lab 13V flags clear on corrected records; dataset still not complete; sections 4, 5.12 |
+| 14A | Gaussian splatting dataset preparation (no training): `select_splat_frames.py` (window, 5 s slots with the steadiest event, correspondence anchors, near-duplicates, interval comparison), `prepare_splat_dataset.py` (fisheye → 1600 × 1200 110° perspective views turned 12° forward, out of the operator zone; COLMAP PINHOLE model in the LAS frame from scanner pose + Stage B `x_c69aede71834`, lever arm 0 as an assumption; 1 M LiDAR initial points; poses-only model; manifest with full provenance), `validate_splat_dataset.py` (independent checks + top-down map, reprojection overlays), `splat_geometry.py`, `splat_colmap.py`, 13 tests; Basel: 127 pairs / 254 views, 266 MB, pass with warnings (correspondences 0.74° = Stage B residual, NCC best in 243/254 views, no isolated views); go for Lab 14B pending approval; `docs/xgrids/splat-dataset.md`; sections 4, 5.13, 7, 8, 9, 11 |

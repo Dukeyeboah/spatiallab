@@ -9,6 +9,10 @@ Standalone Python tools for raw XGRIDS LixelKity K1 recordings (`.xbin`, contain
 | `index_xbin.py` | finds and decodes the metadata of every camera image (no image decoding) | `reconstruction/xgrids/metadata/frames.csv`, `index-summary.json` |
 | `extract_frames.py` | decodes chosen synchronised pairs to JPEG, using `frames.csv`, with interpolated scanner poses | `reconstruction/xgrids/images/<run>/*.jpg`, `manifest.csv`, `extraction-summary.json` |
 | `calibrate_cameras.py` | Lab 13V: audits a Lab 13U correspondence export and runs an **experimental** calibration (rotation, then + one focal parameter) with leave-one-event-out validation; needs NumPy + SciPy (`backend/.venv`) | `--out` (required, outside the repo): `audit-<sha8>.json`, `experiment-<id>.json`, never overwritten |
+| `select_splat_frames.py` | Lab 14A: picks capture events for a splatting dataset in a time window (one per slot, steadiest event, correspondence events kept, near-duplicates dropped) and compares intervals | `--out` selection JSON (outside the repo, never overwritten) |
+| `prepare_splat_dataset.py` | Lab 14A: fisheye frames of an extraction run → perspective views + COLMAP PINHOLE model (poses from scanner pose + experimental calibration, LAS frame) + LiDAR initial points + manifest | `--out` dataset folder (must not exist) |
+| `validate_splat_dataset.py` | Lab 14A: independent preflight checks of a dataset (structure, images, pairs, rotations, trajectory, correspondences, pixels, LiDAR agreement, covisibility, quality) + visual checks | `<dataset>/checks/` |
+| `splat_geometry.py`, `splat_colmap.py` | Lab 14A libraries: frame conventions and view geometry (reuses `backend/camera_calibration.py`); COLMAP text/binary reader and writer | — |
 
 The recording, LAS and `poses.csv` are only ever opened read-only.
 
@@ -84,11 +88,26 @@ python3 scripts/xgrids/compare_experiments.py BASELINE.json OTHER.json … [--ou
 
 Ids after `--exclude` / `--include` are separate arguments; unknown ids are refused. In zsh, pass an array (`"${IDS[@]}"`), because `$IDS` is not split. Method, output format and the Basel results: [docs/xgrids/calibration-experiments.md](../../docs/xgrids/calibration-experiments.md).
 
+## Gaussian splatting dataset (Lab 14A)
+
+```bash
+PY=backend/.venv/bin/python; R=<recording>/reconstruction
+$PY scripts/xgrids/select_splat_frames.py --from-min 7.5 --to-min 18 --interval 5 \
+    --anchors CORRESPONDENCES.json --out $R/training/lab14a/selection-5s.json
+python3 scripts/xgrids/extract_frames.py REC.xbin --sequences "<sequences from the selection>" --run-name lab14a-5s
+$PY scripts/xgrids/prepare_splat_dataset.py --run $R/xgrids/images/lab14a-5s --selection … --experiment EXPERIMENT.json \
+    --cloud-bin public/datasets/basel-house/basel-preview-5m.bin --cloud-metadata …-5m-metadata.json --out $R/training/lab14a/NAME
+$PY scripts/xgrids/validate_splat_dataset.py $R/training/lab14a/NAME --correspondences … --cloud-bin … --cloud-metadata …
+```
+
+Options: `--layout forward12|centre|forward12+wing` (views per fisheye; the wing layout writes `masks/`), `--lever-arm x,y,z` (body frame, default 0 = assumption), `--cloud-radius`, `--voxel`, `--max-points`, `--eval-interval` (default 9 so both cameras are held out). Method, conventions, Basel results and the Lab 14B steps: [docs/xgrids/splat-dataset.md](../../docs/xgrids/splat-dataset.md).
+
 ## Tests
 
 ```bash
 python3 -m unittest discover tests/xgrids -v                                   # XBAG tools (calibration tests skip without SciPy)
 backend/.venv/bin/python -m unittest tests/xgrids/test_camera_calibration.py -v  # Lab 13V, synthetic data
+backend/.venv/bin/python -m unittest tests/xgrids/test_splat_dataset.py -v      # Lab 14A, synthetic data
 ```
 
 The tests use synthetic XBAG-like files built by `tests/xgrids/synthetic_xbag.py`, with no real scans or photographs. They cover:

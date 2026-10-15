@@ -116,6 +116,34 @@ Recording: Basel House, `2026-07-15-101012-003.xbin` (13,929,066,496 bytes), Lix
   - **Independent checks:** the photo check is unchanged, and the three Lab 13U validation records improve slightly.
   - **Remaining:** the ch18 #3 window sill is an outlier at 48 px held out. Close-range and sparse-LiDAR picks remain, and there is no coverage in the outer image. The dataset is still not complete.
 
+## Lab 14A: Gaussian splatting dataset preparation
+
+Full write-up: [splat-dataset.md](splat-dataset.md). Data prepared only: no training, no GPU, no upload.
+
+- **Trainer constraint:** Nerfstudio 1.1.5 `splatfacto` (Lab 10C) renders pinhole cameras only.
+  - Its fisheye path undistorts with OpenCV `balance=0` into an image of the same size, which is unusable at our ~167°.
+  - So each fisheye frame becomes one 1600 × 1200, 110° × 94° perspective view about the same optical centre, resampled with the Stage B equidistant model of `x_c69aede71834`.
+- **Operator and device in the frames:** over 254 frames they are persistently dark (≥ 30 % of frames) from about 800 px outward on the backward side of each fisheye: image left for ch14, image right for ch18.
+  - This is consistent with the calibrated directions, since ch14 looks left, so its image-left points backward.
+  - Views are turned 12° forward, which takes that zone out of every view; no masks are needed.
+- **Frames:**
+  - minutes 7.5–18 (south-west rooms, south corridor, east wing, courtyard), one event per 5 s slot (the steadiest within ±1 s), plus the 9 correspondence events: 127 pairs, 254 views;
+  - 10 s would leave 2.6 m and 49° between events, 5 s leaves 1.5 m and 29°, and 3 s is the denser fallback.
+- **Dataset:**
+  - COLMAP PINHOLE model in the LAS frame (no global transform), 1 M LiDAR initial points from the 5 M preview, a poses-only model for other initialisations;
+  - a manifest tracing every view to its frame, channel, timestamp, H.264 offsets and source hash;
+  - 266 MB.
+- **Validation:** pass with warnings, no failures.
+  - **Geometry:** camera centres are on the independently interpolated trajectory (≤ 0.001 mm); every rotation is proper; ch14 looks left and ch18 right; image-up · world-up ≥ 0.95.
+  - **Correspondences:** median 0.74° (= the Stage B residual).
+  - **Pixels:** view pixels match the fisheye through the COLMAP files (grey difference 0.7, against 85 for a 180° control).
+  - **LiDAR agreement:** LiDAR-versus-photo NCC is 0.40, against ≈ 0 for rolled or swapped cameras (best in 243/254 views).
+  - **Covisibility:** no isolated views.
+  - **Warnings:** plain-surface views (not blur), bright sky, and 17 % of camera directions not continued between 5 s events.
+- **Recommendation:** go for Lab 14B on this dataset once the GPU rental is approved.
+  - **Main risk:** the zero lever arm. 5 cm is about 0.7° at 4 m.
+  - **Second run:** with camera-pose refinement.
+
 ## Open questions
 
 - Which physical camera is channel 14 and which is 18? Clue: `project.json` lists `left_main` and `right_main` at indices 0 and 2. Lab 13S found ch14 looks left, which suggests ch14 = `left_main`, but this is not confirmed.

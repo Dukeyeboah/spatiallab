@@ -55,6 +55,10 @@ From 19 correspondences (9 usable per camera, 8 events), fitted with robust leas
   - ch14 is about (−89.0°, +2.9°, +0.4°) with f 961 ± 8; ch18 is about (+89.4°, +4.3°, +0.8°) with f 962 ± 10. Every parameter passes the identifiability limits and moved by less than 1 σ from 13V.
   - Held-out median errors are 18 px (ch14) and 16 px (ch18); the photo check is unchanged.
   - It is still experimental: the lever arm is assumed zero, and the dataset is not complete.
+- **Used by Lab 14A** ([splat-dataset.md](splat-dataset.md)): the first Gaussian splatting dataset takes this Stage B (rotations and f) as given.
+  - **Lever arm:** 0, labelled as an assumption in its manifest.
+  - **Consequence:** about 0.7° of inconsistency at 4 m for a 5 cm offset.
+  - **Measured residual:** the correspondence residual seen in its perspective views is 0.74° (median).
 
 ## Unknown
 
