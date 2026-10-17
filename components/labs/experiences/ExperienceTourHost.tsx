@@ -62,8 +62,10 @@ type Props = {
 const FALLBACK_EYE = new THREE.Vector3(0, 1.55, 0.5);
 const FALLBACK_TARGET = new THREE.Vector3(0, 1.4, -2.5);
 const FLY_DURATION_S = 1.15;
-const CAPSULE_RADIUS = 0.28;
+/** Keep capsule clear of the floor mesh so standing contact does not freeze walk. */
+const CAPSULE_RADIUS = 0.22;
 const EYE = 1.55;
+const CAPSULE_FOOT_CLEARANCE = 0.35;
 
 type FlyState = {
   fromEye: THREE.Vector3;
@@ -188,58 +190,77 @@ export function ExperienceTourHost({
     const tmpEnd = { x: 0, y: 0, z: 0 };
     const down = new THREE.Vector3(0, -1, 0);
 
+    const capsuleAt = (x: number, y: number, z: number) => {
+      tmpStart.x = x;
+      tmpStart.y = y - EYE + CAPSULE_FOOT_CLEARANCE;
+      tmpStart.z = z;
+      tmpEnd.x = x;
+      tmpEnd.y = y + 0.08;
+      tmpEnd.z = z;
+      return { start: tmpStart, end: tmpEnd, radius: CAPSULE_RADIUS };
+    };
+
+    const resolveHorizontal = (lcc: NonNullable<typeof apiRef.current>["lcc"], x: number, y: number, z: number) => {
+      if (!lcc?.intersectsCapsule) return { x, z, blocked: false };
+      const hit = lcc.intersectsCapsule(capsuleAt(x, y, z));
+      if (!hit?.hit) return { x, z, blocked: false };
+      // delta is the depenetration offset — use horizontal only
+      return { x: x + (hit.delta.x || 0), z: z + (hit.delta.z || 0), blocked: true };
+    };
+
     const resolveCollision = (from: THREE.Vector3, to: THREE.Vector3) => {
       const lcc = apiRef.current?.lcc;
       if (!lcc || !collisionRef.current || !apiRef.current?.hasCollision || !lcc.intersectsCapsule) {
         return to;
       }
-      const out = to.clone();
-      // Horizontal capsule at intended XZ, current eye height
-      const feetY = out.y - EYE + 0.15;
-      const headY = out.y + 0.12;
-      tmpStart.x = out.x;
-      tmpStart.y = feetY;
-      tmpStart.z = out.z;
-      tmpEnd.x = out.x;
-      tmpEnd.y = headY;
-      tmpEnd.z = out.z;
-      const hit = lcc.intersectsCapsule({ start: tmpStart, end: tmpEnd, radius: CAPSULE_RADIUS });
-      if (hit?.hit) {
-        out.x += hit.delta.x;
-        out.z += hit.delta.z;
+
+      // Axis-separated slide so a wall on one axis does not cancel the other.
+      let x = to.x;
+      let z = from.z;
+      let y = from.y;
+      let step = resolveHorizontal(lcc, x, y, z);
+      x = step.x;
+      // If X move is still deep in geometry, keep previous X
+      const checkX = lcc.intersectsCapsule(capsuleAt(x, y, z));
+      if (checkX?.hit && Math.hypot(checkX.delta.x, checkX.delta.z) > 0.45) {
+        x = from.x;
       }
-      // Floor follow
+
+      z = to.z;
+      step = resolveHorizontal(lcc, x, y, z);
+      x = step.x;
+      z = step.z;
+      const checkZ = lcc.intersectsCapsule(capsuleAt(x, y, z));
+      if (checkZ?.hit && Math.hypot(checkZ.delta.x, checkZ.delta.z) > 0.45) {
+        x = from.x;
+        z = from.z;
+      }
+
+      // Floor follow — only snap when the hit looks like a floor near expected height
       if (lcc.intersectsRayFromOriginExt) {
         const floor = lcc.intersectsRayFromOriginExt({
-          origin: { x: out.x, y: out.y + 0.4, z: out.z },
+          origin: { x, y: y + 0.2, z },
           direction: { x: 0, y: -1, z: 0 },
-          maxDistance: EYE + 1.2,
+          maxDistance: EYE + 0.9,
         });
-        if (floor) {
-          out.y = floor.point.y + EYE;
+        if (floor?.point && (floor.normal?.y === undefined || floor.normal.y > 0.45)) {
+          const proposed = floor.point.y + EYE;
+          if (Math.abs(proposed - y) < 0.85) y = proposed;
         }
       } else if (lcc.raycastFromOrigin) {
         const floor = lcc.raycastFromOrigin({
-          origin: { x: out.x, y: out.y + 0.4, z: out.z },
+          origin: { x, y: y + 0.2, z },
           direction: { x: down.x, y: down.y, z: down.z },
-          maxDistance: EYE + 1.2,
+          maxDistance: EYE + 0.9,
           radius: 0.05,
         });
-        if (floor) out.y = floor.y + EYE;
+        if (floor) {
+          const proposed = floor.y + EYE;
+          if (Math.abs(proposed - y) < 0.85) y = proposed;
+        }
       }
-      // If still deeply penetrating, revert XZ
-      tmpStart.x = out.x;
-      tmpStart.y = out.y - EYE + 0.15;
-      tmpStart.z = out.z;
-      tmpEnd.x = out.x;
-      tmpEnd.y = out.y + 0.12;
-      tmpEnd.z = out.z;
-      const again = lcc.intersectsCapsule?.({ start: tmpStart, end: tmpEnd, radius: CAPSULE_RADIUS });
-      if (again?.hit && Math.hypot(again.delta.x, again.delta.z) > 0.35) {
-        out.x = from.x;
-        out.z = from.z;
-      }
-      return out;
+
+      return new THREE.Vector3(x, y, z);
     };
     walk.resolveCollision = resolveCollision;
 
@@ -267,8 +288,18 @@ export function ExperienceTourHost({
       const fp = mode === "first-person";
       walk.enabled = fp;
       orbit.enabled = !fp;
+      orbit.enableRotate = !fp;
+      orbit.enablePan = !fp;
+      orbit.enableZoom = !fp;
       if (!fp) walk.exitPointerLock();
-      if (fp) walk.syncFromCamera();
+      if (fp) {
+        walk.syncFromCamera();
+        try {
+          renderer.domElement.focus({ preventScroll: true });
+        } catch {
+          renderer.domElement.focus();
+        }
+      }
     };
     applyNavMode(navModeRef.current);
 
@@ -526,8 +557,18 @@ export function ExperienceTourHost({
     const fp = navMode === "first-person";
     api.walk.enabled = fp;
     api.orbit.enabled = !fp;
+    api.orbit.enableRotate = !fp;
+    api.orbit.enablePan = !fp;
+    api.orbit.enableZoom = !fp;
     if (!fp) api.walk.exitPointerLock();
-    if (fp) api.walk.syncFromCamera();
+    if (fp) {
+      api.walk.syncFromCamera();
+      try {
+        api.renderer.domElement.focus({ preventScroll: true });
+      } catch {
+        api.renderer.domElement.focus();
+      }
+    }
   }, [navMode]);
 
   useEffect(() => {

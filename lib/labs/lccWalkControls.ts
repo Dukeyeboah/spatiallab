@@ -12,13 +12,13 @@ export type WalkCollisionResolve = (
 export class LccWalkControls {
   enabled = false;
   /** Base walk speed (m/s). */
-  movementSpeed = 2.4;
+  movementSpeed = 2.8;
   /** Sprint multiplier when Shift held. */
   sprintMultiplier = 1.85;
   lookSpeed = 0.0022;
   /** Eye height above “feet” for floor following (metres). */
   eyeHeight = 1.55;
-  /** Horizontal look only when true (pitch still allowed within limits). */
+  /** Keep camera Y stable unless collision resolver adjusts floor. */
   lockEyeHeight = true;
 
   /** Optional collision / floor resolver applied after wish movement. */
@@ -39,18 +39,22 @@ export class LccWalkControls {
   private readonly wish = new THREE.Vector3();
   private readonly velocity = new THREE.Vector3();
   private readonly next = new THREE.Vector3();
-  private readonly accel = 12;
-  private readonly friction = 10;
+  private readonly desired = new THREE.Vector3();
+  private readonly accel = 18;
+  private readonly friction = 14;
 
   constructor(camera: THREE.PerspectiveCamera, domElement: HTMLElement) {
     this.camera = camera;
     this.dom = domElement;
+    this.dom.tabIndex = 0;
+    this.dom.style.outline = "none";
+    this.dom.style.touchAction = "none";
     this.syncFromCamera();
     this.dom.addEventListener("pointerdown", this.onPointerDown);
     window.addEventListener("pointerup", this.onPointerUp);
     window.addEventListener("pointermove", this.onPointerMove);
-    window.addEventListener("keydown", this.onKeyDown);
-    window.addEventListener("keyup", this.onKeyUp);
+    window.addEventListener("keydown", this.onKeyDown, { capture: true });
+    window.addEventListener("keyup", this.onKeyUp, { capture: true });
     document.addEventListener("pointerlockchange", this.onPointerLockChange);
   }
 
@@ -104,28 +108,34 @@ export class LccWalkControls {
     const sprint = this.keys.has("ShiftLeft") || this.keys.has("ShiftRight");
     const speed = this.movementSpeed * (sprint ? this.sprintMultiplier : 1);
 
+    this.desired.set(0, 0, 0);
     if (this.wish.lengthSq() > 0) {
       this.wish.normalize();
-      const targetVel = this.forward.clone().multiplyScalar(-this.wish.z * speed).add(this.right.clone().multiplyScalar(this.wish.x * speed));
-      this.velocity.x = THREE.MathUtils.damp(this.velocity.x, targetVel.x, this.accel, dt);
-      this.velocity.z = THREE.MathUtils.damp(this.velocity.z, targetVel.z, this.accel, dt);
-    } else {
-      this.velocity.x = THREE.MathUtils.damp(this.velocity.x, 0, this.friction, dt);
-      this.velocity.z = THREE.MathUtils.damp(this.velocity.z, 0, this.friction, dt);
+      // W → move along look forward (wish.z is -1 for W)
+      this.desired.addScaledVector(this.forward, -this.wish.z * speed);
+      this.desired.addScaledVector(this.right, this.wish.x * speed);
     }
 
-    if (this.velocity.lengthSq() < 1e-8) return;
+    this.velocity.x = THREE.MathUtils.damp(this.velocity.x, this.desired.x, this.wish.lengthSq() > 0 ? this.accel : this.friction, dt);
+    this.velocity.z = THREE.MathUtils.damp(this.velocity.z, this.desired.z, this.wish.lengthSq() > 0 ? this.accel : this.friction, dt);
+    this.velocity.y = 0;
 
-    const from = this.camera.position.clone();
-    this.next.copy(from).addScaledVector(this.velocity, dt);
+    if (this.velocity.lengthSq() < 1e-10 && this.desired.lengthSq() < 1e-10) return;
+
+    const from = this.camera.position;
+    this.next.set(from.x + this.velocity.x * dt, from.y, from.z + this.velocity.z * dt);
     if (this.lockEyeHeight) this.next.y = from.y;
 
     if (this.resolveCollision) {
       const resolved = this.resolveCollision(from, this.next);
+      // Only kill velocity on axes that were hard-blocked (almost no progress)
+      const dx = resolved.x - from.x;
+      const dz = resolved.z - from.z;
+      const wantX = this.next.x - from.x;
+      const wantZ = this.next.z - from.z;
+      if (Math.abs(wantX) > 1e-5 && Math.abs(dx) < Math.abs(wantX) * 0.05) this.velocity.x = 0;
+      if (Math.abs(wantZ) > 1e-5 && Math.abs(dz) < Math.abs(wantZ) * 0.05) this.velocity.z = 0;
       this.camera.position.copy(resolved);
-      // Kill velocity into a blocked axis
-      if (Math.abs(resolved.x - this.next.x) > 1e-4) this.velocity.x = 0;
-      if (Math.abs(resolved.z - this.next.z) > 1e-4) this.velocity.z = 0;
     } else {
       this.camera.position.copy(this.next);
     }
@@ -136,8 +146,8 @@ export class LccWalkControls {
     this.dom.removeEventListener("pointerdown", this.onPointerDown);
     window.removeEventListener("pointerup", this.onPointerUp);
     window.removeEventListener("pointermove", this.onPointerMove);
-    window.removeEventListener("keydown", this.onKeyDown);
-    window.removeEventListener("keyup", this.onKeyUp);
+    window.removeEventListener("keydown", this.onKeyDown, { capture: true } as AddEventListenerOptions);
+    window.removeEventListener("keyup", this.onKeyUp, { capture: true } as AddEventListenerOptions);
     document.removeEventListener("pointerlockchange", this.onPointerLockChange);
     this.keys.clear();
   }
@@ -149,6 +159,11 @@ export class LccWalkControls {
 
   private onPointerDown = (evt: PointerEvent) => {
     if (!this.enabled || evt.button !== 0 || evt.ctrlKey) return;
+    try {
+      this.dom.focus({ preventScroll: true });
+    } catch {
+      this.dom.focus();
+    }
     // Double-click requests pointer lock for immersive look; single drag still works.
     if (evt.detail >= 2) void this.requestPointerLock();
     this.dragging = true;
@@ -189,15 +204,34 @@ export class LccWalkControls {
     this.pitch = Math.max(-limit, Math.min(limit, this.pitch));
   };
 
+  private isWalkKey(code: string) {
+    return (
+      code === "KeyW" ||
+      code === "KeyA" ||
+      code === "KeyS" ||
+      code === "KeyD" ||
+      code === "ArrowUp" ||
+      code === "ArrowDown" ||
+      code === "ArrowLeft" ||
+      code === "ArrowRight" ||
+      code === "ShiftLeft" ||
+      code === "ShiftRight"
+    );
+  }
+
   private onKeyDown = (evt: KeyboardEvent) => {
     if (!this.enabled) return;
     if (evt.code === "Escape") {
       this.exitPointerLock();
       return;
     }
-    if (evt.code.startsWith("Key") || evt.code.startsWith("Arrow") || evt.code.startsWith("Shift")) {
+    // Don't steal typing from Dev form fields
+    const t = evt.target as HTMLElement | null;
+    if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return;
+
+    if (this.isWalkKey(evt.code)) {
       this.keys.add(evt.code);
-      if (evt.code.startsWith("Arrow") || evt.code === "Space") evt.preventDefault();
+      evt.preventDefault();
     }
   };
 

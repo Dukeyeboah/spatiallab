@@ -271,7 +271,7 @@ export default function SpatialExperiencesPage() {
           </div>
           <p className="exp-hint">
             {navMode === "first-person"
-              ? "WASD move · drag look · double-click lock · Shift faster · Esc unlock"
+              ? "Click the scene, then WASD move · drag look · double-click lock · Shift faster · Esc unlock"
               : "Drag orbit · scroll zoom"}
             {stats?.collisionActive ? " · collision on" : stats?.hasCollision === false ? " · no collision mesh" : ""}
           </p>
@@ -455,7 +455,7 @@ export default function SpatialExperiencesPage() {
           <h2>How to move</h2>
           <ul>
             <li>
-              <b>Walk</b> (default): WASD or arrows · drag to look · double-click canvas for pointer lock · Shift to move faster · Esc to unlock
+              <b>Walk</b> (default): click the 3D view first · WASD or arrows · drag to look · double-click for pointer lock · Shift faster · Esc unlock
             </li>
             <li>
               <b>Orbit</b>: drag to orbit · scroll to zoom

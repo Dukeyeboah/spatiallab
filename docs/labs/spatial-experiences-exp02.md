@@ -57,7 +57,8 @@ Room first-ready log: load **3110 ms**, collision **yes**. EXP-01 previously use
 - Acceleration / deceleration; eye height 1.55 m locked in walk
 - Reset restores interior view from capture poses / fallback
 - First-visit Help overlay + **Help** button; copy lists only implemented controls
-- Hotspot clicks still work; UI chrome does not steal walk keys when focus is elsewhere (keys on `window`)
+- Hotspot clicks still work; walk keys use capture-phase `window` listeners (skip when typing in Dev inputs)
+- **Fix (post EXP-02):** capsule was intersecting the floor every frame and zeroing velocity — walk felt dead. Capsule now clears the floor (`CAPSULE_FOOT_CLEARANCE`); axis-separated slide; click scene to focus canvas
 
 ### 3. Viewpoints / rooms
 
