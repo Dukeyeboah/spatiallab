@@ -28,6 +28,7 @@ Gaussian splat scenes (splats.py, Lab 8):
     POST   /splats                           multipart: name + one file (.ply/.sog/.zip),
                                              or a SOG folder (files + matching relative paths)
     GET    /splats/{id}                      one scene's metadata
+    PATCH  /splats/{id}/frame                update frame.upAxis / startPose (Lab 14C viewer)
     DELETE /splats/{id}                      delete the scene's files
     GET    /splats/{id}/files/{path}         a file the scene's manifest references (whitelist)
 
@@ -306,6 +307,13 @@ class DatasetRefBody(BaseModel):
     datasetId: str
 
 
+class SplatFrameBody(BaseModel):
+    """Lab 14C: viewing aids only — does not change the PLY or alignment."""
+
+    upAxis: Optional[str] = None
+    startPose: Optional[dict] = None  # {position, target, fov} in the file frame, or null to clear
+
+
 def catalog_change(change) -> dict:
     """Apply `change(catalog)` and return the updated catalog; CatalogError -> HTTP error."""
     try:
@@ -402,6 +410,38 @@ def list_splats() -> list[dict]:
 @app.get("/splats/{splat_id}")
 def get_splat(splat_id: str) -> dict:
     return get_splat_or_404(splat_id)
+
+
+@app.patch("/splats/{splat_id}/frame")
+def patch_splat_frame(splat_id: str, body: SplatFrameBody) -> dict:
+    """Update frame.upAxis and/or frame.startPose (viewer orientation / training-camera start)."""
+    metadata = get_splat_or_404(splat_id)
+    frame = dict(metadata.get("frame") or {})
+    if body.upAxis is not None:
+        axis = " ".join(body.upAxis.split())
+        if not axis or len(axis) > 80:
+            raise HTTPException(400, "upAxis must be 1–80 characters.")
+        frame["upAxis"] = axis
+    if "startPose" in body.model_fields_set:
+        if body.startPose is None:
+            frame.pop("startPose", None)
+        else:
+            pose = body.startPose
+            for key in ("position", "target"):
+                value = pose.get(key)
+                if not isinstance(value, list) or len(value) != 3 or not all(isinstance(v, (int, float)) for v in value):
+                    raise HTTPException(400, f"startPose.{key} must be [x, y, z] numbers.")
+            fov = pose.get("fov", 60)
+            if not isinstance(fov, (int, float)) or not 1 <= float(fov) <= 170:
+                raise HTTPException(400, "startPose.fov must be a number between 1 and 170.")
+            frame["startPose"] = {
+                "position": [float(v) for v in pose["position"]],
+                "target": [float(v) for v in pose["target"]],
+                "fov": float(fov),
+            }
+    metadata["frame"] = frame
+    splats.write_metadata(splat_id, metadata)
+    return metadata
 
 
 @app.post("/splats", status_code=201)

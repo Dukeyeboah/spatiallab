@@ -10,6 +10,7 @@ Standalone Python tools for raw XGRIDS LixelKity K1 recordings (`.xbin`, contain
 | `extract_frames.py` | decodes chosen synchronised pairs to JPEG, using `frames.csv`, with interpolated scanner poses | `reconstruction/xgrids/images/<run>/*.jpg`, `manifest.csv`, `extraction-summary.json` |
 | `calibrate_cameras.py` | Lab 13V: audits a Lab 13U correspondence export and runs an **experimental** calibration (rotation, then + one focal parameter) with leave-one-event-out validation; needs NumPy + SciPy (`backend/.venv`) | `--out` (required, outside the repo): `audit-<sha8>.json`, `experiment-<id>.json`, never overwritten |
 | `select_splat_frames.py` | Lab 14A: picks capture events for a splatting dataset in a time window (one per slot, steadiest event, correspondence events kept, near-duplicates dropped) and compares intervals | `--out` selection JSON (outside the repo, never overwritten) |
+| `export_training_cameras_for_viewer.py` | Lab 14C: COLMAP images + `dataparser_transforms.json` → training-camera poses for `/gaussian-viewer` (Ns frame) | `--out` JSON (outside the repo) |
 | `prepare_splat_dataset.py` | Lab 14A: fisheye frames of an extraction run → perspective views + COLMAP PINHOLE model (poses from scanner pose + experimental calibration, LAS frame) + LiDAR initial points + manifest | `--out` dataset folder (must not exist) |
 | `validate_splat_dataset.py` | Lab 14A: independent preflight checks of a dataset (structure, images, pairs, rotations, trajectory, correspondences, pixels, LiDAR agreement, covisibility, quality) + visual checks | `<dataset>/checks/` |
 | `splat_geometry.py`, `splat_colmap.py` | Lab 14A libraries: frame conventions and view geometry (reuses `backend/camera_calibration.py`); COLMAP text/binary reader and writer | — |
@@ -88,6 +89,8 @@ python3 scripts/xgrids/compare_experiments.py BASELINE.json OTHER.json … [--ou
 
 Ids after `--exclude` / `--include` are separate arguments; unknown ids are refused. In zsh, pass an array (`"${IDS[@]}"`), because `$IDS` is not split. Method, output format and the Basel results: [docs/xgrids/calibration-experiments.md](../../docs/xgrids/calibration-experiments.md).
 
+**Lab 14E.2 (review before re-fitting):** import `…/calibration/inputs/lab14e2-courtyard-review.json` in `/camera-calibration` correspondences mode (run `lab14d-courtyard-2s`). Autos stay excluded until you Approve. Do not run `calibrate_cameras.py` on that package until an approved export exists — see [docs/xgrids/lab14e2-correspondence-review.md](../../docs/xgrids/lab14e2-correspondence-review.md).
+
 ## Gaussian splatting dataset (Lab 14A)
 
 ```bash
@@ -102,15 +105,45 @@ $PY scripts/xgrids/validate_splat_dataset.py $R/training/lab14a/NAME --correspon
 
 Options: `--layout forward12|centre|forward12+wing` (views per fisheye; the wing layout writes `masks/`), `--lever-arm x,y,z` (body frame, default 0 = assumption), `--cloud-radius`, `--voxel`, `--max-points`, `--eval-interval` (default 9 so both cameras are held out). Method, conventions, Basel results and the Lab 14B steps: [docs/xgrids/splat-dataset.md](../../docs/xgrids/splat-dataset.md).
 
-## Training package (Lab 14B, upload only after approval)
+## Lab 14C diagnosis (local; no train)
+
+Soft quality on the Basel 5 s full-route quick run, focused courtyard 2 s selection, and viewer Z-up notes: [docs/xgrids/lab14c-diagnosis.md](../../docs/xgrids/lab14c-diagnosis.md).
+
+```bash
+$PY scripts/xgrids/export_training_cameras_for_viewer.py \
+  --colmap-images $R/training/lab14b/basel-xgrids/sparse/0/images.bin \
+  --dataparser $R/training/lab14b/basel-xgrids-quick-…/dataparser_transforms.json \
+  --out $R/training/lab14c/training-cameras-quick.json
+```
+
+## Lab 14D courtyard dataset (local; no train)
+
+```bash
+SEQ=$(python3 -c "import json;print(json.load(open('$R/training/lab14c/selection-courtyard-2s.json'))['sequences'])")
+python3 scripts/xgrids/extract_frames.py REC.xbin --sequences "$SEQ" --run-name lab14d-courtyard-2s
+$PY scripts/xgrids/prepare_splat_dataset.py --run $R/xgrids/images/lab14d-courtyard-2s \
+    --selection $R/training/lab14c/selection-courtyard-2s.json --experiment EXPERIMENT.json \
+    --cloud-bin public/datasets/basel-house/basel-preview-5m.bin --cloud-metadata …-5m-metadata.json \
+    --cloud-radius 12 --max-points 500000 --out $R/training/lab14d/basel-courtyard-2s-forward12
+$PY scripts/xgrids/validate_splat_dataset.py $R/training/lab14d/basel-courtyard-2s-forward12 \
+    --correspondences … --cloud-bin … --cloud-metadata …
+backend/.venv/bin/python scripts/xgrids/package_splat_training.py \
+    --dataset $R/training/lab14d/basel-courtyard-2s-forward12 \
+    --out $R/training/lab14d/basel-courtyard-r1 --slug basel-courtyard --expect-points 500000 --zip
+```
+
+Details: [docs/xgrids/lab14d-courtyard-dataset.md](../../docs/xgrids/lab14d-courtyard-dataset.md).
+
+## Training package (Lab 14B / 14D, upload only after approval)
 
 ```bash
 backend/.venv/bin/python scripts/xgrids/package_splat_training.py \
     --dataset $R/training/lab14a/basel-5s-forward12 \
     --out $R/training/lab14b/basel-xgrids --slug basel-xgrids --zip
+# Courtyard (Lab 14D): --expect-points 500000 — see lab14d-courtyard-dataset.md
 ```
 
-Ships images + `sparse/0/*.bin` (1M LiDAR seeds) + Lab 10C `setup_env.sh` + `train_xgrids.sh` + `verify_lidar_init.py`. Do **not** use Lab 10C `train.sh` on this package (wrong world convention and eval interval). Preflight, prices and Pod commands: [docs/xgrids/splat-training.md](../../docs/xgrids/splat-training.md).
+Ships images + `sparse/0/*.bin` (LiDAR seeds) + Lab 10C `setup_env.sh` + `train_xgrids.sh` + `verify_lidar_init.py`. Do **not** use Lab 10C `train.sh` on this package (wrong world convention and eval interval). Preflight, prices and Pod commands: [docs/xgrids/splat-training.md](../../docs/xgrids/splat-training.md).
 
 ## Tests
 

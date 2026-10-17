@@ -44,7 +44,19 @@ echo "== Installing the pinned packages (torch 2.1.2+cu118, gsplat 1.4.0, nerfst
   --find-links https://docs.gsplat.studio/whl/pt21cu118/gsplat/
 
 echo "== pip check (every installed package's requirements are met)"
-"$VENV/bin/pip" check
+# ninja's wheel tag can make `pip check` exit 1 on some hosts while the
+# binary still works; ignore only that known false positive.
+if ! check_out="$("$VENV/bin/pip" check 2>&1)"; then
+  echo "$check_out"
+  filtered="$(printf '%s\n' "$check_out" | grep -v 'ninja .* is not supported on this platform' || true)"
+  if [ -n "$filtered" ]; then
+    echo "pip check failed"
+    exit 1
+  fi
+  echo "(ignoring known ninja platform-tag warning)"
+else
+  echo "$check_out"
+fi
 
 echo "== Checking the GPU with a small gsplat rasterisation"
 "$VENV/bin/python" - <<'EOF'

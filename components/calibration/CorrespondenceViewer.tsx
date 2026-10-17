@@ -35,6 +35,8 @@ type CorrespondenceViewerProps = {
   header: ReactNode;
   /** "small" leaves the centre of the 3D view free for picking. */
   size: "large" | "small";
+  /** When set, pan/zoom so this original-pixel point is centred (Lab 14E.4 Jump). */
+  focusPixel?: { u: number; v: number; token: number } | null;
 };
 
 /** screen = (pixel + 0.5) · scale + t: pixel centres are integers, the image's top-left corner is (−0.5, −0.5). */
@@ -46,7 +48,7 @@ type View = { scale: number; tx: number; ty: number };
  * (u right, v down, (0, 0) = centre of the top-left pixel), never in screen
  * pixels. Mount with a key per image so zoom and size checks reset.
  */
-export function CorrespondenceViewer({ runId, event, channel, image, markers, pending, onPick, overlay, model, header, size: layout }: CorrespondenceViewerProps) {
+export function CorrespondenceViewer({ runId, event, channel, image, markers, pending, onPick, overlay, model, header, size: layout, focusPixel }: CorrespondenceViewerProps) {
   const box = useRef<HTMLDivElement>(null);
   const canvas = useRef<HTMLCanvasElement>(null);
   const [size, setSize] = useState<{ width: number; height: number } | null>(null);
@@ -83,6 +85,16 @@ export function CorrespondenceViewer({ runId, event, channel, image, markers, pe
     fit();
     // A layout switch changes the box size, which runs this again.
   }, [size, natural]);
+
+  useEffect(() => {
+    if (!focusPixel || !size || !natural) return;
+    const targetScale = Math.min(MAX_SCALE, Math.max(2, Math.min(size.width / 400, size.height / 300)));
+    setView({
+      scale: targetScale,
+      tx: size.width / 2 - (focusPixel.u + 0.5) * targetScale,
+      ty: size.height / 2 - (focusPixel.v + 0.5) * targetScale,
+    });
+  }, [focusPixel?.token, focusPixel?.u, focusPixel?.v, size, natural]);
 
   /** Zoom to `scale` keeping the image point under (x, y) fixed. */
   const zoomAt = (x: number, y: number, scale: (current: number) => number) =>

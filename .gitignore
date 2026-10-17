@@ -28,6 +28,9 @@ public/datasets/**/poses.csv
 # Local dataset store written by the backend (uploads + converted data).
 spatial-data/
 
+# XGRIDS LCC sample models (large SOG/LCC2 packages; extract locally for Lab LCC-WEB-01).
+public/labs/lcc-samples/
+
 # Python backend environment.
 backend/.venv/
 __pycache__/

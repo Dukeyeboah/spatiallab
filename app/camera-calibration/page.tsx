@@ -33,7 +33,9 @@ type WorkspaceMode = "direction" | "correspondences" | "optimization";
 
 /** Built-in LiDAR datasets with poses: the run's poses.csv must be one of their files (checked by SHA-256). */
 const DATASETS = BUILTIN_DATASETS.filter((d) => d.poses?.status === "aligned");
-const PREFERRED_RUN = "interval-10s";
+/** Prefer courtyard 2s run for Lab 14E.2 review when present; else the 10s survey run. */
+const PREFERRED_RUN = "lab14d-courtyard-2s";
+const FALLBACK_RUN = "interval-10s";
 const CHANNELS = ["ch14", "ch18"];
 
 function toDataset(p: Vec3 | null, offset: Vec3): Vec3 | null {
@@ -125,7 +127,7 @@ export default function CameraCalibrationPage() {
       .then((list) => {
         setRunList(list);
         const usable = list.runs.filter((r) => !r.error);
-        setRunId((usable.find((r) => r.id === PREFERRED_RUN) ?? usable[0])?.id ?? null);
+        setRunId((usable.find((r) => r.id === PREFERRED_RUN) ?? usable.find((r) => r.id === FALLBACK_RUN) ?? usable[0])?.id ?? null);
       })
       .catch((err: Error) => {
         if (controller.signal.aborted) return;
@@ -202,6 +204,7 @@ export default function CameraCalibrationPage() {
   const [mode, setMode] = useState<WorkspaceMode>("direction");
   const lab = useCorrespondenceLab();
   const [viewerSize, setViewerSize] = useState<"large" | "small">("large");
+  const [focusPixel, setFocusPixel] = useState<{ u: number; v: number; token: number } | null>(null);
   const correspondenceMode = mode === "correspondences" && !!run && !!event;
   const picking = correspondenceMode && lab.pickArmed && frameMatches;
   const labChannel = event && !eventChannels(event).includes(lab.channel) ? eventChannels(event)[0] : lab.channel;
@@ -233,6 +236,17 @@ export default function CameraCalibrationPage() {
         )
       : [];
   const offsets = useMemo(() => Object.fromEntries(cameras.map((c) => [c.channel, c.orientation])), [cameras]);
+  // Lab 13W review reference: a loaded experiment's Stage B for this dataset, else latest baseline for the built-in export.
+  const stageB = opt.experiment?.parameterSets.stageB;
+  const experimentMatches = opt.experiment?.source.dataset.id === dataset.id && opt.experiment.source.dataset.posesSha256 === datasetPoses?.sha256;
+  const reviewReference = chooseReference(
+    dataset.id,
+    frameMatches ? (datasetPoses?.sha256 ?? null) : null,
+    stageB && experimentMatches ? { label: `Stage B of experiment ${opt.experiment!.experimentId}, experimental estimate`, cameras: stageB.cameras } : null,
+  );
+  /** Prefer Stage B (review reference) for ○/× residuals — never the file's old f=750 diagnostic. */
+  const stageBCamera = reviewReference?.cameras[labChannel] ?? null;
+  const predictionModel = correspondenceMode && lab.showPredictions && stageBCamera ? stageBCamera.model : lab.model;
   const imageMarkers: ImageMarker[] = optimizationMode
     ? (opt.source?.records ?? []).flatMap((r, i) => {
         if (r.runId !== run?.id || r.imageFile !== labImage?.file) return [];
@@ -244,20 +258,21 @@ export default function CameraCalibrationPage() {
         if (lab.showCoverage && r.channel === labChannel && r.datasetId === dataset.id && r.imageFile !== labImage?.file)
           return [{ id: r.id, label: `#${i + 1}`, u: r.pixel.u, v: r.pixel.v, predicted: null, active: false, kind: "coverage" }];
         if (r.runId !== run?.id || r.imageFile !== labImage?.file) return [];
-        const p = lab.showPredictions ? predict(r, offsets, lab.model) : null;
+        const refCam = reviewReference?.cameras[r.channel];
+        const p = lab.showPredictions
+          ? refCam
+            ? predict(r, { [r.channel]: refCam.orientation }, refCam.model)
+            : predict(r, offsets, lab.model)
+          : null;
         return [{ id: r.id, label: `#${i + 1}`, u: r.pixel.u, v: r.pixel.v, predicted: p?.valid ? { u: p.u, v: p.v } : null, active: true }];
       });
-  // Lab 13W review reference: a loaded experiment's Stage B for this dataset, else Lab 13V for the built-in export.
-  const stageB = opt.experiment?.parameterSets.stageB;
-  const experimentMatches = opt.experiment?.source.dataset.id === dataset.id && opt.experiment.source.dataset.posesSha256 === datasetPoses?.sha256;
-  const reviewReference = chooseReference(
-    dataset.id,
-    frameMatches ? (datasetPoses?.sha256 ?? null) : null,
-    stageB && experimentMatches ? { label: `Stage B of experiment ${opt.experiment!.experimentId}, experimental estimate`, cameras: stageB.cameras } : null,
-  );
   const overlayCamera = correspondenceMode
-    ? lab.showOverlay && labOrientation
-      ? { orientation: labOrientation, model: lab.model }
+    ? lab.showOverlay && (stageBCamera ?? (labOrientation ? { orientation: labOrientation, model: lab.model } : null))
+      ? stageBCamera && lab.showOverlay
+        ? { orientation: stageBCamera.orientation, model: stageBCamera.model }
+        : labOrientation
+          ? { orientation: labOrientation, model: lab.model }
+          : null
       : null
     : optimizationMode && opt.showOverlay && optCamera
       ? optCamera
@@ -410,6 +425,14 @@ export default function CameraCalibrationPage() {
             onLookAlongPixel={lookAlongPixel}
             onViewRecord={viewRecord}
             reference={reviewReference}
+            onRunChange={setRunId}
+            onFocusRecord={(r) => {
+              if (!r) {
+                setFocusPixel(null);
+                return;
+              }
+              setFocusPixel({ u: r.pixel.u, v: r.pixel.v, token: Date.now() });
+            }}
           />
         )}
         {run && event && mode === "optimization" && (
@@ -441,7 +464,14 @@ export default function CameraCalibrationPage() {
           }
           onPick={correspondenceMode ? (u, v) => lab.setPendingPixel({ runId: run.id, imageFile: labImage.file!, u, v }) : undefined}
           overlay={overlay}
-          model={optimizationMode ? (optCamera?.model ?? null) : lab.showOverlay || lab.showPredictions ? lab.model : null}
+          model={
+            optimizationMode
+              ? (optCamera?.model ?? null)
+              : lab.showOverlay || lab.showPredictions
+                ? predictionModel
+                : null
+          }
+          focusPixel={correspondenceMode ? focusPixel : null}
           size={viewerSize}
           header={
             <>
@@ -458,7 +488,9 @@ export default function CameraCalibrationPage() {
                   ? opt.experiment
                     ? `○ measured, × projected with ${setLabel(opt.displaySet)} (experiment ${opt.experiment.experimentId}) · wheel = zoom, drag = pan`
                     : "○ measured pixels of the loaded correspondences · wheel = zoom, drag = pan"
-                  : "click = pick, wheel = zoom, drag = pan"}
+                  : lab.showPredictions && reviewReference
+                    ? `○ selected image point, × Stage B projected LiDAR (${reviewReference.label.includes("x_c69aede71834") ? "x_c69aede71834" : "review reference"}) · click = pick, wheel = zoom, drag = pan`
+                    : "click = pick, wheel = zoom, drag = pan"}
               </span>
               <div className="segmented">
                 {(["large", "small"] as const).map((s) => (

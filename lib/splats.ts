@@ -19,6 +19,9 @@ import { API_URL, errorMessage, type Vec3 } from "./datasets";
 
 export type SplatFormat = "ply" | "compressed-ply" | "sog" | "sog-folder" | "sog-lod";
 
+export type CameraPose = { position: Vec3; target: Vec3; fov: number };
+export type StartView = "inside" | "outside";
+
 export type SplatScene = {
   schemaVersion: number;
   id: string;
@@ -53,17 +56,44 @@ export type SplatScene = {
     insideViewpoint?: { position: Vec3; target: Vec3 } | null;
   } | null;
   warnings: string[];
-  frame: { units: string; upAxis: string; alignedTo: string | null };
+  frame: {
+    units: string;
+    /**
+     * How the start camera maps file coordinates into the SuperSplat viewer.
+     * - `colmap-y-down` / default "as trained": Lab 8 Ceramic-style (viewer Rz 180° + (−x,−y,z)).
+     * - `las-z-up`: Nerfstudio / XGRIDS LAS Z-up exports (entity Rx(−90°) + (x,z,−y)).
+     */
+    upAxis: string;
+    alignedTo: string | null;
+    /** Optional start pose in the file (training) frame; mapped with {@link fileToViewer}. */
+    startPose?: CameraPose | null;
+  };
 };
+
+/** Known up-axis labels we can act on; anything else keeps the Lab 8 COLMAP mapping. */
+export type SplatUpAxis = "colmap-y-down" | "las-z-up";
+
+export function resolveUpAxis(scene: SplatScene): SplatUpAxis {
+  const raw = (scene.frame?.upAxis ?? "").toLowerCase();
+  if (raw.includes("las") || raw.includes("z-up") || raw === "z" || raw === "z-up") return "las-z-up";
+  return "colmap-y-down";
+}
+
+/**
+ * Map a point from the splat file frame into the coordinates SuperSplat's camera expects
+ * after our post-load entity orientation (see {@link applySplatEntityOrientation}).
+ */
+export function fileToViewer(upAxis: SplatUpAxis, [x, y, z]: Vec3): Vec3 {
+  if (upAxis === "las-z-up") return [x, z, -y];
+  // SuperSplat sets the content entity to Rz(180°); undo that for framing.
+  return [-x, -y, z];
+}
 
 /** Scene URL for the viewer. Relative assets (WebP images, LOD chunks) resolve next to it. */
 export function splatContentUrl(scene: SplatScene): string {
   const path = scene.entry.split("/").map(encodeURIComponent).join("/");
   return `${API_URL}/splats/${encodeURIComponent(scene.id)}/files/${path}`;
 }
-
-export type CameraPose = { position: Vec3; target: Vec3; fov: number };
-export type StartView = "inside" | "outside";
 
 const START_FOV = 60;
 /** Above this centralFraction a scene is treated as an object (see backend/splat_bounds.py). */
@@ -85,20 +115,46 @@ export function defaultStartView(scene: SplatScene): StartView {
  *            looking along the longest clear line of sight); without one,
  *            near the middle of the box looking at its centre
  *
- * The viewer turns every scene 180° about Z (trained frames are usually
- * Y-down, the viewer is Y-up), so file-frame values become
- * (x, y, z) -> (-x, -y, z) first.
+ * File → viewer mapping depends on {@link resolveUpAxis} (COLMAP Y-down vs LAS Z-up).
+ * If `frame.startPose` is set (training-camera pose in the file frame), that wins.
  */
 export function startCamera(scene: SplatScene, view: StartView): CameraPose | null {
+  const upAxis = resolveUpAxis(scene);
+  const map = (p: Vec3) => fileToViewer(upAxis, p);
+  const custom = scene.frame?.startPose;
+  if (custom?.position && custom?.target) {
+    return {
+      position: map(custom.position),
+      target: map(custom.target),
+      fov: custom.fov || START_FOV,
+    };
+  }
   const bounds = scene.robustBounds;
   if (!bounds) return null;
-  const toViewer = ([x, y, z]: Vec3): Vec3 => [-x, -y, z];
   if (view === "inside" && bounds.insideViewpoint) {
     const { position, target } = bounds.insideViewpoint;
-    return { position: toViewer(position), target: toViewer(target), fov: START_FOV };
+    return { position: map(position), target: map(target), fov: START_FOV };
   }
-  const min: Vec3 = [-bounds.max[0], -bounds.max[1], bounds.min[2]];
-  const max: Vec3 = [-bounds.min[0], -bounds.min[1], bounds.max[2]];
+  // Build the framing box in viewer space (map the eight corners via min/max of mapped axes).
+  const fileCorners: Vec3[] = [
+    [bounds.min[0], bounds.min[1], bounds.min[2]],
+    [bounds.min[0], bounds.min[1], bounds.max[2]],
+    [bounds.min[0], bounds.max[1], bounds.min[2]],
+    [bounds.min[0], bounds.max[1], bounds.max[2]],
+    [bounds.max[0], bounds.min[1], bounds.min[2]],
+    [bounds.max[0], bounds.min[1], bounds.max[2]],
+    [bounds.max[0], bounds.max[1], bounds.min[2]],
+    [bounds.max[0], bounds.max[1], bounds.max[2]],
+  ];
+  const corners = fileCorners.map((c) => map(c));
+  const min = corners.reduce(
+    (acc, c) => [Math.min(acc[0], c[0]), Math.min(acc[1], c[1]), Math.min(acc[2], c[2])] as Vec3,
+    corners[0],
+  );
+  const max = corners.reduce(
+    (acc, c) => [Math.max(acc[0], c[0]), Math.max(acc[1], c[1]), Math.max(acc[2], c[2])] as Vec3,
+    corners[0],
+  );
   const target = min.map((v, i) => (v + max[i]) / 2) as Vec3;
   const half = min.map((v, i) => (max[i] - v) / 2);
   let offset: number[];
@@ -110,6 +166,19 @@ export function startCamera(scene: SplatScene, view: StartView): CameraPose | nu
     offset = [0.3 * half[0], 0.1 * half[1], 0.3 * half[2]];
   }
   return { position: target.map((v, i) => v + offset[i]) as Vec3, target, fov: START_FOV };
+}
+
+export async function patchSplatFrame(
+  id: string,
+  frame: Partial<SplatScene["frame"]>,
+): Promise<SplatScene> {
+  const response = await fetch(`${API_URL}/splats/${encodeURIComponent(id)}/frame`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(frame),
+  });
+  if (!response.ok) throw new Error(await errorMessage(response));
+  return response.json();
 }
 
 export function formatBytes(bytes: number): string {

@@ -60,14 +60,22 @@ export type Correspondence = {
   /** Your own verdict after looking at the match; absent = "unreviewed". */
   reviewStatus?: ReviewStatus;
   scene?: Scene;
+  /** Lab 14E.2: auto ray∩plane proposals stay excluded until you verify + Restore. */
+  proposalSource?: "lab14e2-auto" | string;
   /** Corrections and exclusions, oldest first; previous values are kept here. */
   history?: HistoryEntry[];
 };
 
-export type ReviewStatus = "unreviewed" | "verified" | "needs-fix";
-export const REVIEW_STATUSES: ReviewStatus[] = ["unreviewed", "verified", "needs-fix"];
+export type ReviewStatus = "unreviewed" | "verified" | "approximate" | "needs-fix" | "held-out" | "rejected";
+export const REVIEW_STATUSES: ReviewStatus[] = ["unreviewed", "verified", "approximate", "needs-fix", "held-out", "rejected"];
 export type Scene = "courtyard" | "corridor" | "indoor" | "exterior" | "other";
 export const SCENES: Scene[] = ["courtyard", "corridor", "indoor", "exterior", "other"];
+
+/** Lab 14E.2 auto-proposals (and any id starting with auto_). Never treat as fit-ready without review. */
+export function isAutoProposal(r: Correspondence): boolean {
+  return r.proposalSource === "lab14e2-auto" || r.id.startsWith("auto_") || /\bLab 14E\.2 auto-proposal\b/i.test(r.notes);
+}
+
 export type HistoryEntry = {
   at: string;
   action: "pixel" | "lidar" | "exclude" | "restore";

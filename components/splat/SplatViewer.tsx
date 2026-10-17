@@ -3,7 +3,7 @@
 import { useEffect, useRef, type RefObject } from "react";
 import "@playcanvas/supersplat-viewer/viewer.css";
 import type { ViewerHandle } from "@playcanvas/supersplat-viewer/viewer";
-import type { CameraPose } from "@/lib/splats";
+import type { CameraPose, SplatUpAxis } from "@/lib/splats";
 
 /**
  * The official SuperSplat Viewer (@playcanvas/supersplat-viewer), embedded
@@ -16,6 +16,22 @@ import type { CameraPose } from "@/lib/splats";
  * context, listeners and DOM — before the next one is created. Browsers cap
  * live WebGL contexts at ~16, so an instance must never be leaked.
  */
+
+/** Match PlayCanvas content orientation to {@link fileToViewer} in lib/splats.ts. */
+function applySplatEntityOrientation(
+  app: {
+    root: {
+      findComponents: (type: string) => { entity: { setLocalEulerAngles: (x: number, y: number, z: number) => void } }[];
+    };
+  },
+  upAxis: SplatUpAxis,
+) {
+  if (upAxis !== "las-z-up") return; // SuperSplat's default Rz(180°) stays for COLMAP Y-down
+  for (const component of app.root.findComponents("gsplat")) {
+    // Overwrite SuperSplat's (0,0,180): map file Z-up → PlayCanvas Y-up as (x,y,z)→(x,z,−y).
+    component.entity.setLocalEulerAngles(-90, 0, 0);
+  }
+}
 
 export type ViewerStatus =
   | { phase: "idle" }
@@ -34,12 +50,18 @@ export type ViewerStats = {
 };
 
 /** Camera commands for the panel; valid once the scene has loaded. */
-export type SplatViewerApi = { resetCamera(): void };
+export type SplatViewerApi = { resetCamera(): void; setCameraMode(mode: "orbit" | "fly"): void };
+
+export type CameraNavMode = "orbit" | "fly";
 
 type SplatViewerProps = {
   contentUrl: string | null;
   /** Starting view (also what Reset camera returns to); null lets the viewer frame everything. */
   startCamera: CameraPose | null;
+  /** File-frame up axis; decides post-load entity rotation (Lab 14C). */
+  upAxis: SplatUpAxis;
+  /** Orbit (default) or fly (WASD / gaming controls via SuperSplat). */
+  cameraMode: CameraNavMode;
   ministats: boolean;
   onStatus: (status: ViewerStatus) => void;
   onStats: (stats: ViewerStats | null) => void;
@@ -64,14 +86,24 @@ async function checkReachable(url: string): Promise<void> {
   await response.body?.cancel();
 }
 
-export function SplatViewer({ contentUrl, startCamera, ministats, onStatus, onStats, apiRef }: SplatViewerProps) {
+export function SplatViewer({
+  contentUrl,
+  startCamera,
+  upAxis,
+  cameraMode,
+  ministats,
+  onStatus,
+  onStats,
+  apiRef,
+}: SplatViewerProps) {
   const containerRef = useRef<HTMLDivElement>(null);
+  const viewerRef = useRef<ViewerHandle | null>(null);
   // Latest callbacks without re-creating the viewer when the parent re-renders.
   const callbacks = useRef({ onStatus, onStats });
   useEffect(() => {
     callbacks.current = { onStatus, onStats };
   });
-  // The start view is a creation option: a different one means a new viewer.
+  // The start view / orientation are creation options: a different one means a new viewer.
   const startKey = JSON.stringify(startCamera);
 
   useEffect(() => {
@@ -106,6 +138,7 @@ export function SplatViewer({ contentUrl, startCamera, ministats, onStatus, onSt
         return;
       }
       viewer = created;
+      viewerRef.current = created;
       const { app, events, state } = viewer;
 
       // The viewer has no public load-error event; failed assets (including
@@ -118,7 +151,11 @@ export function SplatViewer({ contentUrl, startCamera, ministats, onStatus, onSt
       });
       const onLoaded = (loaded: boolean) => {
         if (!loaded || cancelled) return;
-        state.cameraMode = "orbit"; // orbit + zoom around the start view's target
+        applySplatEntityOrientation(app, upAxis);
+        state.cameraMode = cameraMode;
+        if (cameraMode === "fly") state.gamingControls = true;
+        // Re-apply the authored start view after the entity orientation change.
+        viewer?.resetCamera();
         onStatus({ phase: "loaded", seconds: (performance.now() - started) / 1000 });
       };
       events.on("loaded:changed", onLoaded);
@@ -126,6 +163,11 @@ export function SplatViewer({ contentUrl, startCamera, ministats, onStatus, onSt
 
       apiRef.current = {
         resetCamera: () => viewer?.state.loaded && viewer.resetCamera(),
+        setCameraMode: (mode) => {
+          if (!viewer?.state.loaded) return;
+          viewer.state.cameraMode = mode;
+          if (mode === "fly") viewer.state.gamingControls = true;
+        },
       };
       const renderer = app.graphicsDevice.isWebGPU ? "WebGPU" : "WebGL 2";
       statsTimer = window.setInterval(() => {
@@ -145,11 +187,21 @@ export function SplatViewer({ contentUrl, startCamera, ministats, onStatus, onSt
       cancelled = true;
       window.clearInterval(statsTimer);
       apiRef.current = null;
+      viewerRef.current = null;
       viewer?.destroy();
       viewer = null;
       onStats(null);
     };
-  }, [contentUrl, startKey, ministats, apiRef]);
+    // cameraMode is applied on load and via a separate effect; omit from deps to avoid rebuild.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [contentUrl, startKey, upAxis, ministats, apiRef]);
+
+  useEffect(() => {
+    const viewer = viewerRef.current;
+    if (!viewer?.state.loaded) return;
+    viewer.state.cameraMode = cameraMode;
+    if (cameraMode === "fly") viewer.state.gamingControls = true;
+  }, [cameraMode]);
 
   return <div ref={containerRef} className="splat-viewer" />;
 }

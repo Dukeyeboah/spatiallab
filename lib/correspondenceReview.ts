@@ -1,6 +1,6 @@
 import * as THREE from "three";
 import { provisionalRotation, type ProvisionalOrientation } from "@/lib/calibration";
-import { predict, type Correspondence, type Prediction } from "@/lib/correspondences";
+import { isAutoProposal, predict, type Correspondence, type Prediction } from "@/lib/correspondences";
 import type { FisheyeModel } from "@/lib/fisheyeProjection";
 
 /**
@@ -112,6 +112,10 @@ export function reviewRecords(records: Correspondence[], reference: ReviewRefere
     const off = camera ? offAxis(r, camera.orientation) : null;
     const flags: ReviewFlag[] = [];
     if (r.excludedFromFit) flags.push({ code: "user-excluded", severity: "exclude", reason: `excluded during review: ${r.excludedFromFit.reason || "no reason given"}` });
+    if (r.reviewStatus === "held-out") flags.push({ code: "held-out", severity: "exclude", reason: "marked held-out for validation (not used in fits)" });
+    if (r.reviewStatus === "rejected") flags.push({ code: "rejected", severity: "exclude", reason: "rejected during review (not used in fits)" });
+    if (isAutoProposal(r) && !r.excludedFromFit && r.reviewStatus !== "verified" && r.reviewStatus !== "held-out" && r.reviewStatus !== "rejected")
+      flags.push({ code: "lab14e2-auto", severity: "exclude", reason: "Lab 14E.2 auto-proposal: left out of fits until you verify + Restore (or reject / hold out)" });
     if (!camera) flags.push({ code: "unknown-channel", severity: "exclude", reason: `no reference camera for ${r.channel}` });
     if (distanceM < 0.2) flags.push({ code: "too-close", severity: "exclude", reason: `LiDAR point ${distanceM.toFixed(2)} m from the scanner` });
     if (off !== null && off > FIELD_OF_VIEW_LIMIT_DEG)
@@ -119,7 +123,9 @@ export function reviewRecords(records: Correspondence[], reference: ReviewRefere
     const corrected = r.history?.some((h) => h.action === "pixel" || h.action === "lidar");
     if (LAB_13V_REVIEW[r.id] && r.reviewStatus !== "verified" && !r.excludedFromFit && !corrected)
       flags.push({ code: "lab13v", severity: "warn", reason: LAB_13V_REVIEW[r.id] });
+    if (isAutoProposal(r)) flags.push({ code: "auto-proposed", severity: "info", reason: "automatically proposed — inspect photo, 2D click, LiDAR hit and Stage B overlay before approving" });
     if (r.reviewStatus === "needs-fix") flags.push({ code: "needs-fix", severity: "warn", reason: "you marked it 'needs fix'" });
+    if (r.reviewStatus === "approximate") flags.push({ code: "approximate", severity: "info", reason: "you marked it approximate (kept; soft / edge / density)" });
     if (distanceM < CLOSE_RANGE_M && model)
       flags.push({ code: "close-range", severity: "warn", reason: `${distanceM.toFixed(2)} m away: an unknown 5 cm lever arm moves it by up to ~${((model.focalPx * LEVER_ARM_PROBE_M) / distanceM).toFixed(0)} px` });
     const movable = MOVABLE.exec(`${r.feature} ${r.notes}`);

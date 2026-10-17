@@ -140,6 +140,9 @@ export function Controls({
       <Link href="/gaussian-training" className="lab-link">
         Lab 10A: Photos for Gaussian training →
       </Link>
+      <Link href="/labs/lcc-web-sdk" className="lab-link">
+        Lab LCC-WEB-01: LCC Web SDK →
+      </Link>
       <Link href="/camera-calibration" className="lab-link">
         Lab 13R: Camera Calibration →
       </Link>

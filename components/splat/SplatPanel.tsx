@@ -10,9 +10,12 @@ import {
   formatBytes,
   type SplatScene,
   type SplatSelection,
+  type SplatUpAxis,
   type StartView,
 } from "@/lib/splats";
-import type { ViewerStats, ViewerStatus } from "./SplatViewer";
+import type { CameraNavMode, ViewerStats, ViewerStatus } from "./SplatViewer";
+
+type TrainingStartPose = { position: [number, number, number]; target: [number, number, number]; fov: number };
 
 type SplatPanelProps = {
   scenes: SplatScene[];
@@ -26,6 +29,12 @@ type SplatPanelProps = {
   onResetCamera: () => void;
   startView: StartView;
   onStartViewChange: (view: StartView) => void;
+  upAxis: SplatUpAxis;
+  onUpAxisChange: (axis: SplatUpAxis) => void;
+  cameraMode: CameraNavMode;
+  onCameraModeChange: (mode: CameraNavMode) => void;
+  onApplyTrainingStart: (pose: TrainingStartPose) => void;
+  onClearTrainingStart: () => void;
   onAssign: (captureId: string | null) => void;
   onDelete: () => void;
   onImport: (name: string, selection: SplatSelection, onProgress: (fraction: number) => void) => Promise<void>;
@@ -70,8 +79,9 @@ export function SplatPanel(props: SplatPanelProps) {
         Lab 9: inspect single Gaussians of a PLY scene →
       </Link>
       <div className="note">
-        Real trained Gaussian splat scenes, rendered by the official SuperSplat Viewer (PlayCanvas). Drag to
-        orbit, scroll to zoom, right-drag to pan; the viewer&apos;s own buttons sit at the bottom.
+        Real trained Gaussian splat scenes, rendered by the official SuperSplat Viewer (PlayCanvas). Orbit: drag
+        to orbit, scroll to zoom, right-drag to pan. Fly: WASD + mouse look (enable Gaming Controls in the
+        viewer if needed). For XGRIDS / Nerfstudio LAS Z-up PLYs, set World up to &quot;LAS Z-up&quot;.
       </div>
 
       {props.error && <div className="error">{props.error}</div>}
@@ -106,7 +116,47 @@ export function SplatPanel(props: SplatPanelProps) {
         {selected && <SceneInfo scene={selected} />}
         <ViewerState status={status} />
 
-        {selected?.robustBounds && (
+        {selected && (
+          <>
+            <span>World up</span>
+            <div className="segmented">
+              {(
+                [
+                  ["colmap-y-down", "COLMAP Y-down"],
+                  ["las-z-up", "LAS Z-up"],
+                ] as const
+              ).map(([value, label]) => (
+                <button
+                  key={value}
+                  className={props.upAxis === value ? "selected" : ""}
+                  disabled={props.busy}
+                  onClick={() => props.onUpAxisChange(value)}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+            <div className="note">
+              COLMAP Y-down is the Lab 8 default (Ceramic Studio). LAS Z-up is for Nerfstudio exports that kept
+              the LiDAR Z-up world (Lab 14B). Switching reloads the scene.
+            </div>
+
+            <span>Navigate</span>
+            <div className="segmented">
+              {(["orbit", "fly"] as const).map((mode) => (
+                <button
+                  key={mode}
+                  className={props.cameraMode === mode ? "selected" : ""}
+                  onClick={() => props.onCameraModeChange(mode)}
+                >
+                  {mode === "orbit" ? "Orbit" : "Fly"}
+                </button>
+              ))}
+            </div>
+          </>
+        )}
+
+        {selected?.robustBounds && !selected.frame?.startPose && (
           <>
             <span>Start view</span>
             <div className="segmented">
@@ -127,7 +177,14 @@ export function SplatPanel(props: SplatPanelProps) {
           </>
         )}
 
-
+        {selected && (
+          <TrainingStartControls
+            hasStartPose={!!selected.frame?.startPose}
+            busy={props.busy}
+            onApply={props.onApplyTrainingStart}
+            onClear={props.onClearTrainingStart}
+          />
+        )}
       </div>
 
       {selected && (
@@ -211,7 +268,10 @@ function SceneInfo({ scene }: { scene: SplatScene }) {
         Imported from {sourceKind} &quot;{scene.source.filename}&quot; ({formatBytes(scene.source.bytes)})
       </span>
       {scene.conversion && <span>Conversion: {scene.conversion.detail} (original kept)</span>}
-      <span>Frame: as trained, not aligned to any LiDAR capture</span>
+      <span>
+        Frame: {scene.frame.upAxis}
+        {scene.frame.startPose ? " · start at training camera" : ""} — not aligned to any LiDAR capture
+      </span>
       {scene.robustBounds && (
         <span title="2nd–98th percentile of the splat centres; the full box includes stray splats far away">
           Extent (core): {scene.robustBounds.min.map((v, i) => (scene.robustBounds!.max[i] - v).toFixed(1)).join(" × ")}{" "}
@@ -230,6 +290,78 @@ function SceneInfo({ scene }: { scene: SplatScene }) {
         </details>
       )}
     </div>
+  );
+}
+
+function TrainingStartControls({
+  hasStartPose,
+  busy,
+  onApply,
+  onClear,
+}: {
+  hasStartPose: boolean;
+  busy: boolean;
+  onApply: (pose: TrainingStartPose) => void;
+  onClear: () => void;
+}) {
+  return (
+    <details className="section datasets" style={{ marginTop: 8 }}>
+      <summary>Start at a training camera</summary>
+      <div className="note">
+        Paste one camera from Lab 14C <code>training-cameras-quick.json</code> (use the{" "}
+        <code>positionNs</code> / <code>targetNs</code> values — they are in the Nerfstudio file frame). Sets
+        World up to LAS Z-up and reloads at that pose.
+      </div>
+      {hasStartPose ? (
+        <button onClick={onClear} disabled={busy}>
+          Clear training start (use Inside/Outside again)
+        </button>
+      ) : (
+        <button
+          disabled={busy}
+          onClick={() => {
+            const raw = window.prompt(
+              'Paste JSON: {"position":[x,y,z],"target":[x,y,z],"fov":60} (Nerfstudio / file frame)',
+            );
+            if (!raw) return;
+            try {
+              const parsed = JSON.parse(raw) as {
+                position?: number[];
+                target?: number[];
+                positionNs?: number[];
+                targetNs?: number[];
+                fov?: number;
+                viewerZUpLas?: TrainingStartPose;
+              };
+              const position = (parsed.positionNs ?? parsed.position ?? parsed.viewerZUpLas?.position) as
+                | number[]
+                | undefined;
+              const target = (parsed.targetNs ?? parsed.target ?? parsed.viewerZUpLas?.target) as
+                | number[]
+                | undefined;
+              if (!position || !target || position.length !== 3 || target.length !== 3) {
+                throw new Error("Need position and target arrays of length 3");
+              }
+              // Prefer file-frame Ns coords; if the user pasted viewerZUpLas only, convert back is not available —
+              // require Ns / file frame.
+              if (parsed.viewerZUpLas && !parsed.positionNs && !parsed.position) {
+                window.alert("Paste positionNs/targetNs (file frame), not viewerZUpLas.");
+                return;
+              }
+              onApply({
+                position: position as [number, number, number],
+                target: target as [number, number, number],
+                fov: parsed.fov ?? parsed.viewerZUpLas?.fov ?? 60,
+              });
+            } catch (e) {
+              window.alert(e instanceof Error ? e.message : String(e));
+            }
+          }}
+        >
+          Paste training camera JSON…
+        </button>
+      )}
+    </details>
   );
 }
 

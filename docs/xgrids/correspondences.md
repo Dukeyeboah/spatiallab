@@ -75,8 +75,9 @@ Record (`Correspondence` in `lib/correspondences.ts`):
 | `calibrationStatus` | always `"provisional"` |
 | `created`, `updated` | ISO times |
 | `excludedFromFit` *(optional, Lab 13W)* | `{reason ≤ 500 chars, at}` or null: left out of calibration fits by default, record kept |
-| `reviewStatus` *(optional, 13W)* | `unreviewed` (default) / `verified` / `needs-fix`: your own verdict after looking |
+| `reviewStatus` *(optional, 13W; Lab 14E.2 / 14E.4)* | `unreviewed` (default) / `verified` / `approximate` / `needs-fix` / `held-out` / `rejected`: your verdict. `held-out` and `rejected` are left out of fits; `approximate` stays in the pool but is soft |
 | `scene` *(optional, 13W)* | `courtyard` / `corridor` / `indoor` / `exterior` / `other` |
+| `proposalSource` *(optional, Lab 14E.2)* | e.g. `lab14e2-auto`: auto ray∩plane candidates; UI keeps them excluded until Approve |
 | `history` *(optional, 13W)* | ≤ 100 entries `{at, action: pixel / lidar / exclude / restore, previous}`; corrections keep the id and log the replaced value |
 
 The optional fields are still schema version 1: older files load unchanged, and the backend (`camera_calibration.record_problem`) validates the same fields.
@@ -173,3 +174,7 @@ The saved list in the correspondence mode is now a **review list** (`components/
 **Actions:** *Show* (switches to the event and channel and views the LiDAR point from the scanner), *Edit* (feature, quality, scene, review status, notes; replace the pixel with a new click in the same image or the LiDAR point with a new pick; the history keeps previous values), *Exclude* (asks for a reason) / *Restore*, *Delete* (confirms; prefer Exclude). Filters: all / to review / excluded / this event. *Mark this camera's matches from other events* draws grey circles on the image to show the spread. A scene selector sits next to quality in the new-match form.
 
 The expanded real-world dataset is **not complete** until new matches have been collected and verified by hand; the panel says so.
+
+### Calibration Review Queue (Lab 14E.4)
+
+Above the coverage panel: a prioritized queue from Lab 14E.3 (4 questionable + 3 outside Stage B usable projection, then optional approximate courtyard corners). **Jump to viewer** opens the event/channel, centres the photo on the ○ image pick, aims the LiDAR view, and draws × with **Stage B `x_c69aede71834`** (not the export file’s old f=750 diagnostic). Verdict buttons set `reviewStatus` only (`verified` / `approximate` / `needs-fix` / `rejected`); Reject also excludes from fits. Original pixels and LiDAR are never rewritten by those buttons. A leave-alone list and at most 5–8 gap suggestions for *new* picks are shown. Do not open Optimization until the flagged list is done. Details: [lab14e4-calibration-review-queue.md](lab14e4-calibration-review-queue.md).

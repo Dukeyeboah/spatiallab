@@ -1,6 +1,24 @@
 # First Gaussian splatting training (Lab 14B)
 
-**Status (2026-10-15):** GPU preflight complete. Package built. **No Pod rented, no upload, no training** until you approve.
+**Status (2026-10-16):** Lab 14B smoke + quick complete (pods stopped). Lab 14D courtyard **smoke + quick 7k complete** (pods stopped) — see **[Lab 14D](lab14d-courtyard-dataset.md)**. Courtyard still severely soft → **no quality**; next gate is calibration/lever-arm, not more steps. Do **not** start quality on the 5 s full-route set either.
+
+| Artefact | Path (outside Git) |
+| --- | --- |
+| Smoke result | `…/lab14b/basel-xgrids-smoke-20261016-085054/` (+ `.tar.gz`) |
+| Quick result | `…/lab14b/basel-xgrids-quick-20261016-121637/` (+ 1.8 GB `.tar.gz`) |
+
+| Metric | Smoke (300) | Quick (7,000) |
+| --- | --- | --- |
+| Pod | `zf5dl3jh9clzyi` EU-RO-1 | `ce9po8uagl0mrd` US-IL-1 (new pod: smoke host had no free GPU) |
+| Price | $0.89/h Secure 4090 | same |
+| train / export / eval | ok / ok / ok | ok / ok / ok |
+| LiDAR init | 1M → 1M | 1M → 1M |
+| Gaussians | 1,000,000 | 1,194,102 |
+| Peak VRAM | 4,058 MiB | 5,958 MiB |
+| Train time | 136 s | 388 s |
+| PSNR / SSIM / LPIPS | 12.72 / 0.65 / 0.69 | 15.42 / 0.67 / 0.66 |
+
+Quick session wall-clock ≈ 45–50 min GPU (setup + train + download) ≈ **$0.70** at $0.89/h. No NaN losses; export dropped 3 low-opacity Gaussians.
 
 Dataset: Lab 14A `basel-5s-forward12` · Calibration: experimental `x_c69aede71834` · Trainer: Nerfstudio **1.1.5** `splatfacto` (Lab 10C lock).
 
@@ -181,6 +199,20 @@ bash train_xgrids.sh smoke
 - Whether 1M seed densifies past VRAM comfort (watch `nvidia-smi`).  
 - Final visual quality (the experiment’s question).
 
+### Pitfall hit on this Pod
+
+`setup_env.sh` stopped at `pip check` with `ninja 1.11.1.1 is not supported on this platform` (false positive on this host; gsplat/torch still worked). Workaround used: skip past that line and run the gsplat GPU test + `ns-train --help` by hand. Fixed in `setup_env.sh` for the next install.
+
 ---
 
-**Waiting for your explicit approval** before renting a GPU, uploading the package, or starting training.
+**Next gate:** Lab 14E local diagnosis ([lab14e-blur-diagnosis.md](lab14e-blur-diagnosis.md)) — courtyard cal residuals ~17–23 px (~12 cm at 7.6 m). Proposed **14E.1** local lever/cx,cy probe before any GPU. Pods `zf5dl3jh9clzyi` / `ce9po8uagl0mrd` / `ahzq6a98eyklso` / `3yew4v2f9ub76t` stay EXITED until you terminate them.
+
+### Opening the PLY in Spatial Lab
+
+Lab 8 `/gaussian-viewer` imports Nerfstudio-style Gaussian PLY. For Lab 14B / XGRIDS exports:
+
+1. Start the backend (`uvicorn` as usual).
+2. Open `/gaussian-viewer` → import `basel-xgrids-quick-…/splat.ply` (or the smoke PLY).
+3. Set **World up → LAS Z-up** (Lab 14C). Optionally **Fly**, or paste a camera from `lab14c/training-cameras-quick.json` (`positionNs` / `targetNs`).
+
+**Not** the LiDAR viewer: frames differ (Nerfstudio re-centres and scales; transform is in `dataparser_transforms.json`). Side-by-side with LiDAR needs a later remapping lab.

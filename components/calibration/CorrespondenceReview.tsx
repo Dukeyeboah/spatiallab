@@ -6,6 +6,7 @@ import {
   QUALITIES,
   REVIEW_STATUSES,
   SCENES,
+  isAutoProposal,
   withChange,
   type Correspondence,
   type FeatureQuality,
@@ -94,8 +95,8 @@ export function CoveragePanel({ reviews, reference, onSelect }: { reviews: Recor
       ))}
       <div className="note">
         Diagram: the fisheye image with the usable circle split into centre, middle and outer thirds and eight directions.
-        Shaded cells hold reliable matches. Dots: green reliable, amber flagged, grey excluded; a red ring marks the Lab
-        13V review list. Click a dot to show that match.
+        Shaded cells hold reliable matches. Dots: green reliable, amber flagged, grey excluded; dashed cyan = auto proposal;
+        purple ring = held-out; a red ring marks the Lab 13V review list. Click a dot to show that match.
       </div>
     </div>
   );
@@ -140,7 +141,7 @@ function CoverageDiagram({ reviews, reference, channel, onSelect }: { reviews: R
             cx={rv.record.pixel.u}
             cy={rv.record.pixel.v}
             r={55}
-            className={`dot ${rv.reliable ? "reliable" : rv.included ? "flagged" : "excluded"} ${rv.flags.some((f) => f.code === "lab13v") ? "lab13v" : ""}`}
+            className={`dot ${rv.reliable ? "reliable" : rv.included ? "flagged" : "excluded"} ${rv.flags.some((f) => f.code === "lab13v") ? "lab13v" : ""} ${isAutoProposal(rv.record) ? "auto" : ""} ${rv.record.reviewStatus === "held-out" ? "held-out" : ""}`}
           />
           <title>{`#${rv.index} ${rv.record.sequence} · ${rv.record.feature}${rv.flags.length ? `\n${rv.flags.map((f) => f.reason).join("\n")}` : ""}`}</title>
         </g>
@@ -149,7 +150,7 @@ function CoverageDiagram({ reviews, reference, channel, onSelect }: { reviews: R
   );
 }
 
-type Filter = "all" | "review" | "excluded" | "event";
+type Filter = "all" | "auto" | "review" | "verified" | "held-out" | "rejected" | "excluded" | "event";
 
 /**
  * Lab 13W: the saved-match list with review details. Corrections keep the id
@@ -177,27 +178,62 @@ export function ReviewList({
   budget: string;
 }) {
   const [editing, setEditing] = useState<string | null>(null);
-  const [filter, setFilter] = useState<Filter>("all");
+  const [filter, setFilter] = useState<Filter>("auto");
   const replace = (next: Correspondence) => lab.setRecords(lab.records.map((r) => (r.id === next.id ? next : r)));
   const update = (r: Correspondence, change: Partial<Correspondence>) => replace({ ...r, ...change, updated: new Date().toISOString() });
 
   if (lab.records.length === 0) return <div className="unit">No correspondences saved yet.</div>;
-  const needsReview = (rv: RecordReview) => rv.included && (rv.flags.some((f) => f.severity === "warn") || rv.record.reviewStatus !== "verified");
-  const shown = reviews.filter((rv) =>
-    filter === "review" ? needsReview(rv) : filter === "excluded" ? !rv.included : filter === "event" ? rv.record.runId === run.id && rv.record.sequence === event.sequence : true,
-  );
-  const counts = { all: reviews.length, review: reviews.filter(needsReview).length, excluded: reviews.filter((rv) => !rv.included).length, event: reviews.filter((rv) => rv.record.runId === run.id && rv.record.sequence === event.sequence).length };
+  const statusOf = (r: Correspondence) => r.reviewStatus ?? "unreviewed";
+  const needsReview = (rv: RecordReview) =>
+    isAutoProposal(rv.record) ||
+    (rv.included && (rv.flags.some((f) => f.severity === "warn") || statusOf(rv.record) !== "verified"));
+  const matchesFilter = (rv: RecordReview): boolean => {
+    const r = rv.record;
+    switch (filter) {
+      case "auto":
+        return isAutoProposal(r);
+      case "review":
+        return needsReview(rv);
+      case "verified":
+        return statusOf(r) === "verified";
+      case "held-out":
+        return statusOf(r) === "held-out";
+      case "rejected":
+        return statusOf(r) === "rejected";
+      case "excluded":
+        return !rv.included;
+      case "event":
+        return r.runId === run.id && r.sequence === event.sequence;
+      default:
+        return true;
+    }
+  };
+  const shown = reviews.filter(matchesFilter);
+  const counts = {
+    all: reviews.length,
+    auto: reviews.filter((rv) => isAutoProposal(rv.record)).length,
+    review: reviews.filter(needsReview).length,
+    verified: reviews.filter((rv) => statusOf(rv.record) === "verified").length,
+    "held-out": reviews.filter((rv) => statusOf(rv.record) === "held-out").length,
+    rejected: reviews.filter((rv) => statusOf(rv.record) === "rejected").length,
+    excluded: reviews.filter((rv) => !rv.included).length,
+    event: reviews.filter((rv) => rv.record.runId === run.id && rv.record.sequence === event.sequence).length,
+  };
 
   return (
     <>
       <b className="sub">Saved ({lab.records.length}, this browser) · review</b>
-      <div className="segmented">
+      <div className="segmented wrap">
         {(
           [
-            ["all", "All"],
+            ["auto", "Auto proposed"],
             ["review", "To review"],
+            ["verified", "Verified"],
+            ["held-out", "Held-out"],
+            ["rejected", "Rejected"],
             ["excluded", "Excluded"],
             ["event", "This event"],
+            ["all", "All"],
           ] as const
         ).map(([key, label]) => (
           <button key={key} className={filter === key ? "selected" : ""} onClick={() => setFilter(key)}>
@@ -211,8 +247,9 @@ export function ReviewList({
           const p = rv.prediction;
           const here = r.runId === run.id && r.sequence === event.sequence;
           const lab13v = rv.flags.some((f) => f.code === "lab13v");
+          const auto = isAutoProposal(r);
           return (
-            <li key={r.id} value={rv.index} className={`${here ? "here" : ""} ${rv.included ? "" : "unused"} ${lab13v ? "lab13v" : ""}`}>
+            <li key={r.id} value={rv.index} className={`${here ? "here" : ""} ${rv.included ? "" : "unused"} ${lab13v ? "lab13v" : ""} ${auto ? "auto-proposal" : ""}`}>
               <div className="inline-row">
                 <b>#{rv.index}</b>
                 <span className="swatch" style={{ background: CHANNEL_COLOURS[r.channel] }} />
@@ -220,7 +257,8 @@ export function ReviewList({
                   {r.sequence} {r.channel} · {r.feature}
                 </span>
                 <span className={`quality ${r.quality}`}>{r.quality}</span>
-                <span className={`status-chip ${r.reviewStatus ?? "unreviewed"}`}>{r.reviewStatus ?? "unreviewed"}</span>
+                {auto && <span className="status-chip auto">auto proposed</span>}
+                <span className={`status-chip ${statusOf(r)}`}>{statusOf(r)}</span>
                 <span className={`status-chip ${rv.included ? (rv.reliable ? "reliable" : "flagged") : "excluded"}`}>
                   {rv.included ? (rv.reliable ? "in fits · reliable" : "in fits · flagged") : "excluded from fits"}
                 </span>
@@ -246,10 +284,73 @@ export function ReviewList({
               )}
               {r.notes && <div className="unit">Notes: {r.notes}</div>}
               <div className="dataset-actions">
-                <button onClick={() => goTo(r)}>Show</button>
+                <button onClick={() => goTo(r)} title="Open this event/channel, centre the photo on the click, and aim the LiDAR view at the 3D point">
+                  Show
+                </button>
                 <button onClick={() => setEditing(editing === r.id ? null : r.id)}>{editing === r.id ? "Done" : "Edit"}</button>
+                {auto && statusOf(r) !== "verified" && (
+                  <button
+                    title="Mark verified and clear exclusion so it can enter fits after you export an approved set. Edit the feature description if needed."
+                    onClick={() =>
+                      replace(
+                        withChange(
+                          r,
+                          {
+                            reviewStatus: "verified",
+                            excludedFromFit: null,
+                          },
+                          "restore",
+                          r.excludedFromFit?.reason,
+                        ),
+                      )
+                    }
+                  >
+                    Approve
+                  </button>
+                )}
+                <button
+                  title="Keep the record but leave it out of all fits (validation set)"
+                  onClick={() =>
+                    replace(
+                      withChange(
+                        r,
+                        {
+                          reviewStatus: "held-out",
+                          excludedFromFit: { reason: "held-out for leave-one-event validation", at: new Date().toISOString() },
+                        },
+                        "exclude",
+                        "held-out",
+                      ),
+                    )
+                  }
+                >
+                  Hold out
+                </button>
+                <button
+                  title="Reject this proposal — stays excluded from fits"
+                  onClick={() =>
+                    replace(
+                      withChange(
+                        r,
+                        {
+                          reviewStatus: "rejected",
+                          excludedFromFit: { reason: "rejected during Lab 14E.2 review", at: new Date().toISOString() },
+                        },
+                        "exclude",
+                        "rejected",
+                      ),
+                    )
+                  }
+                >
+                  Reject
+                </button>
                 {r.excludedFromFit ? (
-                  <button onClick={() => replace(withChange(r, { excludedFromFit: null }, "restore", r.excludedFromFit?.reason))}>Restore</button>
+                  <button
+                    title="Clear exclusion only — also set reviewStatus to verified if this should enter fits"
+                    onClick={() => replace(withChange(r, { excludedFromFit: null }, "restore", r.excludedFromFit?.reason))}
+                  >
+                    Restore
+                  </button>
                 ) : (
                   <button
                     onClick={() => {
@@ -283,7 +384,32 @@ export function ReviewList({
                         <option key={s}>{s}</option>
                       ))}
                     </select>
-                    <select value={r.reviewStatus ?? "unreviewed"} title="Your review" onChange={(e) => update(r, { reviewStatus: e.target.value as ReviewStatus })}>
+                    <select
+                      value={r.reviewStatus ?? "unreviewed"}
+                      title="Your review (Verified/Approximate/Needs correction clear a prior Reject exclusion)"
+                      onChange={(e) => {
+                        const next = e.target.value as ReviewStatus;
+                        if (next === "rejected") {
+                          replace(
+                            withChange(
+                              r,
+                              {
+                                reviewStatus: "rejected",
+                                excludedFromFit: { reason: "rejected during review", at: new Date().toISOString() },
+                              },
+                              "exclude",
+                              "rejected",
+                            ),
+                          );
+                          return;
+                        }
+                        const clearReject =
+                          !!r.excludedFromFit &&
+                          (r.reviewStatus === "rejected" || /rejected/i.test(r.excludedFromFit.reason ?? ""));
+                        if (clearReject) replace(withChange(r, { reviewStatus: next, excludedFromFit: null }, "restore", r.excludedFromFit?.reason));
+                        else update(r, { reviewStatus: next });
+                      }}
+                    >
                       {REVIEW_STATUSES.map((s) => (
                         <option key={s}>{s}</option>
                       ))}

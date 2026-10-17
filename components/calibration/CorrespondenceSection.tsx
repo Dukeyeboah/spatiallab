@@ -1,12 +1,13 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { describeDirection, type ProvisionalOrientation } from "@/lib/calibration";
 import type { Vec3 } from "@/lib/datasets";
 import {
   buildExport,
   downloadJson,
   errorStats,
+  isAutoProposal,
   mergeRecords,
   newId,
   parseCorrespondenceFile,
@@ -21,6 +22,7 @@ import { reviewRecords, type ReviewReference } from "@/lib/correspondenceReview"
 import { DEFAULT_FISHEYE_MODEL, type FisheyeModel } from "@/lib/fisheyeProjection";
 import { eventChannels, type Run, type RunEvent } from "@/lib/xgrids";
 import { CHANNEL_COLOURS, type ProvisionalCamera } from "./CalibrationLayers";
+import { CalibrationReviewQueue } from "./CalibrationReviewQueue";
 import { CoveragePanel, ReviewList } from "./CorrespondenceReview";
 import { chosenPick, datasetToLas, type CorrespondenceLab } from "./useCorrespondenceLab";
 
@@ -30,6 +32,27 @@ const SUGGESTED_EVENTS = [
   { sequence: 2497, note: "courtyard" },
   { sequence: 3037, note: "courtyard" },
   { sequence: 4718, note: "upstairs corridor" },
+];
+
+/** Lab 14E.2 courtyard review run + auto-proposal sequences (lab14d-courtyard-2s). */
+const LAB14E2_RUN = "lab14d-courtyard-2s";
+const LAB14E2_AUTO_EVENTS = [
+  { sequence: 2557, note: "auto proposals · both cameras" },
+  { sequence: 2608, note: "auto proposals · both cameras" },
+  { sequence: 2661, note: "auto proposals · both cameras" },
+  { sequence: 2718, note: "auto proposals · ch14 only — prefer hold-out after review" },
+];
+/** Extra courtyard poses for manual rigid architecture (gaps vs autos). */
+const LAB14E2_MANUAL_TARGETS = [
+  { sequence: 2587, note: "pillar/roof (hand match exists on ch18 — add ch14 / other corners)" },
+  { sequence: 2647, note: "mid-courtyard · window / door frames" },
+  { sequence: 2768, note: "later pose · roofline / eaves" },
+  { sequence: 2827, note: "later pose · opposite wall windows" },
+  { sequence: 2872, note: "matched 14D review pose · multi-view same feature" },
+  { sequence: 2903, note: "far courtyard · outer image region" },
+  { sequence: 2959, note: "suggested held-out event · keep separate after verifying" },
+  { sequence: 2977, note: "hand matches exist — add complementary camera / corners" },
+  { sequence: 3037, note: "hand window pane — add matching corners from other poses" },
 ];
 /** Best offsets of the Lab 13S numerical test (docs/xgrids/provisional-camera-directions.json). */
 const LAB_13S_BEST: Record<string, ProvisionalOrientation> = {
@@ -60,6 +83,10 @@ type CorrespondenceSectionProps = {
   onViewRecord: (record: Correspondence) => void;
   /** Lab 13W: parameters for review errors (a loaded experiment's Stage B or Lab 13V); null = the provisional ones. */
   reference: ReviewReference | null;
+  /** Switch decoded-image run when Show targets a different runId (Lab 14E.2 courtyard autos). */
+  onRunChange?: (runId: string) => void;
+  /** Lab 14E.4: notify parent which correspondence was jumped to (image focus + Stage B overlay). */
+  onFocusRecord?: (record: Correspondence | null) => void;
 };
 
 const fmt = (p: Vec3) => p.map((x) => x.toFixed(3)).join(", ");
@@ -76,6 +103,8 @@ export function CorrespondenceSection(props: CorrespondenceSectionProps) {
   const [notes, setNotes] = useState("");
   const [scene, setScene] = useState<Scene | "">("");
   const [message, setMessage] = useState<string | null>(null);
+  const [pendingShow, setPendingShow] = useState<Correspondence | null>(null);
+  const [focusedId, setFocusedId] = useState<string | null>(null);
 
   const channels = eventChannels(event);
   const channel = channels.includes(lab.channel) ? lab.channel : channels[0];
@@ -132,17 +161,66 @@ export function CorrespondenceSection(props: CorrespondenceSectionProps) {
     setMessage(`Saved #${lab.records.length + 1}.`);
   }
 
+  useEffect(() => {
+    if (!pendingShow || pendingShow.runId !== run.id) return;
+    const index = run.events.findIndex((e) => e.sequence === pendingShow.sequence);
+    if (index < 0) {
+      setMessage(`Sequence ${pendingShow.sequence} is not in run ${run.id}.`);
+      setPendingShow(null);
+      return;
+    }
+    props.onEventIndexChange(index);
+    lab.setChannel(pendingShow.channel);
+    props.onViewRecord(pendingShow);
+    setFocusedId(pendingShow.id);
+    props.onFocusRecord?.(pendingShow);
+    setMessage(
+      `Showing #${lab.records.indexOf(pendingShow) + 1}: seq ${pendingShow.sequence} ${pendingShow.channel} · ○ image pick, × Stage B projected LiDAR.`,
+    );
+    setPendingShow(null);
+    // Intentionally only re-run when the requested run finishes loading.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [run.id, pendingShow]);
+
   const goTo = (r: Correspondence) => {
+    lab.setShowPredictions(true);
+    if (r.runId !== run.id) {
+      if (props.onRunChange) {
+        setPendingShow(r);
+        props.onRunChange(r.runId);
+        setMessage(`Loading run ${r.runId} for sequence ${r.sequence} ${r.channel}…`);
+        return;
+      }
+      return setMessage(`#${lab.records.indexOf(r) + 1} belongs to run ${r.runId}, sequence ${r.sequence}. Select that run in Source first.`);
+    }
     const index = run.events.findIndex((e) => e.sequence === r.sequence);
-    if (r.runId !== run.id || index < 0) return setMessage(`#${lab.records.indexOf(r) + 1} belongs to run ${r.runId}, sequence ${r.sequence}.`);
+    if (index < 0) return setMessage(`Sequence ${r.sequence} is not in run ${run.id}.`);
     props.onEventIndexChange(index);
     lab.setChannel(r.channel);
     props.onViewRecord(r);
+    setFocusedId(r.id);
+    props.onFocusRecord?.(r);
+    setMessage(`Showing #${lab.records.indexOf(r) + 1}: seq ${r.sequence} ${r.channel} · ○ image pick, × Stage B projected LiDAR (${reference.label.includes("x_c69aede71834") ? "baseline" : "current reference"}).`);
   };
+
+  const autoCount = lab.records.filter(isAutoProposal).length;
+  const verifiedCount = lab.records.filter((r) => (r.reviewStatus ?? "unreviewed") === "verified").length;
+  const heldOutCount = lab.records.filter((r) => r.reviewStatus === "held-out").length;
+  const courtyardRun = run.id === LAB14E2_RUN;
 
   return (
     <div className="section provisional correspondences">
       <b className="sub">Image ↔ LiDAR correspondences · provisional</b>
+      {autoCount > 0 && (
+        <div className="note warn lab14e2-banner">
+          <b>Lab 14E.2 — correspondence review (stop before fitting).</b> {autoCount} auto-proposed courtyard
+          match{autoCount === 1 ? "" : "es"} are imported and <b>excluded from fits</b> until you Approve (or Reject /
+          Hold out). {verifiedCount} verified · {heldOutCount} held-out. Use run <code>{LAB14E2_RUN}</code>, filter{" "}
+          <i>Auto proposed</i>, press <i>Show</i>, check photo + 2D mark + LiDAR + predicted overlay, then decide.
+          Target ≥10 new verified rigid architectural matches across both cameras and several poses. Do not open
+          Optimization / Stage B until you export an approved set.
+        </div>
+      )}
       <div className="note">
         1. Choose an event and a channel. 2. Click a sharp feature in the image (wheel = zoom, drag = pan). 3. Press{" "}
         <i>Pick in 3D</i>, navigate the LiDAR and click the same feature. 4. Describe it and save. Aim for 15–25 reliable
@@ -162,7 +240,7 @@ export function CorrespondenceSection(props: CorrespondenceSectionProps) {
       </details>
 
       <div className="test-chips">
-        {SUGGESTED_EVENTS.map((s) => {
+        {(courtyardRun ? LAB14E2_AUTO_EVENTS : SUGGESTED_EVENTS).map((s) => {
           const index = run.events.findIndex((e) => e.sequence === s.sequence);
           return (
             <button
@@ -176,8 +254,27 @@ export function CorrespondenceSection(props: CorrespondenceSectionProps) {
             </button>
           );
         })}
-        <span className="unit">or any event (slider above)</span>
+        <span className="unit">{courtyardRun ? "auto-proposal events · or any event below" : "or any event (slider above)"}</span>
       </div>
+      {courtyardRun && (
+        <div className="test-chips">
+          {LAB14E2_MANUAL_TARGETS.map((s) => {
+            const index = run.events.findIndex((e) => e.sequence === s.sequence);
+            return (
+              <button
+                key={s.sequence}
+                disabled={index < 0}
+                className={s.sequence === event.sequence ? "selected" : ""}
+                title={index < 0 ? `not in run ${run.id}` : s.note}
+                onClick={() => props.onEventIndexChange(index)}
+              >
+                {s.sequence}
+              </button>
+            );
+          })}
+          <span className="unit">manual targets (windows, doors, pillars, rooflines · multi-view where possible)</span>
+        </div>
+      )}
       <div className="segmented">
         {channels.map((c) => (
           <button key={c} className={c === channel ? "selected" : ""} onClick={() => lab.setChannel(c)}>
@@ -285,6 +382,9 @@ export function CorrespondenceSection(props: CorrespondenceSectionProps) {
       {missing.length > 0 && <div className="unit">Needs: {missing.join(", ")}.</div>}
       {message && <div className="note">{message}</div>}
 
+      {lab.records.length > 0 && (
+        <CalibrationReviewQueue lab={lab} reviews={reviews} reference={reference} goTo={goTo} focusedId={focusedId} />
+      )}
       {lab.records.length > 0 && <CoveragePanel reviews={reviews} reference={reference} onSelect={goTo} />}
       <label>
         <input type="checkbox" checked={lab.showCoverage} onChange={(e) => lab.setShowCoverage(e.target.checked)} />
@@ -321,10 +421,12 @@ function ProjectionControls({ lab, cameras, onCamerasChange, offsets }: Correspo
       <div className="note">
         Equidistant fisheye r = f·θ around (cx, cy), camera at the scanner position (lever arm unknown), rotation = the
         channel offsets below. These values are guesses for diagnostics, <b>not</b> calibrated or manufacturer intrinsics.
+        The image viewer ○/× overlay uses <b>Stage B x_c69aede71834</b> when the built-in Basel House dataset is loaded —
+        not this assumed f=750 panel. The error table below still uses the assumed model.
       </div>
       <label>
         <input type="checkbox" checked={lab.showPredictions} onChange={(e) => lab.setShowPredictions(e.target.checked)} />
-        Predicted pixels (×) for saved features
+        Predicted pixels (×) for saved features (Stage B in the viewer when available)
       </label>
       <label>
         <input type="checkbox" checked={lab.showOverlay} onChange={(e) => lab.setShowOverlay(e.target.checked)} />

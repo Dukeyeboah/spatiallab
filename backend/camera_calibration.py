@@ -61,7 +61,7 @@ CONVENTIONS = {
 
 # Keywords in the feature text that suggest an object that may move or deform.
 # Lab 13W review fields on records (same values as lib/correspondences.ts).
-REVIEW_STATUSES = ("unreviewed", "verified", "needs-fix")
+REVIEW_STATUSES = ("unreviewed", "verified", "approximate", "needs-fix", "held-out", "rejected")
 SCENES = ("courtyard", "corridor", "indoor", "exterior", "other")
 MAX_HISTORY = 100
 MOVABLE_PATTERN = re.compile(r"\b(vehicle|car|truck|van|bus|bike|person|people|man|woman|curtain|cloth|flag|leaf|leaves|palm|plant|tree|branch|brank|stem|bush)\b", re.I)
@@ -325,6 +325,14 @@ def audit(records: list, cloud_las: Optional[np.ndarray] = None,
         flags = []
         if r.get("excludedFromFit"):
             flags.append(_flag("user-excluded", "exclude", f"excluded during review: {r['excludedFromFit']['reason'] or 'no reason given'}"))
+        if r.get("reviewStatus") == "held-out":
+            flags.append(_flag("held-out", "exclude", "marked held-out for validation (not used in fits)"))
+        if r.get("reviewStatus") == "rejected":
+            flags.append(_flag("rejected", "exclude", "rejected during review (not used in fits)"))
+        if r.get("proposalSource") == "lab14e2-auto" or str(r.get("id", "")).startswith("auto_"):
+            if not r.get("excludedFromFit") and r.get("reviewStatus") not in ("verified", "held-out", "rejected"):
+                flags.append(_flag("lab14e2-auto", "exclude",
+                                   "Lab 14E.2 auto-proposal: left out of fits until verified or explicitly restored"))
         if r.get("reviewStatus") == "needs-fix":
             flags.append(_flag("needs-fix", "review", "marked 'needs fix' during review"))
         if nominal is None:

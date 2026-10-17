@@ -144,15 +144,98 @@ Full write-up: [splat-dataset.md](splat-dataset.md). Data prepared only: no trai
   - **Main risk:** the zero lever arm. 5 cm is about 0.7° at 4 m.
   - **Second run:** with camera-pose refinement.
 
-## Lab 14B: training preflight (no GPU yet)
+## Lab 14B: training preflight + smoke (2026-10-16)
 
 Full write-up: [splat-training.md](splat-training.md).
 
 - **Scripts:** `train_xgrids.sh` + `verify_lidar_init.py` (Lab 10C `train.sh` is wrong for this package: y-down world remap and eval-interval 8).
-- **Init proof:** Nerfstudio 1.1.5 loads `points3D.bin` into splatfacto `seed_points` via the dataparser metadata; the Pod script refuses to train unless that path is verified. Local count: 1,000,000 points.
-- **Package:** `reconstruction/training/lab14b/basel-xgrids-r2.zip` (outside Git), not uploaded. Smoke stops for review; checkpoint/PLY/eval/logs pack into one result tarball; failed export/eval exits non-zero and blocks proceeding.
-- **Recommend:** 1× RTX 4090 24 GB Secure Cloud, 40 GB volume. RunPod page (2026-10-08): Community $0.34/h, Secure $0.89/h for 4090. Estimate ~$0.90–1.40 for smoke+quick on Secure 4090.
-- **Stopped** before renting or uploading, pending approval.
+- **Init proof:** Nerfstudio 1.1.5 loads `points3D.bin` into splatfacto `seed_points` via the dataparser metadata; the Pod script refuses to train unless that path is verified. Local + Pod count: 1,000,000 points.
+- **Package:** `reconstruction/training/lab14b/basel-xgrids-r2.zip` (SHA-256 `511593a2…`), uploaded and verified on Pod.
+- **Smoke Pod:** Secure RTX 4090, EU-RO-1, $0.89/h, id `zf5dl3jh9clzyi`, 40 GB volume. train/export/eval all ok (PSNR 12.72, SSIM 0.65, LPIPS 0.69, peak 4058 MiB, 136 s). Result: `lab14b/basel-xgrids-smoke-20261016-085054/` (+ `.tar.gz`). Pod **stopped**; volume kept.
+- **Quick Pod:** smoke host had no free GPU on restart → new Secure 4090 `ce9po8uagl0mrd` (US-IL-1, same $0.89/h). Fresh 7,000-step run (not continue): LiDAR init ok, train/export/eval ok (PSNR 15.42, SSIM 0.67, LPIPS 0.66, 1.19 M Gaussians, peak 5958 MiB, 388 s). Result: `lab14b/basel-xgrids-quick-20261016-121637/`. Pod **stopped**; volume kept. **No quality** until quick review.
+- **Pitfall:** `pip check` failed on a ninja platform-tag false positive; `setup_env.sh` now ignores only that line. Stop-before-download truncated a tarball once — re-pack after verify.
+- **Viewer:** import `splat.ply` in Lab 8 `/gaussian-viewer` (Nerfstudio layout accepted); not co-registered with LiDAR yet.
+
+## Lab 14C: local diagnosis + focused selection (2026-10-16)
+
+Full write-up: [lab14c-diagnosis.md](lab14c-diagnosis.md). **No GPU / upload / train.**
+
+- **Confirmed contributors to soft quality:** long sparse 5 s route (~195 m, median turn 29°, many large turns); opposite cameras ~154°; experimental Stage B + zero lever arm.
+- **Ruled out as primary:** missing LiDAR init (1M→1M); inverted fisheye map; upside-down cameras; Nerfstudio accidentally remapping Z-up (identity R + scale ~0.05).
+- **Partial:** underfitting (7k mid-schedule) — modest PSNR gain; smear often pose/cal, not only iterations.
+- **Viewer:** Lab 8 startCamera assumed COLMAP Y-down; Lab 14B PLY is LAS Z-up → awkward navigation. Fixed: `/gaussian-viewer` **World up: LAS Z-up**, Fly mode, optional training-camera start (`PATCH /splats/{id}/frame`). Cameras JSON: `lab14c/training-cameras-quick.json`.
+- **Next dataset (selection only):** courtyard 14–16.5 min @ **2 s** → 64 events / 128 images, path ~50 m, median step ~0.75 m, median turn ~16° (`selection-courtyard-2s.json`). **Not built/trained.**
+- **Recommended next train (when approved):** denser courtyard package, same cal — tests coverage vs calibration. Pods/volumes untouched until user terminates.
+
+## Lab 14D: focused courtyard dataset built (2026-10-16)
+
+Full write-up: [lab14d-courtyard-dataset.md](lab14d-courtyard-dataset.md). **No GPU / upload / train.**
+
+- **Built from** Lab 14C `selection-courtyard-2s.json` (14–16.5 min @ 2 s), same Stage B `x_c69aede71834`, `forward12`, lever arm 0.
+- **Extraction:** `lab14d-courtyard-2s` — 64/64 events, 128/128 `ok`.
+- **Dataset:** `lab14d/basel-courtyard-2s-forward12/` (141 MB): 113 train / 15 eval; validation **pass with warnings** (exposure; mild pose continuity — 1 turn >90°, 6 direction gaps vs 43 on Lab 14A).
+- **Coverage:** span 19.1×17.1×1.4 m, path 50 m; covisibility median 0.63, 0 isolated; **kept all 64 events** (loop is compact; no thin dead-end to cut).
+- **LiDAR seed:** radius **12 m**, voxel 5 cm → 1.05 M voxels → cap **500,000** (not 1 M @ 25 m).
+- **Package:** `lab14d/basel-courtyard-r1.zip` (81 MB, sha256 `c492bc17…`); 42 shared images with Lab 14B for visual comparison (`comparable-viewpoints-vs-lab14b.json`). Aggregate metrics not cross-comparable alone.
+- **Smoke (approved 2026-10-16):** new Secure 4090 Pod `ahzq6a98eyklso` (EUR-NO-1, $0.89/h, 40 GB volume). Zip checksum OK; `EXPECTED_POINTS=500000`; LiDAR 500k→500k; train/export/eval ok (PSNR 10.63, SSIM 0.53, LPIPS 0.73, 499,988 Gaussians, peak 2624 MiB, 80 s). Downloaded `lab14d/basel-courtyard-smoke-20261016-211001/`; pod **stopped**. Shared eval image with Lab 14B quick: `seq02872_ch14_c.jpg` in `smoke-review/`.
+- **Quick 7k (approved 2026-10-16; no quality):** smoke host had no free GPU → new Secure 4090 `3yew4v2f9ub76t` @ $0.89/h. Same package/cal; `EXPECTED_POINTS=500000 bash train_xgrids.sh quick`. LiDAR 500k→500k; 0 NaN Gaussians; train/export/eval ok (PSNR **19.25**, SSIM **0.62**, LPIPS **0.53**, **707,266** Gaussians, peak **3548 MiB**, **262 s**). Downloaded `lab14d/basel-courtyard-quick-20261016-221112/` (tar sha256 `a21c9108…`); pod **stopped**. Matched-view panels vs Lab 14B: `lab14d/quick-review/` (`seq02872_ch14_c` only shared eval filename). Visually clearer structure than 14B but **still severely blurry** + vegetation ghosting → **do not auto-run quality**; next investigate lever arm / Stage B / registration. Four EXITED pods keep 40 GB disks (~$8/mo each); no network volumes; nothing terminated without approval. Lab 14B pods untouched.
+
+## Lab 14E: blur diagnosis after courtyard quick (2026-10-16)
+
+Full write-up: [lab14e-blur-diagnosis.md](lab14e-blur-diagnosis.md). **Local only — no GPU.**
+
+- **Confirmed:** Stage B held-out ~16–18 px; courtyard architecture held-out **17–23 px** ≈ **12 cm** lateral at 7.6 m — enough to force soft multi-view Gaussians. Pair Δt ≤19 µs / pose 10 Hz → sync unlikely. Fisheye remap + LiDAR init OK. Far residuals (~14 px at ≥8 m) **exceed** 5 cm lever budget (~4 px) → zero lever is a gap but **not the only** residual. Full LAS ~138 M pts in 12 m vs preview 2.7 M; seed 500 k from ~1.05 M preview voxels — thinning real, secondary while rays disagree. Splatfacto 7k spends only ~1k steps at full res (`num_downscales=2`) — secondary.
+- **Not assumed from blur alone:** calibration wrong in a specific way — residuals measured; training config secondary.
+- **Next (proposed, not started):** Lab 14E.1 local courtyard correspondences + lever-only then cx,cy-only fits; success &lt;8 px held-out; no 30k / no GPU until residuals improve.
+- **Cost:** four EXITED 40 GB pods; local backups complete → volumes **safe to terminate when authorized** (~$32/mo). Nothing terminated.
+
+## Lab 14E.1 + RunPod cleanup (2026-10-16)
+
+- **Terminated** (user-authorized) pods `zf5dl3jh9clzyi`, `ce9po8uagl0mrd`, `ahzq6a98eyklso`, `3yew4v2f9ub76t` after re-verifying local backups. Account: **0 pods**, **0** network/global volumes. Recurring storage for those experiments **ended**.
+- **Billing (pod API, to date):** 14B smoke $1.13 + quick $0.80 ≈ **$1.94**; 14D smoke $0.84 + quick $0.37 ≈ **$1.21**; four-pod total ≈ **$3.15** (GPU+disk).
+- **14E.1 local:** Trial A (lever ±15 cm) LOO median **14.4 px** (levers ~1–2 cm); Trial B (cx,cy) LOO **15.5 px** (Δ ≲ 2 px). Stage B LOO baseline **16.0 px**. Target &lt;8 **not** reached. 14 auto courtyard proposals saved for UI review (excluded from scores — circular). Write-up: [lab14e1-lever-principal.md](lab14e1-lever-principal.md).
+
+## Lab 14E.2: correspondence review (2026-10-17) — awaiting user approvals
+
+Full write-up: [lab14e2-correspondence-review.md](lab14e2-correspondence-review.md). **Local only — no GPU / no RunPod.**
+
+- Valid import package `lab14e2-courtyard-review.json` (hand matches + 14 autos with `excludedFromFit`, `reviewStatus: unreviewed`, `proposalSource: lab14e2-auto`).
+- `/camera-calibration` correspondences mode: filters for auto / verified / held-out / rejected; Show switches to `lab14d-courtyard-2s`; Approve / Reject / Hold out; courtyard event chips for auto sequences and manual targets.
+- New review statuses `held-out` and `rejected` (frontend + backend audit exclude both; autos also excluded until verified).
+- **Stop:** no Stage B / constrained re-fit until the user approves ≥10 additional rigid matches and exports an approved set.
+
+## Lab 14E.3: expanded manual correspondences + candidates (2026-10-17)
+
+Full write-up: [lab14e3-calibration-validation.md](lab14e3-calibration-validation.md). **Local only — no GPU / no RunPod / no training.** Stage B `x_c69aede71834` **not** replaced.
+
+- Preserved `correspondences-builtin-basel-house-2026-10-17.json` (43 matches; ch14=21, ch18=22; 21 events). Ignored file’s old `f=750` diagnostic model.
+- Stage B residual on 40/43 valid: overall median **19.8 px**, P90 **40.9**; centre **14.3** vs outer **38.8**; radius–error corr **+0.66**. Three outer picks outside usable radius.
+- Quality grades (heuristic): 12 verified / 27 approximate / 4 questionable — originals kept.
+- Event-grouped LOO (usable): frozen Stage B **22.2** px; refit Stage B **19.3**; +lever **19.1** (unstable); +cx,cy **17.0** (bound-hitting); **+k1 ~13.9** (best, still above 8–10 px goal).
+- **Decision:** no new Gaussian train; no baseline overwrite. Next: human review of outer/edge picks, then optional constrained k1 trial beside Stage B if approved.
+
+Also: `/labs/lcc-web-sdk` Plain Three.js only (R3F host kept, UI hidden) — see [lcc-web-sdk-feasibility.md](../labs/lcc-web-sdk-feasibility.md).
+
+## Lab 14E.4: Calibration Review Queue (2026-10-17)
+
+Full write-up: [lab14e4-calibration-review-queue.md](lab14e4-calibration-review-queue.md). **Local only — no fitting / no GPU.**
+
+- `/camera-calibration` correspondences mode: prioritized queue (7 flagged first, then optional approximate courtyard, leave-alone reliable + indoor).
+- Jump centres image on ○ pick; × uses Stage B `x_c69aede71834`. Verdicts: Verified / Approximate / Needs correction / Reject (no automatic rewrite of originals).
+- Coverage: upper/middle/lower × left/right + near/medium/far per camera; ≤8 gap suggestions only when meaningful.
+- **Stop:** finish flagged review before any Stage B / candidate refit.
+- **Export 20:11 UTC:** 4/7 flagged → `needs-fix` (shelf, board, pane, roof-apex id); no re-picks. Trusted residuals (36) still show radial pattern (centre med ~14 px, outer ~39, corr ~0.64). Strict 12 “reliable” have **no outer**.
+- **Export 21:00 UTC:** shelf+board → `approximate`; pane → `needs-fix`; roof apex → `verified`; #40/#41 → `verified` but still `excludedFromFit` (Reject-then-Verified); #24 → `approximate` + excluded. Preserved under `lab14e4-review-queue/`.
+
+## Lab 14E.5: restore edge verdicts + constrained k1 (2026-10-17)
+
+Full write-up: [lab14e5-fisheye-k1.md](lab14e5-fisheye-k1.md). **Local only — no GPU / Stage B not replaced.**
+
+- Phase 1: restored #40/#41 (`excludedFromFit` cleared, stay verified / outside-usable); #24 stays excluded; glass stays needs-fix. UI clears Reject exclusion when marking Verified/Approximate/Needs correction.
+- Model A frozen Stage B LOO median **20.1 px**; Model B Stage B + k1-only (pose/f frozen) LOO **16.4 px**; outer 39→23; radial corr 0.65→0.34; k1 ≈ −0.029 / −0.020 stable across 17 folds; better on 12/17 events.
+- #40/#41 never in train; under B they project but ~55–69 px — not a generalization win.
+- **Decision:** k1 helps modestly; **not** enough for Gaussian retrain; do not overwrite `x_c69aede71834`.
+- **After report (user export 21:19):** #40/#41 marked **rejected** again (preserved `…/lab14e5-fisheye-k1/correspondences-…-after-reject-40-41.json`). 14E.5 numbers above used the restored verified state and never trained on those two; rejecting them does not invalidate the 39-point LOO.
 
 ## Open questions
 

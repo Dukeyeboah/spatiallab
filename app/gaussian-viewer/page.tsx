@@ -8,15 +8,19 @@ import { API_URL } from "@/lib/datasets";
 import {
   deleteSplat,
   fetchSplats,
+  patchSplatFrame,
   selectionForm,
   defaultStartView,
+  resolveUpAxis,
   splatContentUrl,
   startCamera,
   uploadSplat,
   type SplatScene,
   type SplatSelection,
+  type SplatUpAxis,
   type StartView,
 } from "@/lib/splats";
+import type { CameraNavMode } from "@/components/splat/SplatViewer";
 
 /**
  * Lab 8: real trained Gaussian splat scenes, imported through the local
@@ -34,6 +38,7 @@ export default function GaussianViewerPage() {
   const [ministats, setMinistats] = useState(false);
   /** Per scene, once the user picks one; otherwise defaultStartView. */
   const [startViews, setStartViews] = useState<Record<string, StartView>>({});
+  const [cameraMode, setCameraMode] = useState<CameraNavMode>("orbit");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const viewerApi = useRef<SplatViewerApi | null>(null);
@@ -64,6 +69,7 @@ export default function GaussianViewerPage() {
   const selected = scenes.find((s) => s.id === selectedId) ?? null;
   const contentUrl = selected ? splatContentUrl(selected) : null;
   const startView = selected ? (startViews[selected.id] ?? defaultStartView(selected)) : "inside";
+  const upAxis = selected ? resolveUpAxis(selected) : "colmap-y-down";
 
   async function run(action: () => Promise<void>) {
     setBusy(true);
@@ -105,11 +111,39 @@ export default function GaussianViewerPage() {
     setSelectedId(scene.id);
   }
 
+  const setUpAxis = (next: SplatUpAxis) =>
+    run(async () => {
+      if (!selected) return;
+      const updated = await patchSplatFrame(selected.id, {
+        upAxis: next === "las-z-up" ? "las-z-up" : "colmap-y-down",
+      });
+      setScenes((list) => list.map((s) => (s.id === updated.id ? updated : s)));
+    });
+
+  const applyTrainingStart = (pose: { position: [number, number, number]; target: [number, number, number]; fov: number }) =>
+    run(async () => {
+      if (!selected) return;
+      const updated = await patchSplatFrame(selected.id, {
+        upAxis: "las-z-up",
+        startPose: pose,
+      });
+      setScenes((list) => list.map((s) => (s.id === updated.id ? updated : s)));
+    });
+
+  const clearTrainingStart = () =>
+    run(async () => {
+      if (!selected) return;
+      const updated = await patchSplatFrame(selected.id, { startPose: null });
+      setScenes((list) => list.map((s) => (s.id === updated.id ? updated : s)));
+    });
+
   return (
     <>
       <SplatViewer
         contentUrl={contentUrl}
         startCamera={selected ? startCamera(selected, startView) : null}
+        upAxis={upAxis}
+        cameraMode={cameraMode}
         ministats={ministats}
         onStatus={setStatus}
         onStats={setStats}
@@ -127,6 +161,12 @@ export default function GaussianViewerPage() {
         onResetCamera={() => viewerApi.current?.resetCamera()}
         startView={startView}
         onStartViewChange={(view) => selected && setStartViews((views) => ({ ...views, [selected.id]: view }))}
+        upAxis={upAxis}
+        onUpAxisChange={setUpAxis}
+        cameraMode={cameraMode}
+        onCameraModeChange={setCameraMode}
+        onApplyTrainingStart={applyTrainingStart}
+        onClearTrainingStart={clearTrainingStart}
         onAssign={assign}
         onDelete={remove}
         onImport={importScene}
