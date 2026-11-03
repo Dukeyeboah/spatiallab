@@ -51,6 +51,18 @@ A deliberately small Next.js + React Three Fiber app that renders a **real** LiD
 
 The dataset used: a handheld/SLAM LiDAR scan (`map.las`, 5,242,880 points, 178 MB, local metric frame, RGB) plus `poses.csv` (208 poses, 5 Hz, 41.4 s).
 
+### Modular product lines (keep separate)
+
+Spatial Lab has grown beyond the original LiDAR learning app. Treat these as **modular lines** that may share property assets and coordinate-system metadata but must not be fused into one dependency:
+
+| Line | Role | Docs |
+| ---- | ---- | ---- |
+| **Spatial Lab Experiences** | Commercial-facing property tours and interaction (LCC walkthrough, floor plans, staging, surface overlays) | `docs/labs/spatial-experiences-exp*.md` |
+| **Spatial Lab Reconstruction** | Independent Gaussian reconstruction and camera-calibration research (Labs 8–14E, XGRIDS, COLMAP) | `docs/xgrids/*` |
+| **Spatial Lab Editable Twins** | **Future (not built):** AI-assisted conversion of scanned spaces into editable mesh scenes (architectural shell → interior → high-fidelity twin) | `docs/labs/editable-twins-roadmap.md` |
+
+Experiences wall overlays (EXP-05…) decorate Gaussians; they do **not** replace captured architecture. Editable Twins is the planned long-term path for redesign (repaint, remove furniture, layout variants) as a **second aligned asset**, not an in-place LCC rewrite. Do not implement Editable Twins until a dedicated lab (e.g. TWIN-01) is approved; do not block Experiences or Reconstruction work on it.
+
 ## 2. Guiding principles
 
 These are requirements, not suggestions. They shaped every decision.
@@ -133,6 +145,12 @@ Environment variables (all optional): `SPATIAL_LAB_DATA_DIR` (default `<repo>/sp
 Disk (splat scenes, Lab 8): an upload needs about 2× its size while uploading; a .zip also keeps its extracted scene next to the original (≈ 2× the zip on disk).
 
 Disk: an import needs roughly 2.3× the LAS size free while uploading (upload buffer + stored original) plus ~15 bytes × 3.5M points for the budgets.
+
+### 3.2 Public sharing → SpaceViewer (separate project)
+
+**Do not** treat Spatial Lab Vercel + CDN as the product path. The shareable, upload-based viewer is **SpaceViewer** (sibling repo / `spaceviewer` npm package). Spatial Lab Experiences remains the local R&D tour. See `docs/labs/spaceviewer-split.md`.
+
+`vercel.json` in this repo may still redirect `/` → Experiences for experiments; production user uploads and Firebase/CDN belong in SpaceViewer. The FastAPI backend stays local (or a dedicated host), not Vercel serverless.
 
 ## 4. Architecture
 
@@ -278,7 +296,19 @@ docs/xgrids/            xbag-format.md (format, verified vs provisional), invest
                         lab14e5-fisheye-k1.md (Lab 14E.5: restore #40/#41; Stage B vs k1-only LOO; no train)
 docs/labs/              lcc-web-sdk-feasibility.md (Lab LCC-WEB-01: XGRIDS LCC Web SDK; Plain Three.js host),
                         spatial-experiences-exp01.md (LAB EXP-01: client tour prototype),
-                        spatial-experiences-exp02.md (LAB EXP-02: perf presets, walk, map, collision, Revit Home)
+                        spatial-experiences-exp02.md (LAB EXP-02: perf presets, walk, map, collision, Revit Home),
+                        spatial-experiences-exp03b.md (LAB EXP-03B: floor-plan upload/align, live map, point-house loader),
+                        spatial-experiences-exp04.md (LAB EXP-04: virtual staging GLB + TransformControls PoC),
+                        spatial-experiences-exp04b.md (LAB EXP-04B: furniture OBB collision + asset import boundary),
+                        spatial-experiences-exp05.md (LAB EXP-05: wall/surface overlays, wallpaper, artwork; LCC untouched),
+                        spatial-experiences-exp05b.md (LAB EXP-05B: wall occlusion / clip / semantic feasibility; recommend B),
+                        spatial-experiences-exp05c.md (LAB EXP-05C: LCC wall limit + open PLY selective recolour; recommend B),
+                        spatial-experiences-exp05d.md (LAB EXP-05D: thin box vs plane, exclusion holes, bake/duplicate feasibility),
+                        spatial-experiences-exp05e.md (LAB EXP-05E: layered wall finish shader + presets),
+                        editable-twins-roadmap.md (future: AI-assisted editable digital twins; LAB TWIN-01 planned, not started),
+                        experiences-vercel-deploy.md (legacy Vercel notes; product sharing → SpaceViewer),
+                        spaceviewer-split.md (SpaceViewer sibling product for upload + deploy),
+                        spatial-house-prod01-multifloor.md (LAB PROD-01 two-floor property experience)
 public/vendor/lcc-web-sdk/  Official LCC Web SDK Three.js build (vendored 0.6.3; separate from LiDAR/SuperSplat)
 public/labs/lcc-samples/  Extracted LCC2 samples for the playground (gitignored; see README there)
 public/data/            built-in dataset: pointcloud-500k/1m/2m/5m.bin (gitignored), poses.csv
@@ -1667,6 +1697,18 @@ General scaling rules: raw LAS is never loaded directly; convert offline to a ty
 
 ## 11. Not built yet / roadmap
 
+### Spatial Lab Editable Twins (future — documentation only)
+
+**Important research direction** for interior designers, architects, developers and real-estate: AI-assisted conversion of scanned spaces into a **separate editable 3D twin** aligned with the original XGRIDS / Gaussian reconstruction. Full specification: `docs/labs/editable-twins-roadmap.md`.
+
+- **Not implemented.** Do not start coding, call model APIs, rent GPUs, download weights, or modify the LCC viewer for this until approved.
+- **Progressive levels:** (1) architectural shell, (2) editable interior, (3) high-fidelity twin (Level 3 is not automatic from LLM prompts).
+- **Planned first experiment (when approved):** `LAB TWIN-01 — AI-Assisted Architectural Shell Reconstruction` — one living room (XGRIDS Room sample preferred) as editable walls/floor/ceiling/doors/major features → GLB vs Gaussian comparison (accuracy, alignment, editability, cost, manual correction). No detailed furniture or photoreal materials in TWIN-01.
+- **Experiences modes (future):** Captured Reality / Editable Twin / Design Preview / Comparison — share coordinate metadata; Experiences must not depend on twins existing.
+- **Risks:** LCC2 licensing/tooling limits; incomplete inputs; AI hallucination vs measured geometry; cost volatility; human-in-the-loop for Level 2–3. Prefer geometry + procedural modeling over screenshot-only reconstruction.
+
+### Other explicit gaps
+
 Explicitly out of scope so far (each would be its own lab): cross-capture alignment (Lab 7C organises captures per property; registration into a property frame via `alignment`/`frame`, using control points/GNSS/CRS, is not built), meshes and photographs as capture representations (splat scenes exist since Lab 8, section 5.7), splat ↔ LiDAR registration, importing SuperSplat `settings.json` (authored cameras/annotations), splat editing/cropping, background import jobs for very large splat files, LAZ/E57 import, LiDAR intensity visualisation, pose animation, clipping/cropping, measurement tools, annotations/hotspots, full Gaussian splatting (Lab 6 projects one Gaussian; Lab 7B composites up to 1,000 with CPU projection, centre sorting and instanced quads; still missing: projection and sorting on the GPU for millions of Gaussians, tile-based rasterisation, spherical-harmonic colour for many Gaussians in our own renderer (Lab 9 evaluates it for one; Lab 8 views real trained scenes with the official viewer), training), running the cloud training and importing its PLY with provenance (Lab 10C stage 2; `output/` reserved), metric scale/gravity for photo reconstructions (e.g. from LiDAR), XGRIDS camera calibration (fisheye intrinsics and camera-to-scanner extrinsics; Lab 13Q only gives scanner poses at the image times, Lab 13R only inspects them, Lab 13S only narrows the viewing directions, Lab 13U only collects 2D–3D correspondences with provisional error diagnostics, and Lab 13V only makes experimental estimates of the rotations and one focal parameter (principal point, lever arm, distortion and timing still unknown); Lab 13W adds review and coverage tools, but the expanded, hand-verified correspondence set (15–25 reliable per camera) is not collected yet, see `docs/xgrids/calibration-notes.md`; Lab 14A prepares and validates a first splatting dataset from these estimates, but training it (Lab 14B) needs the user's approval of a GPU rental; next steps in `docs/xgrids/calibration-workspace.md`: channel identity, intrinsics, 2D–3D correspondences, extrinsics, reprojection errors, frustums/rays, alignment diagnostics) and decoding of the non-camera XBAG channels, video frame extraction, linking training projects to a property/capture, RAW/video import, editing/saving trained Gaussians (Lab 9 experiments are preview-only), inspecting a Gaussian among its neighbours, ordinary meshes, WebXR, LOD/octrees, workers.
 
 ## 12. Prompt templates
@@ -1747,6 +1789,23 @@ Explicitly out of scope so far (each would be its own lab): cross-capture alignm
 | EXP-01 | Spatial Lab Experiences prototype at `/labs/spatial-experiences`: Room tour + PentHouse scene selector, viewpoints, hotspots, Dev editor, FPS/splat budget; catalog separate from LCC tiles; no R3F; no billing/auth; license TBD; `docs/labs/spatial-experiences-exp01.md` |
 | EXP-02 | Experiences polish: Performance/Balanced/Quality presets (`setMaxSplats`/`setMaxDistance`/DPR; skip legacy `setMaxNodeSplats` for LCC2); Walk default + accel/pointer-lock/Help; rooms + fade teleport; manual floor map; capsule collision where `data/mesh` exists; Revit Home in selector; report `docs/labs/spatial-experiences-exp02.md` |
 | EXP-02b | Walk fix: floor-intersecting capsule was zeroing velocity each frame; raise capsule clearance + axis slide + focus/capture key handling; `docs/labs/spatial-experiences-exp02.md` |
+| EXP-02c | On-screen Move/Look pads; Dev checkpoints with yaw/pitch on 2D map + blue 3D pins; `WalkOnScreenControls` |
+| EXP-02d | Compact panel + settings; checkpoint icons/grid; collision wall map guides; smooth vs fade transition; hotspots deferred to checkpoint notes |
+| EXP-03B | Floor-plan upload (IDB + export JSON), ≥3-point similarity (+ optional affine), live you/heading on map, room polygons, procedural shader point-house loader; Room sample plan under `public/labs/experiences/floor-plans/`; `docs/labs/spatial-experiences-exp03b.md` |
+| EXP-04 | Virtual staging PoC: built-in chair or uploaded GLB in LCC scene; floor raycast place; TransformControls; Staged/Original toggle; localStorage+IDB persist; depth caveats documented; `docs/labs/spatial-experiences-exp04.md` |
+| EXP-04B | Furniture OBB collision proxies in walk resolver (after LCC env); Dev wireframe debug; `stagingAssetPipeline` for future GLTF/OBJ/FBX/AI→GLB; no AI/paid gen; `docs/labs/spatial-experiences-exp04b.md` |
+| EXP-04B′ | Staging gizmo polish: uniform scale ∝ (+/−); stretch = local per-axis; env wall-push only while translating (not rotate/scale); restore default move/rotate gizmos |
+| EXP-04B″ | Per-placement `collisionEnabled` (new pieces default off); toggle in Dev after placing; skips walk proxy + wall-push when off |
+| EXP-05 | Wall/surface overlays on Room LCC2: collision pick + normal, planar mesh, color/wallpaper/artwork, Surfaces↔Original walls toggle; no Gaussian edit; depth caveats documented; `docs/labs/spatial-experiences-exp05.md` |
+| EXP-05B | Occlusion lab: offset/gap diagnostics, opaque presets, clip-box & semantic probes, collision depth proxy; Dev sections collapsible; **recommend B** (decorative overlays, not full wall paint); `docs/labs/spatial-experiences-exp05b.md` |
+| EXP-05C | Final LCC wall comparison (stop renderer hacks); open-format PLY plane/poly/exclude + `f_dc` recolour script; frames/video notes; **recommend B** (independent Gaussian edit lab); `docs/labs/spatial-experiences-exp05c.md` |
+| EXP-05D | Thin box vs plane (matched front face); overlay exclusion holes; bake-texture limits on LCC; PLY `--mode duplicate`; `docs/labs/spatial-experiences-exp05d.md` |
+| EXP-05E | Layered unlit wall finish shader (grain/wash/plaster/map); 4 presets; blend modes; lighting knobs; versioned `finish` schema; `docs/labs/spatial-experiences-exp05e.md` |
+| EXP-05E′ | Occlusion lab collapsible; always-visible Graphics quality lever (persisted); Vercel share entry (`vercel.json` → Experiences) + `NEXT_PUBLIC_LCC_ASSET_BASE`; deploy/backend notes `docs/labs/experiences-vercel-deploy.md` |
+| SpaceViewer | Public upload-based Experiences product split out to sibling repo `spaceviewer` (not this monorepo). Spatial Lab stays local R&D; see `docs/labs/spaceviewer-split.md` |
+| PROD-01 | Two-floor property experience (Spintex provisional): schema + draft/export, floor welcome, start cameras, room checkpoints, stair connections, visitor preview at `/labs/property-experience`; models under `public/labs/properties/` (gitignored); Spatial House contract in `docs/labs/spatial-house-prod01-multifloor.md` |
+| PROD-02A | Isolated smooth-nav lab `/labs/prod-02a` on Spintex LCC2; Free Follow / Ecctrl Orbit; collision boom; FOV 65°; **02A.1** mobile joystick + touch look (shared intent); Dev presets/debug; PROD-01 untouched — `docs/labs/spatial-house-prod02a-smooth-nav.md` |
+| TWIN | Future direction recorded only: AI-assisted editable digital twins (Levels 1–3); modular vs Experiences / Reconstruction; planned `LAB TWIN-01` living-room architectural shell PoC — **not started**; `docs/labs/editable-twins-roadmap.md`; rebuild guide §1 modular lines + §11 |
 | 14E.3 | Expanded Basel House manual JSON (43 matches) preserved; Stage B `x_c69aede71834` residuals median ~20 px (outer ~39); event LOO frozen ~22 px; best experimental candidate Stage B+k1 ~14 px held-out — **not** 8–10 px; no baseline replace; no Gaussian retrain; `docs/xgrids/lab14e3-calibration-validation.md` |
 | 14E.4 | Calibration Review Queue in `/camera-calibration`: 7 flagged (4 questionable + 3 outside usable) first, optional approximate courtyard, leave-alone reliable/indoor; Jump + Stage B ○/× overlay; Verified/Approximate/Needs correction/Reject without rewriting originals; `reviewStatus: approximate` added; no fitting; `docs/xgrids/lab14e4-calibration-review-queue.md` |
 | 14E.4b | Loaded review export: 4 flagged `needs-fix`, 3 outside-usable still unreviewed in file; radial Stage B pattern persists on trusted 36; strict reliable lack outer coverage; **no** auto k1 / no train — await approval; preserved under `lab14e4-review-queue/` |

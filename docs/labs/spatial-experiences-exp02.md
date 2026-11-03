@@ -59,6 +59,11 @@ Room first-ready log: load **3110 ms**, collision **yes**. EXP-01 previously use
 - First-visit Help overlay + **Help** button; copy lists only implemented controls
 - Hotspot clicks still work; walk keys use capture-phase `window` listeners (skip when typing in Dev inputs)
 - **Fix (post EXP-02):** capsule was intersecting the floor every frame and zeroing velocity — walk felt dead. Capsule now clears the floor (`CAPSULE_FOOT_CLEARANCE`); axis-separated slide; click scene to focus canvas
+- **On-screen pads:** Move + Look (curved rotate glyphs with arrowheads), grouped bottom-right
+- **Checkpoints:** primary navigation; optional description + house icon; 2-column grid; active highlight on map/list
+- **Transitions:** Settings → **Smooth glide** (default, no blanking) or **Fade if blocked**
+- **2D map:** icon pins (not chevrons) vs distinct “you” chevron; optional collision-wall guide lines from `getCollisionGeometry`
+- **Hotspots:** deferred — notes attach to checkpoint descriptions instead
 
 ### 3. Viewpoints / rooms
 

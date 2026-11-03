@@ -35,6 +35,8 @@ export const EXPERIENCE_CATALOG: ExperienceCatalog = {
           position: [0.05, 1.45, 0.4],
           target: [0.05, 1.35, -2.2],
           mapUv: { u: 0.72, v: 0.88 },
+          icon: "entrance",
+          yaw: Math.PI,
         },
         {
           id: "vp-living",
@@ -46,6 +48,7 @@ export const EXPERIENCE_CATALOG: ExperienceCatalog = {
           position: [-6.2, 1.4, -2.4],
           target: [-3.5, 1.25, -4.5],
           mapUv: { u: 0.22, v: 0.55 },
+          icon: "living",
         },
         {
           id: "vp-far",
@@ -57,24 +60,11 @@ export const EXPERIENCE_CATALOG: ExperienceCatalog = {
           position: [-1.0, 1.5, -10.5],
           target: [-2.5, 1.3, -6.0],
           mapUv: { u: 0.58, v: 0.12 },
+          icon: "camera",
         },
       ],
-      hotspots: [
-        {
-          id: "hs-welcome",
-          title: "Welcome",
-          description: "Demo hotspot near the entrance.",
-          sceneId: "xgrids-room",
-          position: [0.2, 1.2, -1.5],
-        },
-        {
-          id: "hs-feature",
-          title: "Feature wall",
-          description: "Example of an anchored note on reconstructed geometry.",
-          sceneId: "xgrids-room",
-          position: [-5.5, 1.3, -3.8],
-        },
-      ],
+      // Hotspots deprecated for visitor UI — notes live on checkpoint descriptions.
+      hotspots: [],
     },
     {
       id: "xgrids-penthouse",

@@ -20,20 +20,19 @@ export function lccPointToThree(x: number, y: number, z: number, matrix = new TH
   return new THREE.Vector3(x, y, z).applyMatrix4(matrix);
 }
 
-function posesUrlFromMeta(dataPath: string): string | null {
+function posesUrlCandidates(dataPath: string): string[] {
   try {
-    const url = dataPath.startsWith("http") ? new URL(dataPath) : new URL(dataPath, typeof window !== "undefined" ? window.location.origin : "http://local");
-    // …/Something/meta.lcc2 → …/Something/info/poses.json
+    const url = dataPath.startsWith("http")
+      ? new URL(dataPath)
+      : new URL(dataPath, typeof window !== "undefined" ? window.location.origin : "http://local");
+    // …/meta.lcc2 or …/Name.lcc → sibling info/poses.json (samples) or assets/poses.json (Portable .lcc)
     const parts = url.pathname.split("/");
-    const file = parts.pop() ?? "";
-    if (!/\.lcc2?$/i.test(file) && file !== "meta.lcc" && file !== "meta.lcc2") {
-      // still try sibling info/
-    }
-    parts.push("info", "poses.json");
-    url.pathname = parts.join("/");
-    return url.toString();
+    parts.pop();
+    const base = parts.join("/");
+    const origin = `${url.origin}`;
+    return [`${origin}${base}/info/poses.json`, `${origin}${base}/assets/poses.json`];
   } catch {
-    return null;
+    return [];
   }
 }
 
@@ -41,8 +40,7 @@ type PoseRow = { T?: number[]; R?: number[] };
 
 /** Build an interior eye/target from capture poses, or a modest fallback near the origin. */
 export async function resolveInteriorView(dataPath: string): Promise<InteriorView> {
-  const posesUrl = posesUrlFromMeta(dataPath);
-  if (posesUrl) {
+  for (const posesUrl of posesUrlCandidates(dataPath)) {
     try {
       const res = await fetch(posesUrl);
       if (res.ok) {

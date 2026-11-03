@@ -31,6 +31,22 @@ spatial-data/
 # XGRIDS LCC sample models (large SOG/LCC2 packages; extract locally for Lab LCC-WEB-01).
 public/labs/lcc-samples/
 
+# Client property LCC packages (LAB PROD-01+). Keep config JSON in git; models stay local / R2.
+public/labs/properties/**/ground/
+public/labs/properties/**/first/
+public/labs/properties/**/floors/
+public/labs/properties/**/*.bin
+public/labs/properties/**/*.lcc
+public/labs/properties/**/*.lcc2
+public/labs/properties/**/*.lci
+public/labs/properties/**/*.lcp
+public/labs/properties/**/data/
+public/labs/properties/**/assets/
+# Allow tracked README / experience JSON / small previews under properties/
+!public/labs/properties/**/README.md
+!public/labs/properties/**/*.experience.json
+!public/labs/properties/**/previews/
+
 # Python backend environment.
 backend/.venv/
 __pycache__/

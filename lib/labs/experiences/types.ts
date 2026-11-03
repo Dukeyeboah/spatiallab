@@ -6,6 +6,8 @@
 
 export type Vec3Tuple = [number, number, number];
 
+export type CheckpointTransitionMode = "smooth" | "fade";
+
 export type ExperienceViewpoint = {
   id: string;
   name: string;
@@ -21,6 +23,13 @@ export type ExperienceViewpoint = {
   sceneId: string;
   /** Optional 2D floor-map marker (normalized 0–1 on the map image / SVG). */
   mapUv?: { u: number; v: number };
+  /** Optional explicit look orientation (radians, Three YXZ). Target is still used for fly-to. */
+  yaw?: number;
+  pitch?: number;
+  /** When true, show a clickable pin in the 3D scene (default true for saved checkpoints). */
+  showInScene?: boolean;
+  /** House-space icon for list + floor map. */
+  icon?: string;
 };
 
 export type ExperienceHotspot = {
@@ -31,6 +40,8 @@ export type ExperienceHotspot = {
   url?: string;
   position: Vec3Tuple;
   sceneId: string;
+  /** Optional 2D floor-map marker (normalized 0–1). */
+  mapUv?: { u: number; v: number };
 };
 
 export type ExperienceFloor = {
