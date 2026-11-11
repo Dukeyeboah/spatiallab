@@ -28,6 +28,11 @@ export type ObstructionFallback = "close" | "first-person";
 
 export type SmoothNavTuning = {
   walkSpeed: number;
+  /**
+   * Multiplier applied to walkSpeed while Shift is held (keyboard sprint).
+   * Outdoor labs often use 4–6; indoor defaults stay near 1.7.
+   */
+  sprintMultiplier: number;
   acceleration: number;
   deceleration: number;
   /** How fast the body turns to face travel (face-move mode). */
@@ -101,6 +106,15 @@ export type SmoothDebugSnapshot = {
   bodyYaw: number;
   facingMode: FacingMode;
   velocity: [number, number, number];
+  /** True while keyboard / D-pad / Point&Move is requesting movement. */
+  movingInput: boolean;
+  grounded: boolean;
+  sprinting: boolean;
+  jumpHeight: number;
+  jumpPhase: "grounded" | "takeoff" | "airborne" | "landing";
+  /** Body eye-height world position (use this for checkpoints / start authoring). */
+  eye: [number, number, number];
+  /** Follow framing target (chest/orbit) — not the spawn eye. */
   target: [number, number, number];
   desiredCam: [number, number, number];
   actualCam: [number, number, number];
@@ -110,6 +124,7 @@ export type SmoothDebugSnapshot = {
 
 export const DEFAULT_SMOOTH_TUNING: SmoothNavTuning = {
   walkSpeed: 2.45,
+  sprintMultiplier: 1.7,
   acceleration: 9,
   deceleration: 11,
   turnSpeed: 2.15,
@@ -206,6 +221,11 @@ export function normalizeTuning(input: Partial<SmoothNavTuning>): SmoothNavTunin
   t.minDistance = THREE.MathUtils.clamp(t.minDistance, 0.15, t.preferredDistance);
   t.maxDistance = Math.max(t.preferredDistance, t.maxDistance);
   t.pitchMin = Math.min(t.pitchMin, t.pitchMax - 0.05);
+  t.sprintMultiplier = THREE.MathUtils.clamp(
+    Number.isFinite(t.sprintMultiplier) ? t.sprintMultiplier : 1.7,
+    1,
+    12,
+  );
   return t;
 }
 
@@ -222,6 +242,21 @@ export class SmoothAvatarControls {
   resolveCameraBoom: SmoothCameraBoomResolve | null = null;
   showCapsule = false;
   showDebug = false;
+  /** Opt-in for PROD-02B; other tour controllers retain their original behaviour. */
+  gameLocomotion = false;
+  allowSprint = true;
+  /** Optional visual framing for the miniature Orb; does not affect collision size. */
+  cameraFocusHeight: number | null = null;
+  cameraFocusRadius = 0.15;
+  private obstructionLimit = Infinity;
+  private obstructionReleaseTime = 0;
+  private jumpHeight = 0;
+  private jumpVelocity = 0;
+  private jumpRequested = false;
+  private jumpPhase: SmoothDebugSnapshot["jumpPhase"] = "grounded";
+  private jumpPhaseTime = 0;
+  /** Limit the airborne head position against ceilings. */
+  resolveJumpRise: ((from: THREE.Vector3, rise: number) => number) | null = null;
   /** Fired when scroll wheel adjusts preferred boom length (keep React state in sync). */
   onPreferredDistanceChange: ((distance: number) => void) | null = null;
 
@@ -254,6 +289,10 @@ export class SmoothAvatarControls {
   private virtualLookYaw = 0;
   private virtualLookPitch = 0;
   private lookHoldSpeed = 1.05;
+  /** Point & Move destination (floor-local). Cancelled by manual WASD / Esc. */
+  private moveTarget: THREE.Vector3 | null = null;
+  arriveRadius = 0.28;
+  private readonly tmpToTarget = new THREE.Vector3();
 
   private readonly wish = new THREE.Vector3();
   private readonly desired = new THREE.Vector3();
@@ -365,6 +404,7 @@ export class SmoothAvatarControls {
     window.addEventListener("wheel", this.onWheel, { passive: false });
     window.addEventListener("keydown", this.onKeyDown, { capture: true });
     window.addEventListener("keyup", this.onKeyUp, { capture: true });
+    window.addEventListener("blur", this.onBlur);
   }
 
   /** Keyboard / pad / future Point & Move share this intent. */
@@ -390,7 +430,7 @@ export class SmoothAvatarControls {
   applyLookDelta(dx: number, dy: number, sensitivity = 1) {
     const speed = this.tuning.lookSpeed * sensitivity;
     this.camYaw -= dx * speed;
-    this.camPitch += dy * speed;
+    this.camPitch += dy * speed * (this.gameLocomotion ? -1 : 1);
     this.camPitch = THREE.MathUtils.clamp(
       this.camPitch,
       this.tuning.pitchMin,
@@ -414,9 +454,46 @@ export class SmoothAvatarControls {
   /** When true, touch pointers on the canvas do not start look-drag (mobile overlays own look). */
   suppressTouchLook = false;
 
+  requestJump() {
+    if (this.enabled && this.gameLocomotion && this.jumpPhase === "grounded") this.jumpRequested = true;
+  }
+
+  private resetJump() {
+    this.body.y -= this.jumpHeight;
+    this.jumpHeight = 0;
+    this.jumpVelocity = 0;
+    this.jumpRequested = false;
+    this.jumpPhase = "grounded";
+    this.jumpPhaseTime = 0;
+  }
+
   cancelMotion() {
+    this.keys.clear();
+    this.resetJump();
     this.velocity.set(0, 0, 0);
+    this.moveTarget = null;
     this.clearVirtualInput();
+  }
+
+  setMoveTarget(x: number, y: number, z: number) {
+    this.moveTarget = new THREE.Vector3(x, y, z);
+  }
+
+  cancelMoveTarget() {
+    this.moveTarget = null;
+  }
+
+  hasMoveTarget() {
+    return this.moveTarget != null;
+  }
+
+  getMoveTarget(): THREE.Vector3 | null {
+    return this.moveTarget ? this.moveTarget.clone() : null;
+  }
+
+  /** Eye-height world position of the invisible controller (for stairs / authoring). */
+  getEyePosition(out = new THREE.Vector3()) {
+    return out.set(this.body.x, this.body.y + this.tuning.eyeHeight, this.body.z);
   }
 
   getDebugSnapshot(): SmoothDebugSnapshot {
@@ -431,6 +508,17 @@ export class SmoothAvatarControls {
       bodyYaw: this.bodyYaw,
       facingMode: this.tuning.facingMode,
       velocity: [this.velocity.x, this.velocity.y, this.velocity.z],
+      movingInput: this.desired.lengthSq() > 1e-6,
+      grounded: this.jumpPhase !== "airborne",
+      sprinting: this.allowSprint && this.desired.lengthSq() > 1e-6 &&
+        (this.keys.has("ShiftLeft") || this.keys.has("ShiftRight")),
+      jumpHeight: this.jumpHeight,
+      jumpPhase: this.jumpPhase,
+      eye: [
+        this.body.x,
+        this.body.y - this.jumpHeight + this.tuning.eyeHeight,
+        this.body.z,
+      ],
       target: [this.followTargetSmooth.x, this.followTargetSmooth.y, this.followTargetSmooth.z],
       desiredCam: [this.camDesired.x, this.camDesired.y, this.camDesired.z],
       actualCam: [this.camera.position.x, this.camera.position.y, this.camera.position.z],
@@ -442,9 +530,10 @@ export class SmoothAvatarControls {
   }
 
   syncFromCamera() {
+    this.resetJump();
     this.euler.setFromQuaternion(this.camera.quaternion, "YXZ");
     this.camYaw = this.euler.y;
-    this.camPitch = THREE.MathUtils.clamp(this.euler.x, this.tuning.pitchMin, this.tuning.pitchMax);
+    this.camPitch = THREE.MathUtils.clamp(this.gameLocomotion ? -this.euler.x : this.euler.x, this.tuning.pitchMin, this.tuning.pitchMax);
     this.bodyYaw = this.camYaw;
     const back = Math.max(0.5, this.tuning.preferredDistance);
     const dir = new THREE.Vector3();
@@ -466,6 +555,8 @@ export class SmoothAvatarControls {
   }
 
   setPose(eye: THREE.Vector3, target: THREE.Vector3) {
+    this.keys.clear();
+    this.resetJump();
     this.body.set(eye.x, eye.y - this.tuning.eyeHeight, eye.z);
     const dx = target.x - eye.x;
     const dz = target.z - eye.z;
@@ -482,7 +573,7 @@ export class SmoothAvatarControls {
 
   update(delta: number) {
     if (!this.enabled) {
-      this.clearVirtualInput();
+      this.cancelMotion();
       this.capsuleMesh.visible = false;
       this.debugGroup.visible = false;
       return;
@@ -492,6 +583,12 @@ export class SmoothAvatarControls {
     this.tuning = t;
 
     this.timeSinceLookInput += dt;
+    if (this.gameLocomotion) {
+      // Q/E turn the character and its travel heading together, even at rest.
+      const turn = Number(this.keys.has("KeyQ")) - Number(this.keys.has("KeyE"));
+      this.bodyYaw += turn * t.turnSpeed * dt;
+      this.camYaw += turn * t.turnSpeed * dt;
+    }
 
     if (this.virtualLookYaw !== 0 || this.virtualLookPitch !== 0) {
       this.camYaw -= this.virtualLookYaw * dt;
@@ -523,11 +620,36 @@ export class SmoothAvatarControls {
       this.wish.z = THREE.MathUtils.clamp(this.wish.z, -1, 1);
     }
 
-    const sprint = this.keys.has("ShiftLeft") || this.keys.has("ShiftRight");
-    const speed = t.walkSpeed * (sprint ? 1.7 : 1);
+    const manualWish = this.wish.lengthSq() > 0;
+    if (manualWish && this.moveTarget) this.moveTarget = null;
+
+    const sprint = this.allowSprint && (this.keys.has("ShiftLeft") || this.keys.has("ShiftRight"));
+    const speed = t.walkSpeed * (sprint ? t.sprintMultiplier : 1);
 
     this.desired.set(0, 0, 0);
-    if (this.wish.lengthSq() > 0) {
+    if (this.moveTarget && !manualWish) {
+      this.tmpToTarget.set(
+        this.moveTarget.x - this.body.x,
+        0,
+        this.moveTarget.z - this.body.z,
+      );
+      const dist = this.tmpToTarget.length();
+      if (dist <= this.arriveRadius) {
+        this.moveTarget = null;
+        this.velocity.set(0, 0, 0);
+      } else {
+        this.tmpToTarget.normalize();
+        const scale = Math.min(1, dist / 1.2);
+        this.desired.copy(this.tmpToTarget).multiplyScalar(speed * scale);
+        if (t.facingMode === "face-move") {
+          const moveYaw = Math.atan2(-this.desired.x, -this.desired.z);
+          let dyaw = moveYaw - this.bodyYaw;
+          while (dyaw > Math.PI) dyaw -= Math.PI * 2;
+          while (dyaw < -Math.PI) dyaw += Math.PI * 2;
+          this.bodyYaw += THREE.MathUtils.clamp(dyaw, -t.turnSpeed * dt, t.turnSpeed * dt);
+        }
+      }
+    } else if (manualWish) {
       this.desired.addScaledVector(this.camForward, -this.wish.z * speed);
       this.desired.addScaledVector(this.camRight, this.wish.x * speed);
       if (t.facingMode === "face-move") {
@@ -558,7 +680,8 @@ export class SmoothAvatarControls {
       this.camYaw += THREE.MathUtils.clamp(dyaw, -t.recenterSpeed * dt, t.recenterSpeed * dt);
     }
 
-    this.eye.set(this.body.x, this.body.y + t.eyeHeight, this.body.z);
+    // Ground collision remains authoritative: jumping cannot bypass scanned walls.
+    this.eye.set(this.body.x, this.body.y - this.jumpHeight + t.eyeHeight, this.body.z);
     this.next.set(
       this.eye.x + this.velocity.x * dt,
       this.eye.y,
@@ -574,10 +697,57 @@ export class SmoothAvatarControls {
       const wantZ = this.next.z - this.eye.z;
       if (Math.abs(wantX) > 1e-5 && Math.abs(dx) < Math.abs(wantX) * 0.05) this.velocity.x = 0;
       if (Math.abs(wantZ) > 1e-5 && Math.abs(dz) < Math.abs(wantZ) * 0.05) this.velocity.z = 0;
+      if (this.moveTarget && Math.hypot(dx, dz) < 1e-4 && this.desired.lengthSq() > 0.01) {
+        this.moveTarget = null;
+      }
     }
 
-    this.body.set(resolved.x, resolved.y - t.eyeHeight, resolved.z);
-    this.eye.set(resolved.x, resolved.y, resolved.z);
+    if (!this.gameLocomotion) {
+      this.jumpHeight = 0;
+      this.jumpVelocity = 0;
+      this.jumpPhase = "grounded";
+      this.jumpPhaseTime = 0;
+      this.jumpRequested = false;
+    } else {
+      if (this.jumpRequested && this.jumpPhase === "grounded") {
+        this.jumpPhase = "takeoff";
+        this.jumpPhaseTime = 0;
+      }
+      this.jumpRequested = false;
+      this.jumpPhaseTime += dt;
+      if (this.jumpPhase === "takeoff" && this.jumpPhaseTime >= 0.12) {
+        this.jumpPhase = "airborne";
+        this.jumpPhaseTime = 0;
+        this.jumpVelocity = 4.6;
+      }
+      if (this.jumpPhase === "landing" && this.jumpPhaseTime >= 0.16) {
+        this.jumpPhase = "grounded";
+        this.jumpPhaseTime = 0;
+      }
+      if (this.jumpPhase === "airborne") {
+        // Ballistic height; animation supplies the crouch, flight pose and landing.
+        const nextHeight = Math.max(0, this.jumpHeight + this.jumpVelocity * dt - 0.5 * 14.7 * dt * dt);
+        const rise = nextHeight - this.jumpHeight;
+        if (rise > 0 && this.resolveJumpRise) {
+          const head = new THREE.Vector3(resolved.x, resolved.y + this.jumpHeight, resolved.z);
+          const safeRise = THREE.MathUtils.clamp(this.resolveJumpRise(head, rise), 0, rise);
+          this.jumpHeight += safeRise;
+          if (safeRise < rise) this.jumpVelocity = 0;
+        } else {
+          this.jumpHeight = nextHeight;
+        }
+        this.jumpVelocity -= 14.7 * dt;
+        if (this.jumpHeight <= 0.001 && this.jumpVelocity <= 0) {
+          this.jumpHeight = 0;
+          this.jumpVelocity = 0;
+          this.jumpPhase = "landing";
+          this.jumpPhaseTime = 0;
+        }
+      }
+    }
+    this.velocity.y = this.jumpVelocity;
+    this.body.set(resolved.x, resolved.y - t.eyeHeight + this.jumpHeight, resolved.z);
+    this.eye.set(resolved.x, resolved.y + this.jumpHeight, resolved.z);
 
     this.applyCameraPose(false, dt);
     this.updateCapsule(t);
@@ -596,6 +766,10 @@ export class SmoothAvatarControls {
   private applyCameraPose(instant: boolean, dt: number) {
     const t = this.tuning;
     this.computeFollowTarget(t);
+    if (instant || !this.gameLocomotion || !t.cameraCollisionEnabled) {
+      this.obstructionLimit = Infinity;
+      this.obstructionReleaseTime = 0;
+    }
 
     if (!this.followTargetReady || instant) {
       this.followTargetSmooth.copy(this.followTarget);
@@ -620,6 +794,18 @@ export class SmoothAvatarControls {
         k,
         dt,
       );
+    }
+
+    if (this.gameLocomotion && this.cameraFocusHeight != null) {
+      // One follow spring is enough. Bound horizontal lag so reverse travel cannot
+      // overtake a wall-shortened boom and leave the Orb behind the camera.
+      const dx = this.followTargetSmooth.x - this.followTarget.x;
+      const dz = this.followTargetSmooth.z - this.followTarget.z;
+      const lag = Math.hypot(dx, dz), maxLag = Math.min(0.02, t.minDistance * 0.1);
+      if (lag > maxLag) {
+        this.followTargetSmooth.x = this.followTarget.x + dx * maxLag / lag;
+        this.followTargetSmooth.z = this.followTarget.z + dz * maxLag / lag;
+      }
     }
 
     const preferred = THREE.MathUtils.clamp(t.preferredDistance, t.minDistance, t.maxDistance);
@@ -648,7 +834,7 @@ export class SmoothAvatarControls {
       );
       if (probe.hit) {
         this.obstructed = true;
-        safeDistance = Math.max(t.minDistance, probe.safeDistance - t.collisionMargin);
+        safeDistance = Math.max(this.gameLocomotion ? 0.05 : t.minDistance, probe.safeDistance - t.collisionMargin);
         if (probe.hitPoint) {
           this.lastHitPoint.copy(probe.hitPoint);
           this.hasHitPoint = true;
@@ -656,6 +842,25 @@ export class SmoothAvatarControls {
       } else {
         safeDistance = preferred;
       }
+    }
+
+    if (this.gameLocomotion && t.cameraCollisionEnabled && this.resolveCameraBoom) {
+      // Contract immediately; release only after a consistently larger clearance.
+      // Scan edges can alternate hit/miss or slightly different distances at rest.
+      if (safeDistance <= this.obstructionLimit) {
+        this.obstructionLimit = safeDistance;
+        this.obstructionReleaseTime = 0;
+      } else if (safeDistance > this.obstructionLimit + 0.025) {
+        this.obstructionReleaseTime += Math.min(dt, 0.05);
+        if (this.obstructionReleaseTime >= 0.22) {
+          this.obstructionLimit = safeDistance;
+          this.obstructionReleaseTime = 0;
+        }
+      } else {
+        this.obstructionReleaseTime = 0;
+      }
+      safeDistance = Math.min(safeDistance, this.obstructionLimit);
+      this.obstructed ||= safeDistance < preferred - 0.001;
     }
 
     if (safeDistance <= t.minDistance * 1.05 && t.obstructionFallback === "first-person") {
@@ -666,7 +871,7 @@ export class SmoothAvatarControls {
         this.body.y + t.eyeHeight,
         this.body.z,
       );
-      this.euler.set(this.camPitch, this.camYaw, 0, "YXZ");
+      this.euler.set(this.gameLocomotion ? -this.camPitch : this.camPitch, this.camYaw, 0, "YXZ");
       this.camera.quaternion.setFromEuler(this.euler);
       return;
     }
@@ -691,14 +896,16 @@ export class SmoothAvatarControls {
         dt,
       );
     }
-    this.boomDistance = THREE.MathUtils.clamp(this.boomDistance, t.minDistance, t.maxDistance);
+    this.boomDistance = THREE.MathUtils.clamp(this.boomDistance, this.gameLocomotion ? Math.min(t.minDistance, safeDistance) : t.minDistance, t.maxDistance);
 
     this.camDesired
       .copy(this.followTargetSmooth)
       .addScaledVector(this.boomDir, this.boomDistance);
 
-    // Final safety validation against boom resolver
-    if (t.cameraCollisionEnabled && this.resolveCameraBoom) {
+    // Legacy validation remains for non-game tours. The game boom already probes
+    // the same ray at preferred length: probing the shortened endpoint again can
+    // subtract radius/margin twice and make the camera pump at scan boundaries.
+    if (!this.gameLocomotion && t.cameraCollisionEnabled && this.resolveCameraBoom) {
       const finalProbe = this.resolveCameraBoom(
         this.followTargetSmooth,
         this.camDesired,
@@ -718,7 +925,7 @@ export class SmoothAvatarControls {
       }
     }
 
-    if (instant) {
+    if (instant || (this.gameLocomotion && this.cameraFocusHeight != null)) {
       this.camera.position.copy(this.camDesired);
     } else if (this.obstructed) {
       // When obstructed, snap position to validated boom (no soft damp through walls)
@@ -745,8 +952,23 @@ export class SmoothAvatarControls {
       );
     }
 
-    // Orientation from user yaw/pitch only — never from body facing
-    this.euler.set(this.camPitch, this.camYaw, 0, "YXZ");
+    // Preserve yaw and mouse pitch wherever the miniature stays in frame. Near
+    // walls, limit only the pitch that would push its bounding sphere off-screen.
+    let viewPitch = this.camPitch;
+    if (this.gameLocomotion && this.cameraFocusHeight != null) {
+      const dx = this.body.x - this.camera.position.x;
+      const dz = this.body.z - this.camera.position.z;
+      const depth = -Math.sin(this.camYaw) * dx - Math.cos(this.camYaw) * dz;
+      if (depth > 0.01) {
+        const dy = this.body.y + this.cameraFocusHeight - this.camera.position.y;
+        const centerPitch = -Math.atan2(dy, depth);
+        const angularRadius = Math.asin(Math.min(0.95, this.cameraFocusRadius / Math.hypot(depth, dy)));
+        const halfFrame = Math.max(0.04, THREE.MathUtils.degToRad(this.camera.getEffectiveFOV() * 0.42) - angularRadius);
+        viewPitch = THREE.MathUtils.clamp(viewPitch, centerPitch - halfFrame, centerPitch + halfFrame);
+      }
+    }
+    // Body facing (including Q/E) never steers the camera's yaw.
+    this.euler.set(this.gameLocomotion ? -viewPitch : viewPitch, this.camYaw, 0, "YXZ");
     this.camera.quaternion.setFromEuler(this.euler);
   }
 
@@ -803,6 +1025,7 @@ export class SmoothAvatarControls {
 
   dispose() {
     this.clearVirtualInput();
+    window.removeEventListener("blur", this.onBlur);
     this.dom.removeEventListener("pointerdown", this.onPointerDown);
     window.removeEventListener("pointerup", this.onPointerUp);
     window.removeEventListener("pointermove", this.onPointerMove);
@@ -849,7 +1072,7 @@ export class SmoothAvatarControls {
     this.prevX = e.clientX;
     this.prevY = e.clientY;
     this.camYaw -= dx * this.tuning.lookSpeed;
-    this.camPitch += dy * this.tuning.lookSpeed;
+    this.camPitch += dy * this.tuning.lookSpeed * (this.gameLocomotion ? -1 : 1);
     this.camPitch = THREE.MathUtils.clamp(
       this.camPitch,
       this.tuning.pitchMin,
@@ -877,8 +1100,24 @@ export class SmoothAvatarControls {
   private onKeyDown = (e: KeyboardEvent) => {
     if (!this.enabled) return;
     const tag = (e.target as HTMLElement | null)?.tagName;
-    if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+    if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" ||
+      (e.target as HTMLElement | null)?.isContentEditable) return;
+    if (this.gameLocomotion && e.code === "Space") {
+      if (tag === "BUTTON" || tag === "A") return;
+      e.preventDefault();
+      if (!e.repeat) this.requestJump();
+    }
+    if (e.code.startsWith("Arrow")) e.preventDefault();
+    if (e.code === "Escape" || (this.gameLocomotion && (e.code === "KeyQ" || e.code === "KeyE"))) this.cancelMoveTarget();
     this.keys.add(e.code);
+  };
+
+  private onBlur = () => {
+    this.keys.clear();
+    this.jumpRequested = false;
+    this.dragging = false;
+    this.clearVirtualInput();
+    this.cancelMoveTarget();
   };
 
   private onKeyUp = (e: KeyboardEvent) => {

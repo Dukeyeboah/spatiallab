@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ExperienceTourHost,
+  type CameraFollowStyle,
   type CameraPoseSample,
   type TourHostHandle,
   type TourHostStats,
@@ -11,16 +12,19 @@ import {
 } from "@/components/labs/experiences/ExperienceTourHost";
 import { ExpDevSection } from "@/components/labs/experiences/ExpDevSection";
 import { HousePointsLoader } from "@/components/labs/experiences/HousePointsLoader";
-import { QualityLever } from "@/components/labs/experiences/QualityLever";
+// Previous multi-step QualityLever kept in repo; visitor UI now matches PROD-02A three presets.
+// import { QualityLever } from "@/components/labs/experiences/QualityLever";
 import { WalkOnScreenControls } from "@/components/labs/experiences/WalkOnScreenControls";
 import { FloorWelcome } from "@/components/labs/experiences/property/FloorWelcome";
+import type { QualityPreset } from "@/lib/labs/experiences/qualityPresets";
 import {
-  DEFAULT_QUALITY_PRESET,
-  QUALITY_PRESETS,
-  loadQualityPresetId,
-  saveQualityPresetId,
-  type QualityPresetId,
-} from "@/lib/labs/experiences/qualityPresets";
+  loadProd02aQualityId,
+  PROD02A_DEFAULT_QUALITY,
+  PROD02A_QUALITY,
+  PROD02A_QUALITY_ORDER,
+  saveProd02aQualityId,
+  type Prod02aQualityId,
+} from "@/lib/labs/prod02a/qualityPresets";
 import {
   clearDraft,
   downloadExperienceJson,
@@ -93,23 +97,39 @@ function viewpointToExperience(vp: FloorViewpoint, sceneId: string): ExperienceV
 export function PropertyExperienceApp() {
   // Seed only on first paint (SSR + client) — localStorage draft hydrates after mount to avoid img src mismatch.
   const [config, setConfig] = useState<PropertyExperienceConfig>(() => createSpintexSeed());
-  /** Author/Dev tools on by default while we establish starts & blocks; switch to Visitor Preview when testing. */
-  const [role, setRole] = useState<Role>("author");
+  /** Visitor Preview is the production default; use ?author=1 (or the role toggle) for authoring. */
+  const [role, setRole] = useState<Role>("visitor");
   const [mode, setMode] = useState<Mode>("welcome");
   const [activeFloorId, setActiveFloorId] = useState<string | null>(null);
   const [pendingFloorId, setPendingFloorId] = useState<string | null>(null);
   const [arrivalCamera, setArrivalCamera] = useState<FloorCameraPose | null>(null);
   const [loadKey, setLoadKey] = useState(0);
 
-  const [qualityId, setQualityId] = useState<QualityPresetId>(DEFAULT_QUALITY_PRESET);
-  const quality = QUALITY_PRESETS[qualityId];
-  useEffect(() => setQualityId(loadQualityPresetId()), []);
-  const setQuality = useCallback((id: QualityPresetId) => {
+  const [qualityId, setQualityId] = useState<Prod02aQualityId>(PROD02A_DEFAULT_QUALITY);
+  const quality: QualityPreset = useMemo(() => {
+    const q = PROD02A_QUALITY[qualityId];
+    return {
+      id: q.id as QualityPreset["id"],
+      label: q.label,
+      maxSplats: q.maxSplats,
+      maxDistance: q.maxDistance,
+      pixelRatioCap: q.pixelRatioCap,
+      note: q.note,
+      group: "ladder",
+    };
+  }, [qualityId]);
+  useEffect(() => setQualityId(loadProd02aQualityId()), []);
+  const setQuality = useCallback((id: Prod02aQualityId) => {
     setQualityId(id);
-    saveQualityPresetId(id);
+    saveProd02aQualityId(id);
   }, []);
 
-  const [navMode, setNavMode] = useState<TourNavMode>("first-person");
+  /** PROD-02A-style nav comparison: current | smooth | orbit */
+  const [navCompare, setNavCompare] = useState<"current" | "smooth" | "orbit">("smooth");
+  const [cameraFollowStyle, setCameraFollowStyle] = useState<CameraFollowStyle>("free");
+  const navMode: TourNavMode = navCompare === "orbit" ? "orbit" : "first-person";
+  const followStyleEffective: CameraFollowStyle =
+    navCompare === "smooth" ? cameraFollowStyle : "first-person";
   const [collisionOn, setCollisionOn] = useState(true);
   const [panelOpen, setPanelOpen] = useState(true);
   const [padsOpen, setPadsOpen] = useState(true);
@@ -132,6 +152,8 @@ export function PropertyExperienceApp() {
   const [connDestId, setConnDestId] = useState("first");
   const [validation, setValidation] = useState<ValidationIssue[]>([]);
   const [statusMsg, setStatusMsg] = useState<string | null>(null);
+  const [moveHint, setMoveHint] = useState<string | null>(null);
+  const moveHintTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   /** First Floor → Ground: void soft-block + confirm modal (trigger at stopper). */
   const stairTransitionsEnabled = true;
@@ -288,9 +310,24 @@ export function PropertyExperienceApp() {
         }
       }
       if (hit) {
+        // Still standing in the twin stair zone we arrived through — do not re-prompt.
+        if (hit.id === arrivalConnIdRef.current) {
+          lastInsideRef.current = hit.id;
+          setActiveTrigger(null);
+          return;
+        }
         lastInsideRef.current = hit.id;
+        // Pause auto-travel while the stair confirmation popup is up
+        hostRef.current?.cancelAutoMove();
+        hostRef.current?.clearVirtualInput();
         setActiveTrigger(hit);
       } else {
+        if (
+          arrivalConnIdRef.current &&
+          lastInsideRef.current === arrivalConnIdRef.current
+        ) {
+          arrivalConnIdRef.current = null;
+        }
         lastInsideRef.current = null;
         setActiveTrigger(null);
       }
@@ -301,8 +338,21 @@ export function PropertyExperienceApp() {
   const confirmFloorChange = (conn: FloorConnection) => {
     const dest = config.floors.find((f) => f.id === conn.destFloorId);
     const arrival = dest?.startCamera ?? conn.arrivalCamera;
-    enterFloor(conn.destFloorId, arrival, { viaConnectionId: conn.id });
+    // Ignore the reciprocal stair trigger on arrival until the visitor walks out of it.
+    const twin = config.connections.find(
+      (c) =>
+        c.enabled &&
+        c.sourceFloorId === conn.destFloorId &&
+        c.destFloorId === conn.sourceFloorId,
+    );
+    enterFloor(conn.destFloorId, arrival, { viaConnectionId: twin?.id ?? null });
   };
+
+  const showMoveHint = useCallback((msg: string) => {
+    setMoveHint(msg);
+    if (moveHintTimerRef.current) clearTimeout(moveHintTimerRef.current);
+    moveHintTimerRef.current = setTimeout(() => setMoveHint(null), 2200);
+  }, []);
 
   const applyEyeHeight = (metres: number) => {
     const next = Math.max(0.9, Math.min(2.2, metres));
@@ -581,6 +631,7 @@ export function PropertyExperienceApp() {
         key={`${dataPath}-${loadKey}`}
         dataPath={dataPath}
         navMode={navMode}
+        cameraFollowStyle={followStyleEffective}
         quality={quality}
         collisionEnabled={collisionOn}
         hotspots={[]}
@@ -616,6 +667,7 @@ export function PropertyExperienceApp() {
         onCameraSample={setPendingSample}
         onPoseTick={onPoseTick}
         onFade={setFade}
+        onPointMoveRejected={showMoveHint}
         resetToken={resetToken}
         sampleCameraToken={sampleToken}
       />
@@ -651,6 +703,12 @@ export function PropertyExperienceApp() {
             <WalkOnScreenControls api={walkApi} visible={padsOpen && !pendingFloorId} which="look" />
           </div>
         </>
+      )}
+
+      {moveHint && (
+        <div className="pe-move-hint" role="status">
+          {moveHint}
+        </div>
       )}
 
       {stairTransitionsEnabled && activeTrigger && !pendingFloorId && (
@@ -721,27 +779,75 @@ export function PropertyExperienceApp() {
             )}
           </div>
 
-          <div className="pe-nav-modes" role="group" aria-label="Navigation mode">
+          <div className="pe-section-label">Navigation comparison</div>
+          <div className="pe-nav-modes" role="group" aria-label="Navigation comparison">
             {(
               [
-                ["first-person", "Walk"],
-                ["point-move", "Point & Move"],
-                ["orbit", "Orbit"],
+                ["current", "Current (1P)"],
+                ["smooth", "Smooth (avatar)"],
+                ["orbit", "Free Orbit"],
               ] as const
             ).map(([id, label]) => (
               <button
                 key={id}
                 type="button"
-                className={navMode === id ? "on" : ""}
+                className={navCompare === id ? "on" : ""}
                 onClick={() => {
                   hostRef.current?.clearVirtualInput();
-                  setNavMode(id);
+                  setNavCompare(id);
                 }}
               >
                 {label}
               </button>
             ))}
           </div>
+          <p className="exp-hint pe-nav-hint">
+            Current = first-person walk. Smooth = invisible avatar + follow camera (Free / Ecctrl).
+            Free Orbit = Three.js look-around only.
+          </p>
+
+          {navCompare === "smooth" ? (
+            <div className="pe-nav-modes" role="group" aria-label="Camera follow style">
+              {(
+                [
+                  ["free", "Free Follow"],
+                  ["ecctrl", "Ecctrl Orbit"],
+                ] as const
+              ).map(([id, label]) => (
+                <button
+                  key={id}
+                  type="button"
+                  className={cameraFollowStyle === id ? "on" : ""}
+                  onClick={() => {
+                    hostRef.current?.clearVirtualInput();
+                    setCameraFollowStyle(id);
+                  }}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          ) : null}
+
+          {/* Previous Walk / Point & Move / Orbit toggle — superseded by Navigation comparison above.
+          <div className="pe-nav-modes" role="group" aria-label="Navigation mode">...</div>
+          */}
+
+          <div className="pe-section-label">Rendering quality</div>
+          <div className="pe-nav-modes" role="group" aria-label="Rendering quality">
+            {PROD02A_QUALITY_ORDER.map((id) => (
+              <button
+                key={id}
+                type="button"
+                className={qualityId === id ? "on" : ""}
+                onClick={() => setQuality(id)}
+                title={PROD02A_QUALITY[id].note}
+              >
+                {PROD02A_QUALITY[id].label}
+              </button>
+            ))}
+          </div>
+          <p className="exp-hint pe-nav-hint">{quality.note}</p>
 
           <div className="pe-toolbar">
             <button type="button" onClick={() => setHelpOpen(true)}>
@@ -773,7 +879,7 @@ export function PropertyExperienceApp() {
             />
           </div>
 
-          {!isAuthor && <QualityLever value={qualityId} onChange={setQuality} />}
+          {/* Previous QualityLever (multi-step ladder) commented out — using PROD-02A three presets above. */}
 
           {isAuthor && (
             <div className="pe-author">
@@ -781,7 +887,6 @@ export function PropertyExperienceApp() {
                 {stats?.phase ?? "…"} · {stats?.fps ?? "—"} fps · collision{" "}
                 {stats?.hasCollision ? "yes" : "no"}
               </div>
-              <QualityLever value={qualityId} onChange={setQuality} />
               <label className="exp-check">
                 <input type="checkbox" checked={collisionOn} onChange={(e) => setCollisionOn(e.target.checked)} />
                 Collision
@@ -1013,19 +1118,21 @@ export function PropertyExperienceApp() {
           <h2>How to move</h2>
           <ul>
             <li>
-              <b>Walk</b>: WASD / pads · drag to look · Esc cancels Point & Move
+              <b>Current (1P)</b>: classic first-person walk — WASD, drag to look, click a reachable spot to
+              move there. WASD or Esc cancels click-to-move.
             </li>
             <li>
-              <b>Point & Move</b>: click the floor to walk there (collision-checked). WASD or Esc cancels.
+              <b>Smooth (avatar)</b>: invisible avatar + Free Follow / Ecctrl Orbit camera. Point & Move still
+              works on click.
             </li>
             <li>
-              <b>Orbit</b>: drag to orbit · double-click a surface to set the pivot
+              <b>Free Orbit</b>: drag to look around · double-click a surface to set the pivot
             </li>
             <li>
               <b>Floors</b>: Change Floor / Floors — each floor has its own start
             </li>
             <li>
-              <b>Graphics</b>: Eco → Ultra caps how many Gaussians draw (your files have ~13M; the GPU never draws all at once)
+              <b>Rendering quality</b>: Performance / Balanced / High Quality (same presets as PROD-02A)
             </li>
           </ul>
           <button type="button" onClick={() => setHelpOpen(false)}>

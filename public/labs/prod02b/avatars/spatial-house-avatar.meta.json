@@ -1,0 +1,45 @@
+{
+  "file": "spatial-house-avatar.glb",
+  "bytes": 1256492,
+  "triangles": 8354,
+  "vertices": 13322,
+  "drawCalls": 5,
+  "joints": 65,
+  "height": 1.75,
+  "texture": "1024×1024 embedded atlas",
+  "actions": [
+    {
+      "name": "Idle",
+      "tracks": 66
+    },
+    {
+      "name": "Walk",
+      "tracks": 66
+    },
+    {
+      "name": "Run",
+      "tracks": 66
+    },
+    {
+      "name": "JumpStart",
+      "tracks": 66
+    },
+    {
+      "name": "Jump",
+      "tracks": 66
+    },
+    {
+      "name": "Land",
+      "tracks": 66
+    },
+    {
+      "name": "TurnLeft",
+      "tracks": 66
+    },
+    {
+      "name": "TurnRight",
+      "tracks": 66
+    }
+  ],
+  "originalsUnchanged": true
+}

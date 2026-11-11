@@ -57,8 +57,20 @@ import {
   type LCCRenderType,
 } from "@/lib/labs/lccSdk";
 import { LccWalkControls } from "@/lib/labs/lccWalkControls";
+import {
+  SmoothAvatarControls,
+  type SmoothNavTuning,
+} from "@/lib/labs/prod02a/smoothAvatarControls";
+import { resolveCameraBoomAlong } from "@/lib/labs/prod02a/cameraBoom";
+import { tuningForFollowStyle } from "@/lib/labs/prod02a/cameraPresets";
 
 export type TourNavMode = "orbit" | "first-person" | "point-move";
+
+/**
+ * Walk camera style (PROD-02A). `first-person` = classic LccWalkControls;
+ * `free` / `ecctrl` = invisible avatar + third-person follow camera.
+ */
+export type CameraFollowStyle = "first-person" | "free" | "ecctrl";
 
 export type TourHostStats = {
   fps: number;
@@ -88,6 +100,8 @@ export type TourHostHandle = {
   setVirtualMove: (x: number, z: number) => void;
   setVirtualLook: (yawDir: number, pitchDir: number) => void;
   clearVirtualInput: () => void;
+  /** Stop Point & Move / auto travel on both controllers. */
+  cancelAutoMove: () => void;
   /** PNG data URL of the current WebGL canvas, or null if not ready. */
   captureScreenshot: () => string | null;
   /** Change walk / collision eye height (metres) and nudge the camera Y. */
@@ -143,6 +157,12 @@ type Props = {
   eyeHeight?: number;
   /** Soft barriers — reject walk into these boxes. */
   blockZones?: TourBlockZone[];
+  /** Visitor-facing reason when Point & Move refuses a click. */
+  onPointMoveRejected?: (reason: string) => void;
+  /** Walk camera style. Defaults to classic first-person. */
+  cameraFollowStyle?: CameraFollowStyle;
+  /** Optional smooth-nav tuning override (else tuningForFollowStyle). */
+  smoothTuning?: SmoothNavTuning | null;
   /** Fires once when the LCC model reaches ready (after camera applied). */
   onSceneReady?: () => void;
   /** EXP-04 virtual staging */
@@ -229,6 +249,9 @@ export const ExperienceTourHost = forwardRef<TourHostHandle, Props>(function Exp
     startCamera = null,
     eyeHeight: eyeHeightProp = EYE,
     blockZones = [],
+    onPointMoveRejected,
+    cameraFollowStyle = "first-person",
+    smoothTuning = null,
     onSceneReady,
     stagingPlacements = [],
     stagingVisible = true,
@@ -270,6 +293,9 @@ export const ExperienceTourHost = forwardRef<TourHostHandle, Props>(function Exp
     scene: THREE.Scene;
     orbit: OrbitControls;
     walk: LccWalkControls;
+    smooth: SmoothAvatarControls;
+    applyNavMode: (mode: TourNavMode, resync?: boolean) => void;
+    poseSmoothFromCamera: () => void;
     clock: THREE.Clock;
     home: InteriorView;
     markers: THREE.Group;
@@ -303,9 +329,12 @@ export const ExperienceTourHost = forwardRef<TourHostHandle, Props>(function Exp
   const onFadeRef = useRef(onFade);
   const onMapOutlineRef = useRef(onMapOutline);
   const onSceneReadyRef = useRef(onSceneReady);
+  const onPointMoveRejectedRef = useRef(onPointMoveRejected);
   const startCameraRef = useRef(startCamera);
   const eyeHeightRef = useRef(eyeHeightProp);
   const blockZonesRef = useRef(blockZones);
+  const cameraFollowStyleRef = useRef<CameraFollowStyle>(cameraFollowStyle);
+  const smoothTuningRef = useRef<SmoothNavTuning | null>(smoothTuning);
   const floorRef = useRef(floor);
   const navModeRef = useRef(navMode);
   const stagingPlaceModeRef = useRef(stagingPlaceMode);
@@ -357,9 +386,12 @@ export const ExperienceTourHost = forwardRef<TourHostHandle, Props>(function Exp
   onFadeRef.current = onFade;
   onMapOutlineRef.current = onMapOutline;
   onSceneReadyRef.current = onSceneReady;
+  onPointMoveRejectedRef.current = onPointMoveRejected;
   startCameraRef.current = startCamera;
   eyeHeightRef.current = eyeHeightProp;
   blockZonesRef.current = blockZones;
+  cameraFollowStyleRef.current = cameraFollowStyle;
+  smoothTuningRef.current = smoothTuning;
   floorRef.current = floor;
   navModeRef.current = navMode;
   stagingPlaceModeRef.current = stagingPlaceMode;
@@ -386,9 +418,30 @@ export const ExperienceTourHost = forwardRef<TourHostHandle, Props>(function Exp
   surfaceDragEnabledRef.current = surfaceDragEnabled;
 
   useImperativeHandle(ref, () => ({
-    setVirtualMove: (x, z) => apiRef.current?.walk.setVirtualMove(x, z),
-    setVirtualLook: (yawDir, pitchDir) => apiRef.current?.walk.setVirtualLook(yawDir, pitchDir),
-    clearVirtualInput: () => apiRef.current?.walk.clearVirtualInput(),
+    setVirtualMove: (x, z) => {
+      const api = apiRef.current;
+      if (!api) return;
+      if (api.smooth.enabled) api.smooth.setVirtualMove(x, z);
+      else api.walk.setVirtualMove(x, z);
+    },
+    setVirtualLook: (yawDir, pitchDir) => {
+      const api = apiRef.current;
+      if (!api) return;
+      if (api.smooth.enabled) api.smooth.setVirtualLook(yawDir, pitchDir);
+      else api.walk.setVirtualLook(yawDir, pitchDir);
+    },
+    clearVirtualInput: () => {
+      const api = apiRef.current;
+      if (!api) return;
+      if (api.smooth.enabled) api.smooth.clearVirtualInput();
+      api.walk.clearVirtualInput();
+    },
+    cancelAutoMove: () => {
+      const api = apiRef.current;
+      if (!api) return;
+      api.smooth.cancelMoveTarget();
+      api.walk.cancelMoveTarget();
+    },
     getEyeHeight: () => eyeHeightRef.current,
     setEyeHeight: (metres: number) => {
       const next = Math.max(0.9, Math.min(2.2, metres));
@@ -398,6 +451,14 @@ export const ExperienceTourHost = forwardRef<TourHostHandle, Props>(function Exp
       const api = apiRef.current;
       if (!api) return;
       api.walk.eyeHeight = next;
+      api.smooth.tuning.eyeHeight = next;
+      if (api.smooth.enabled) {
+        // Feet stay on the floor (body.y is unchanged). The collision resolver re-derives the eye
+        // Y from the floor + new eye height next step, and the boom follows the body — so there is
+        // no need to re-seat from the (boom) camera, which would drag the body backwards.
+        api.orbit.target.y += dy;
+        return;
+      }
       api.camera.position.y += dy;
       api.orbit.target.y += dy;
       api.orbit.update();
@@ -441,7 +502,7 @@ export const ExperienceTourHost = forwardRef<TourHostHandle, Props>(function Exp
     const scene = new THREE.Scene();
     scene.background = new THREE.Color(0x0c0c0c);
 
-    const camera = new THREE.PerspectiveCamera(50, 1, 0.05, 150000);
+    const camera = new THREE.PerspectiveCamera(65, 1, 0.05, 150000);
     camera.position.copy(FALLBACK_EYE);
 
     const renderer = new THREE.WebGLRenderer({
@@ -476,6 +537,13 @@ export const ExperienceTourHost = forwardRef<TourHostHandle, Props>(function Exp
     walk.enabled = false;
     walk.eyeHeight = eyeHeightRef.current;
     walk.lockEyeHeight = true;
+
+    // PROD-02A smooth avatar + follow camera (disabled unless style is free/ecctrl)
+    const smooth = new SmoothAvatarControls(camera, renderer.domElement);
+    smooth.enabled = false;
+    smooth.showCapsule = false;
+    smooth.showDebug = false;
+    smooth.tuning = { ...smooth.tuning, eyeHeight: eyeHeightRef.current };
 
     const clock = new THREE.Clock();
     const markers = new THREE.Group();
@@ -526,6 +594,8 @@ export const ExperienceTourHost = forwardRef<TourHostHandle, Props>(function Exp
     proxyDebugRoot.name = "stagingProxyDebug";
     proxyDebugRoot.visible = false;
     scene.add(proxyDebugRoot);
+    scene.add(smooth.capsuleMesh);
+    scene.add(smooth.debugGroup);
 
     const rebuildFurnitureProxies = () => {
       const list: FurnitureCollisionProxy[] = [];
@@ -587,15 +657,15 @@ export const ExperienceTourHost = forwardRef<TourHostHandle, Props>(function Exp
       if (!apiRef.current) return;
       apiRef.current.navSuspended = true;
       apiRef.current.walk.enabled = false;
+      apiRef.current.smooth.enabled = false;
+      apiRef.current.smooth.cancelMotion();
       apiRef.current.orbit.enabled = false;
     });
     transform.addEventListener("mouseUp", () => {
       if (!apiRef.current) return;
       pushTransform(true);
       apiRef.current.navSuspended = false;
-      const fp = navModeRef.current === "first-person";
-      apiRef.current.walk.enabled = fp;
-      apiRef.current.orbit.enabled = !fp;
+      restoreNavEnabled();
     });
     transform.addEventListener("objectChange", () => {
       const api = apiRef.current;
@@ -618,6 +688,16 @@ export const ExperienceTourHost = forwardRef<TourHostHandle, Props>(function Exp
       apiRef.current?.rebuildFurnitureProxies();
     });
 
+    // Restore controller enable flags after a temporary nav suspend (staging / surface drag).
+    const restoreNavEnabled = () => {
+      const mode = navModeRef.current;
+      const walkLike = mode === "first-person" || mode === "point-move";
+      const useSmooth = walkLike && cameraFollowStyleRef.current !== "first-person";
+      walk.enabled = walkLike && !useSmooth;
+      smooth.enabled = useSmooth;
+      orbit.enabled = mode === "orbit";
+    };
+
     // Available before LCC finishes loading so staging sync effects can attach.
     apiRef.current = {
       LCCRender: null as unknown as LCCRenderType,
@@ -627,6 +707,9 @@ export const ExperienceTourHost = forwardRef<TourHostHandle, Props>(function Exp
       scene,
       orbit,
       walk,
+      smooth,
+      applyNavMode,
+      poseSmoothFromCamera,
       clock,
       home: { eye: FALLBACK_EYE.clone(), target: FALLBACK_TARGET.clone(), source: "fallback" },
       markers,
@@ -763,6 +846,13 @@ export const ExperienceTourHost = forwardRef<TourHostHandle, Props>(function Exp
       );
     };
     walk.resolveCollision = resolveCollision;
+    // Same resolver (LCC + blockZones + furniture) drives the smooth avatar body.
+    smooth.resolveCollision = resolveCollision;
+    smooth.resolveCameraBoom = (from, to, radius) =>
+      resolveCameraBoomAlong(apiRef.current?.lcc ?? null, from, to, radius, {
+        enabled: collisionRef.current && smooth.tuning.cameraCollisionEnabled !== false,
+        hasCollision: !!apiRef.current?.hasCollision,
+      });
 
     const pushStats = () => {
       const q = qualityRef.current;
@@ -784,26 +874,62 @@ export const ExperienceTourHost = forwardRef<TourHostHandle, Props>(function Exp
       });
     };
 
-    const applyNavMode = (mode: TourNavMode) => {
+    let appliedSmoothKey = "";
+    const smoothTuningKey = () =>
+      `${cameraFollowStyleRef.current}|${smoothTuningRef.current ? JSON.stringify(smoothTuningRef.current) : ""}`;
+    const applySmoothTuning = () => {
+      const style = cameraFollowStyleRef.current;
+      if (style === "first-person") return;
+      const base = smoothTuningRef.current ?? tuningForFollowStyle(style);
+      smooth.tuning = { ...base, eyeHeight: eyeHeightRef.current };
+      appliedSmoothKey = smoothTuningKey();
+    };
+    /** Place the invisible body at the camera eye and let the boom pull the camera back. */
+    function poseSmoothFromCamera() {
+      const dir = camera.getWorldDirection(new THREE.Vector3());
+      const eye = camera.position.clone();
+      smooth.setPose(eye, eye.clone().add(dir));
+    }
+    /**
+     * `resync` forces smooth to re-seat from the camera (after load / fly / reset) even when
+     * smooth was already enabled.
+     */
+    function applyNavMode(mode: TourNavMode, resync = false) {
       const walkLike = mode === "first-person" || mode === "point-move";
-      walk.enabled = walkLike;
+      const useSmooth = walkLike && cameraFollowStyleRef.current !== "first-person";
+      const wasSmooth = smooth.enabled;
+
+      walk.cancelMoveTarget();
+      smooth.cancelMoveTarget();
+      smooth.cancelMotion();
+
+      // Leaving smooth for classic walk: continue from the body eye, not the boom camera
+      if (wasSmooth && !useSmooth && walkLike && !resync) {
+        smooth.getEyePosition(camera.position);
+      }
+
+      walk.enabled = walkLike && !useSmooth;
+      smooth.enabled = useSmooth;
       orbit.enabled = mode === "orbit";
       orbit.enableRotate = mode === "orbit";
       orbit.enablePan = mode === "orbit";
       orbit.enableZoom = true;
-      if (!walkLike) {
-        walk.cancelMoveTarget();
-        walk.exitPointerLock();
+      if (!walkLike || useSmooth) walk.exitPointerLock();
+
+      if (useSmooth) {
+        if (!wasSmooth || resync || appliedSmoothKey !== smoothTuningKey()) applySmoothTuning();
+        if (!wasSmooth || resync) poseSmoothFromCamera();
+      } else if (walkLike) {
+        walk.syncFromCamera();
       }
       if (walkLike) {
-        walk.syncFromCamera();
         try {
           renderer.domElement.focus({ preventScroll: true });
         } catch {
           renderer.domElement.focus();
         }
       }
-    };
+    }
     applyNavMode(navModeRef.current);
 
     // Point & Move destination ring
@@ -907,9 +1033,7 @@ export const ExperienceTourHost = forwardRef<TourHostHandle, Props>(function Exp
       surfaceDragRef.current = null;
       onSurfaceTransformRef.current?.(drag.id, { center: toVec3(drag.center) });
       apiRef.current.navSuspended = false;
-      const fp = navModeRef.current === "first-person";
-      apiRef.current.walk.enabled = fp;
-      apiRef.current.orbit.enabled = !fp;
+      restoreNavEnabled();
       renderer.domElement.style.cursor =
         surfaceEditRef.current && (surfaceModeRef.current === "pick" || surfaceModeRef.current === "corners")
           ? "crosshair"
@@ -969,7 +1093,14 @@ export const ExperienceTourHost = forwardRef<TourHostHandle, Props>(function Exp
       };
     };
 
+    // Own click-gesture tracking: walk's pointerdown only runs while walk.enabled (not in smooth mode)
+    let downClientX = 0;
+    let downClientY = 0;
     const onPointerDown = (evt: PointerEvent) => {
+      if (evt.button === 0) {
+        downClientX = evt.clientX;
+        downClientY = evt.clientY;
+      }
       if (!lcc || evt.button !== 0) return;
       if (apiRef.current?.navSuspended) return;
       const rect = renderer.domElement.getBoundingClientRect();
@@ -1097,6 +1228,8 @@ export const ExperienceTourHost = forwardRef<TourHostHandle, Props>(function Exp
               if (apiRef.current) {
                 apiRef.current.navSuspended = true;
                 apiRef.current.walk.enabled = false;
+                apiRef.current.smooth.enabled = false;
+                apiRef.current.smooth.cancelMotion();
                 apiRef.current.orbit.enabled = false;
               }
               renderer.domElement.style.cursor = "grabbing";
@@ -1154,15 +1287,29 @@ export const ExperienceTourHost = forwardRef<TourHostHandle, Props>(function Exp
         return;
       }
 
-      // Point & Move: click (not drag) on walkable floor
-      if (mode !== "point-move") return;
-      if (!walk.wasClickGesture(evt.clientX, evt.clientY)) return;
+      // Point & Move (also integrated into first-person Walk): click (not drag) on walkable floor
+      if (mode !== "point-move" && mode !== "first-person") return;
+      if (Math.hypot(evt.clientX - downClientX, evt.clientY - downClientY) > 6) return;
+      if (document.pointerLockElement === renderer.domElement) return;
+      // Clicking a hotspot / checkpoint pin should not also start a move
+      {
+        pointer.x = (x / rect.width) * 2 - 1;
+        pointer.y = -(y / rect.height) * 2 + 1;
+        raycaster.setFromCamera(pointer, camera);
+        if (raycaster.intersectObjects(markers.children, false).length) return;
+      }
+      const rejectMove = (reason: string) => {
+        onPointMoveRejectedRef.current?.(reason);
+      };
       if (!apiRef.current?.hasCollision && !lcc?.intersectsRayExt) {
-        // Without collision mesh we refuse click-to-move (not walkable proof)
+        rejectMove("Can't walk there yet — collision mesh is still loading.");
         return;
       }
       const floor = snapFloorHit(x, y);
-      if (!floor) return;
+      if (!floor) {
+        rejectMove("Can't reach that spot.");
+        return;
+      }
       // Prefer collision-aware hit with upward normal
       let dest = floor;
       if (lcc?.intersectsRayExt) {
@@ -1170,12 +1317,18 @@ export const ExperienceTourHost = forwardRef<TourHostHandle, Props>(function Exp
         if (ext?.point && (ext.normal?.y === undefined || ext.normal.y > 0.45)) {
           dest = { x: ext.point.x, y: ext.point.y, z: ext.point.z };
         } else if (ext?.point && ext.normal && ext.normal.y <= 0.45) {
-          return; // wall / steep — not walkable
+          rejectMove("That's a wall — pick a spot on the floor.");
+          return;
         }
       }
-      // Line-of-sight probe at mid torso height
+      // Authored soft barriers (stairs stopper, etc.)
+      if (insideBlockZone(dest.x, dest.y + eyeHeightRef.current * 0.4, dest.z)) {
+        rejectMove("That area is blocked.");
+        return;
+      }
+      // Line-of-sight probe at mid torso height (straight path only — no navmesh yet)
       if (lcc?.intersectsRayFromOriginExt) {
-        const eye = camera.position;
+        const eye = smooth.enabled ? smooth.getEyePosition() : camera.position;
         const midY = Math.min(eye.y, dest.y + eyeHeightRef.current * 0.55);
         const ox = eye.x;
         const oy = midY;
@@ -1190,11 +1343,12 @@ export const ExperienceTourHost = forwardRef<TourHostHandle, Props>(function Exp
           maxDistance: len - 0.15,
         });
         if (hit?.point) {
-          // Blocked before destination
+          rejectMove("Can't walk there directly — something is in the way.");
           return;
         }
       }
-      walk.setMoveTarget(dest.x, dest.y, dest.z);
+      if (smooth.enabled) smooth.setMoveTarget(dest.x, dest.y, dest.z);
+      else walk.setMoveTarget(dest.x, dest.y, dest.z);
       destMarker.position.set(dest.x, dest.y + 0.03, dest.z);
       destMarker.visible = true;
     };
@@ -1243,6 +1397,9 @@ export const ExperienceTourHost = forwardRef<TourHostHandle, Props>(function Exp
             scene,
             orbit,
             walk,
+            smooth,
+            applyNavMode,
+            poseSmoothFromCamera,
             clock,
             home: { eye: FALLBACK_EYE.clone(), target: FALLBACK_TARGET.clone(), source: "fallback" },
             markers,
@@ -1276,10 +1433,11 @@ export const ExperienceTourHost = forwardRef<TourHostHandle, Props>(function Exp
           if (authored?.eyeHeight != null && Number.isFinite(authored.eyeHeight)) {
             eyeHeightRef.current = authored.eyeHeight;
             walk.eyeHeight = authored.eyeHeight;
+            smooth.tuning.eyeHeight = authored.eyeHeight;
           }
           applyInteriorView(camera, orbit, (t) => walk.lookAt(t), view);
           walk.syncFromCamera();
-          applyNavMode(navModeRef.current);
+          applyNavMode(navModeRef.current, true);
           if (apiRef.current) apiRef.current.home = view;
           // Keep canvas hidden; keep rendering so LOD can refine behind the loader
           try {
@@ -1413,6 +1571,7 @@ export const ExperienceTourHost = forwardRef<TourHostHandle, Props>(function Exp
             orbit.update();
             walk.lookAt(orbit.target);
             walk.syncFromCamera();
+            if (smooth.enabled) poseSmoothFromCamera();
             api.fly.t = 0.55;
           } else {
             api.fly.t = Math.min(1, api.fly.t + dt / dur);
@@ -1431,7 +1590,22 @@ export const ExperienceTourHost = forwardRef<TourHostHandle, Props>(function Exp
           orbit.update();
           walk.lookAt(orbit.target);
           walk.syncFromCamera();
-          if (api.fly.t >= 1) api.fly = null;
+          if (api.fly.t >= 1) {
+            api.fly = null;
+            if (smooth.enabled) poseSmoothFromCamera();
+          }
+        }
+      } else if (api && !api.navSuspended && smooth.enabled) {
+        smooth.update(dt);
+        // Keep orbit target in front of the camera so map/orbit stay coherent
+        const ahead = new THREE.Vector3(0, 0, -2).applyQuaternion(camera.quaternion);
+        orbit.target.copy(camera.position).add(ahead);
+        const mt = smooth.getMoveTarget();
+        if (mt) {
+          destMarker.position.set(mt.x, mt.y + 0.03, mt.z);
+          destMarker.visible = true;
+        } else {
+          destMarker.visible = false;
         }
       } else if (api && !api.navSuspended && api.walk.enabled) {
         api.walk.update(dt);
@@ -1463,12 +1637,24 @@ export const ExperienceTourHost = forwardRef<TourHostHandle, Props>(function Exp
       if (onPoseTickRef.current && now - lastPoseAt > 120) {
         lastPoseAt = now;
         const euler = new THREE.Euler().setFromQuaternion(camera.quaternion, "YXZ");
-        onPoseTickRef.current({
-          position: [camera.position.x, camera.position.y, camera.position.z],
-          target: [orbit.target.x, orbit.target.y, orbit.target.z],
-          yaw: euler.y,
-          pitch: euler.x,
-        });
+        if (smooth.enabled) {
+          // Stairs / triggers must follow the body eye, not the boom camera
+          const eye = smooth.getEyePosition();
+          const bodyYaw = smooth.getDebugSnapshot().bodyYaw;
+          onPoseTickRef.current({
+            position: [eye.x, eye.y, eye.z],
+            target: [eye.x - Math.sin(bodyYaw) * 2, eye.y, eye.z - Math.cos(bodyYaw) * 2],
+            yaw: bodyYaw,
+            pitch: euler.x,
+          });
+        } else {
+          onPoseTickRef.current({
+            position: [camera.position.x, camera.position.y, camera.position.z],
+            target: [orbit.target.x, orbit.target.y, orbit.target.z],
+            yaw: euler.y,
+            pitch: euler.x,
+          });
+        }
       }
     };
     tick();
@@ -1483,8 +1669,11 @@ export const ExperienceTourHost = forwardRef<TourHostHandle, Props>(function Exp
       renderer.domElement.removeEventListener("pointerup", onPointerUp, true);
       renderer.domElement.removeEventListener("pointercancel", onPointerUp, true);
       walk.cancelMoveTarget();
+      smooth.cancelMotion();
       walk.exitPointerLock();
       scene.remove(destMarker);
+      scene.remove(smooth.capsuleMesh);
+      scene.remove(smooth.debugGroup);
       destMarker.geometry.dispose();
       (destMarker.material as THREE.Material).dispose();
       transform.dispose();
@@ -1498,6 +1687,7 @@ export const ExperienceTourHost = forwardRef<TourHostHandle, Props>(function Exp
       releaseLccSdk();
       orbit.dispose();
       walk.dispose();
+      smooth.dispose();
       renderer.dispose();
       if (renderer.domElement.parentElement === mount) mount.removeChild(renderer.domElement);
       apiRef.current = null;
@@ -1508,25 +1698,17 @@ export const ExperienceTourHost = forwardRef<TourHostHandle, Props>(function Exp
   useEffect(() => {
     const api = apiRef.current;
     if (!api) return;
-    const walkLike = navMode === "first-person" || navMode === "point-move";
-    api.walk.enabled = walkLike;
-    api.orbit.enabled = navMode === "orbit";
-    api.orbit.enableRotate = navMode === "orbit";
-    api.orbit.enablePan = navMode === "orbit";
-    api.orbit.enableZoom = true;
-    if (!walkLike) {
-      api.walk.cancelMoveTarget();
-      api.walk.exitPointerLock();
-    }
-    if (walkLike) {
-      api.walk.syncFromCamera();
-      try {
-        api.renderer.domElement.focus({ preventScroll: true });
-      } catch {
-        api.renderer.domElement.focus();
-      }
-    }
+    api.applyNavMode(navMode);
   }, [navMode]);
+
+  // Re-apply nav (walk vs smooth, tuning) when the follow style changes — no remount.
+  const smoothTuningKeyProp = smoothTuning ? JSON.stringify(smoothTuning) : "";
+  useEffect(() => {
+    const api = apiRef.current;
+    if (!api) return;
+    api.applyNavMode(navModeRef.current);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cameraFollowStyle, smoothTuningKeyProp]);
 
   useEffect(() => {
     const api = apiRef.current;
@@ -1598,6 +1780,8 @@ export const ExperienceTourHost = forwardRef<TourHostHandle, Props>(function Exp
   useEffect(() => {
     const api = apiRef.current;
     if (!api || !flyTo) return;
+    api.smooth.cancelMotion();
+    api.walk.cancelMoveTarget();
     const vp = flyTo.viewpoint;
     const toEye = new THREE.Vector3(...vp.position);
     const toTarget = new THREE.Vector3(...vp.target);
@@ -1636,9 +1820,12 @@ export const ExperienceTourHost = forwardRef<TourHostHandle, Props>(function Exp
     const api = apiRef.current;
     if (!api || resetToken === 0) return;
     api.fly = null;
+    api.smooth.cancelMotion();
+    api.walk.cancelMoveTarget();
     onFadeRef.current?.(false);
     applyInteriorView(api.camera, api.orbit, (t) => api.walk.lookAt(t), api.home);
     api.walk.syncFromCamera();
+    if (api.smooth.enabled) api.poseSmoothFromCamera();
   }, [resetToken]);
 
   useEffect(() => {

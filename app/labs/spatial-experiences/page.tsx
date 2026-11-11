@@ -906,6 +906,9 @@ export default function SpatialExperiencesPage() {
               <Link href="/labs/property-experience?author=1" className="exp-lab-link">
                 PROD-01 · Two-floor property
               </Link>
+              <Link href="/labs/prod-03?author=1" className="exp-lab-link">
+                PROD-03 · Henna Road (outdoor)
+              </Link>
             </div>
           )}
 

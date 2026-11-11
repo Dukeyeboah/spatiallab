@@ -1,0 +1,13 @@
+{
+  "triangles": 3764,
+  "meshObjects": 14,
+  "materials": 4,
+  "bones": 0,
+  "textures": 0,
+  "bytes": 73508,
+  "bodyDiameterM": 0.24,
+  "restBodyCenterM": 0.27,
+  "front": "GLB +Z",
+  "clips": [],
+  "animation": "Procedural VisualRoot + FinPivot_L / FinPivot_R; no skeletal rig"
+}

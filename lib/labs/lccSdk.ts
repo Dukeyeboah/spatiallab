@@ -65,6 +65,11 @@ export type LccObject = {
 };
 
 export type LoadOptions = {
+  /** SDK 0.6.3 documented cache ceilings (bytes), applied at construction. */
+  maxHostCacheSize?: number;
+  maxGpuCacheSize?: number;
+  maxConcurrentDownloads?: number;
+  workerPerFrameRequests?: number;
   camera: unknown;
   scene: unknown;
   renderLib: unknown;
@@ -78,8 +83,6 @@ export type LoadOptions = {
   appKey?: string | null;
   usePage?: boolean;
   usePrecisionRaycast?: boolean;
-  maxHostCacheSize?: number;
-  maxGpuCacheSize?: number;
 };
 
 export type LCCRenderType = {

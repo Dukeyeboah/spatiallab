@@ -1,0 +1,13 @@
+{
+  "bytes": 1172928,
+  "triangles": 4942,
+  "bones": 32,
+  "drawCalls": 4,
+  "height": 1.65,
+  "clips": [
+    "Idle",
+    "Walk",
+    "Run"
+  ],
+  "source": "Native Blender IK walk, 24 fps; corrected forward direction and mirrored support phase"
+}

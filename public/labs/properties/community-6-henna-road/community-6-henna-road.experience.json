@@ -1,0 +1,412 @@
+{
+  "schema": "spatial-lab/outdoor-road-experience",
+  "version": 1,
+  "property": {
+    "id": "community-6-henna-road",
+    "slug": "community-6-henna-road",
+    "title": "Community 6 \u2014 Henna Road",
+    "description": "An interactive walk along a reconstructed community road section. Explore the captured stretch only \u2014 this is not the entire community.",
+    "category": "Neighborhood & Built Environments",
+    "status": "draft"
+  },
+  "model": {
+    "entry": "Community6HennaRoad.lcc2",
+    "localPath": "/labs/properties/community-6-henna-road/v1-lcc2/Community6HennaRoad.lcc2"
+  },
+  "startCamera": {
+    "position": [
+      -91.85278561596672,
+      1.373473006039236,
+      -27.72490912993146
+    ],
+    "target": [
+      -91.89101304088126,
+      1.2734730060392359,
+      -25.225201414220603
+    ],
+    "yaw": 3.126301087688068,
+    "eyeHeight": 1.5
+  },
+  "defaultNavMode": "avatar",
+  "defaultQualityId": "high",
+  "avatar": {
+    "kind": "orb-assistant-v1.1",
+    "scale": 1.5,
+    "sprintMultiplier": 4.5
+  },
+  "barriers": [
+    {
+      "id": "barrier-ogri5tw",
+      "label": "No entryq",
+      "enabled": true,
+      "center": [
+        -90.3562802595919,
+        3.4,
+        -51.162628893861395
+      ],
+      "size": [
+        25.6,
+        7,
+        1.05
+      ],
+      "denyMessage": "That section is under construction.",
+      "yaw": 0.0
+    },
+    {
+      "id": "barrier-y6zxgvz",
+      "label": "End of Path",
+      "enabled": true,
+      "center": [
+        -209.24174305508888,
+        -4.6,
+        157.18018558404015
+      ],
+      "size": [
+        20.4,
+        5.05,
+        0.45
+      ],
+      "denyMessage": "That section is under construction.",
+      "yaw": 0.0
+    },
+    {
+      "id": "barrier-0m00eop",
+      "label": "no way",
+      "enabled": true,
+      "center": [
+        -81.95824921533469,
+        -2.7523694570101145,
+        84.06168697977651
+      ],
+      "size": [
+        5.8,
+        3.6,
+        0.45
+      ],
+      "denyMessage": "That section is under construction.",
+      "yaw": 0.0
+    },
+    {
+      "id": "barrier-4qhnn5b",
+      "label": "path ends",
+      "enabled": true,
+      "center": [
+        -31.5567214423383,
+        2.35,
+        -3.6774437154775415
+      ],
+      "size": [
+        30.75,
+        7.1,
+        0.45
+      ],
+      "yaw": -1.5609110110076703,
+      "denyMessage": "That section is under construction."
+    },
+    {
+      "id": "barrier-2klbatb",
+      "label": "blocked",
+      "enabled": true,
+      "center": [
+        -211.1699946420643,
+        0.1,
+        -7.662433568163335
+      ],
+      "size": [
+        28.1,
+        5.15,
+        0.45
+      ],
+      "yaw": 1.5876743014795303,
+      "denyMessage": "That section is under construction."
+    },
+    {
+      "id": "barrier-75ywg9y",
+      "label": "rough path",
+      "enabled": true,
+      "center": [
+        49.66271536453689,
+        1.8,
+        78.07127950118851
+      ],
+      "size": [
+        26.75,
+        6.45,
+        0.45
+      ],
+      "yaw": -1.6880910057385143,
+      "denyMessage": "That section is under construction."
+    },
+    {
+      "id": "barrier-i2u5a2d",
+      "label": "no way",
+      "enabled": true,
+      "center": [
+        4.125559424618217,
+        2.8,
+        1.0877431633838994
+      ],
+      "size": [
+        34.4,
+        5.15,
+        0.45
+      ],
+      "yaw": 1.606353994287118,
+      "denyMessage": "That section is under construction."
+    },
+    {
+      "id": "barrier-y1jccdl",
+      "label": "road ends",
+      "enabled": true,
+      "center": [
+        51.37182269602883,
+        9.8,
+        -206.89413442382147
+      ],
+      "size": [
+        26.7,
+        4.45,
+        0.45
+      ],
+      "yaw": -0.09324631281558471,
+      "denyMessage": "That section is under construction."
+    },
+    {
+      "id": "barrier-bwtye9x",
+      "label": "road end",
+      "enabled": true,
+      "center": [
+        224.25047211501544,
+        8,
+        9.220385392320125
+      ],
+      "size": [
+        26.6,
+        5,
+        0.45
+      ],
+      "yaw": -1.541050916793322,
+      "denyMessage": "That section is under construction."
+    },
+    {
+      "id": "barrier-pp4ebak",
+      "label": "Road barrier",
+      "enabled": true,
+      "center": [
+        -175.35,
+        -3.601433681358669,
+        78.8
+      ],
+      "size": [
+        23.45,
+        2.8,
+        4.25
+      ],
+      "yaw": 3.10668606854991,
+      "denyMessage": "That section is under construction."
+    }
+  ],
+  "props": [
+    {
+      "id": "prop-ntryggy",
+      "kind": "sign",
+      "label": "Road works sign",
+      "position": [
+        49.13791672284563,
+        7.6,
+        -206.45663521676659
+      ],
+      "yaw": -0.0013263184820262452,
+      "scale": 1,
+      "visible": true
+    },
+    {
+      "id": "prop-eq86m2i",
+      "kind": "sign",
+      "label": "Road works sign",
+      "position": [
+        224.01430105416296,
+        5.7,
+        9.545897965632651
+      ],
+      "yaw": -1.5551566256231766,
+      "scale": 1,
+      "visible": true
+    },
+    {
+      "id": "prop-7skeh2i",
+      "kind": "roadworks",
+      "label": "Prepare to stop (roadworks)",
+      "position": [
+        4.25,
+        0.75,
+        1.15
+      ],
+      "yaw": 1.34390352403563,
+      "scale": 1.35,
+      "visible": true
+    },
+    {
+      "id": "prop-ysc3mte",
+      "kind": "sign",
+      "label": "Road works sign",
+      "position": [
+        49.50871799527407,
+        -0.65,
+        78.25
+      ],
+      "yaw": -1.636030448440587,
+      "scale": 1.2,
+      "visible": true
+    },
+    {
+      "id": "prop-6ktf0ta",
+      "kind": "roadworks",
+      "label": "Prepare to stop (roadworks)",
+      "position": [
+        -82.49623745115392,
+        -3.65,
+        83.83208695700341
+      ],
+      "yaw": 3.021944551559413,
+      "scale": 1,
+      "visible": true
+    },
+    {
+      "id": "prop-9ok65yn",
+      "kind": "roadworks",
+      "label": "Prepare to stop (roadworks)",
+      "position": [
+        -210.96281238262196,
+        -2.7,
+        -6.2790261230734075
+      ],
+      "yaw": 1.600528937238762,
+      "scale": 1.15,
+      "visible": true
+    },
+    {
+      "id": "prop-3wqxmre",
+      "kind": "roadworks",
+      "label": "Prepare to stop (roadworks)",
+      "position": [
+        -31.79131626511387,
+        -0.5,
+        -2.707973754532363
+      ],
+      "yaw": -1.60570291183478,
+      "scale": 1.1,
+      "visible": true
+    },
+    {
+      "id": "prop-baykts6",
+      "kind": "roadworks",
+      "label": "Prepare to stop (roadworks)",
+      "position": [
+        -90.3,
+        0.55,
+        -50.65
+      ],
+      "yaw": -0.0012463699280067131,
+      "scale": 1.4,
+      "visible": true
+    },
+    {
+      "id": "prop-0ymrx76",
+      "kind": "sign",
+      "label": "Road works sign",
+      "position": [
+        -183.4,
+        -4.55,
+        77.1
+      ],
+      "yaw": -1.67551608191456,
+      "scale": 0.85,
+      "visible": true
+    },
+    {
+      "id": "prop-ospbcw0",
+      "kind": "sign",
+      "label": "Road works sign",
+      "position": [
+        -164.4096502215426,
+        -4.45,
+        77.50205124572702
+      ],
+      "yaw": 1.4593807804956658,
+      "scale": 0.8,
+      "visible": true
+    },
+    {
+      "id": "prop-f1ursfc",
+      "kind": "sign",
+      "label": "Road works sign",
+      "position": [
+        -178.85,
+        -4.5,
+        76.25
+      ],
+      "yaw": 3.0183457804828517,
+      "scale": 0.75,
+      "visible": true
+    },
+    {
+      "id": "prop-96vk52b",
+      "kind": "sign",
+      "label": "Road works sign",
+      "position": [
+        -174.17586698158388,
+        -4.55,
+        76.06797442149988
+      ],
+      "yaw": -3.1222945267351765,
+      "scale": 0.75,
+      "visible": true
+    }
+  ],
+  "locations": [
+    {
+      "id": "loc-ba5vqpi",
+      "name": "Checkpoint B",
+      "order": 0,
+      "position": [
+        -211.71643210987583,
+        -2.620131069193212,
+        74.99534658925512
+      ],
+      "target": [
+        -209.2295209342007,
+        -2.720131069193212,
+        75.25083201800241
+      ],
+      "yaw": -1.6731692195043344,
+      "visitorVisible": true,
+      "showInScene": true,
+      "previewImageUrl": "/labs/properties/community-6-henna-road/previews/locations/checkpoint-b.jpg"
+    },
+    {
+      "id": "loc-j6p1vy3",
+      "name": "Checkpoint C",
+      "order": 1,
+      "position": [
+        14.214255349392968,
+        2.3169385419535518,
+        14.343772984591542
+      ],
+      "target": [
+        15.74981987934561,
+        2.2169385419535517,
+        12.370947200506357
+      ],
+      "yaw": -0.6614045266198474,
+      "visitorVisible": true,
+      "showInScene": true,
+      "previewImageUrl": "/labs/properties/community-6-henna-road/previews/locations/checkpoint-c.jpg"
+    }
+  ],
+  "previewImageUrl": "/labs/properties/community-6-henna-road/previews/cover.jpg",
+  "notes": "PROD-03 lab draft. Place barriers after inspecting the road. Do not publish until approved.",
+  "updatedAt": "2026-11-11T10:37:15.365Z",
+  "blockVisual": "hidden",
+  "startPreviewImageUrl": "/labs/properties/community-6-henna-road/previews/locations/starting-point.jpg"
+}

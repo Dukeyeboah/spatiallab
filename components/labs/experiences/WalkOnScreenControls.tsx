@@ -130,7 +130,7 @@ export function WalkOnScreenControls({ visible, api, which = "both" }: Props) {
               <b>→</b>
             </button>
           </div>
-          <p className="exp-pad-hint">Keyboard: WASD or ↑ ↓ ← →</p>
+          <p className="exp-pad-hint">Keyboard: WASD / arrows · Shift to run</p>
         </div>
       )}
 

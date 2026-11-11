@@ -1,0 +1,13 @@
+{
+  "bytes": 678908,
+  "triangles": 3804,
+  "bones": 60,
+  "drawCalls": 3,
+  "height": 1.45,
+  "clips": [
+    "Idle",
+    "Walk",
+    "Run"
+  ],
+  "source": "Original shell/rig; new stable idle and forward hover loops, no demo gestures"
+}

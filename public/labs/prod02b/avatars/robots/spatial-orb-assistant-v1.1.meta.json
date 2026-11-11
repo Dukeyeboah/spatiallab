@@ -1,0 +1,16 @@
+{
+  "version": "1.1",
+  "source": "Refined copy of spatial-orb-assistant-v1.blend",
+  "triangles": 4808,
+  "meshObjects": 14,
+  "materials": 4,
+  "bones": 0,
+  "textures": 0,
+  "bytes": 97164,
+  "bodyDiameterM": 0.24,
+  "restBodyCenterM": 0.27,
+  "front": "GLB +Z",
+  "clips": [],
+  "hierarchyChanges": [],
+  "animation": "Existing procedural VisualRoot + FinPivot_L/R unchanged; eye lenses, seams and fin joints joined into existing meshes"
+}

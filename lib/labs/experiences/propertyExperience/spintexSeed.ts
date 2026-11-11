@@ -11,7 +11,8 @@ import {
 
 /**
  * Provisional Spintex House two-floor demo (LAB PROD-01).
- * Models: extracted locally under public/labs/properties/spintex-house/v1/ (gitignored).
+ * Models: LCC2 primary under public/labs/properties/spintex-house/v1-lcc2/ (gitignored);
+ * portable .lcc kept under v1/ as rollback.
  * Final client name TBD — provisionalName true until confirmed.
  */
 export const SPINTEX_PROPERTY_ID = "spintex-house";
@@ -246,6 +247,24 @@ export function ensureSpintexStairDefaults(
         floor = { ...floor, name: "Downstairs" };
         floorChanged = true;
       }
+      // Prefer LCC2 primary; portable .lcc remains under v1/ for rollback
+      if (
+        floor.model.entry.endsWith(".lcc") ||
+        floor.model.localBasePath?.includes("/v1/ground")
+      ) {
+        floor = {
+          ...floor,
+          model: {
+            ...floor.model,
+            entry: "SpintexHouseGroundFloor.lcc2",
+            localBasePath: "/labs/properties/spintex-house/v1-lcc2/ground",
+          },
+          notes:
+            floor.notes ??
+            "Primary: LCC2 v1-lcc2/ground. Rollback portable: v1/ground/SpintexHouseGroundFloor.lcc",
+        };
+        floorChanged = true;
+      }
       const desiredPreview = "/labs/properties/spintex-house/v1/previews/downstairs.jpg";
       if (
         !floor.previewImageUrl ||
@@ -269,6 +288,23 @@ export function ensureSpintexStairDefaults(
     if (f.id === "first") {
       if (floor.name === "First Floor") {
         floor = { ...floor, name: "Upstairs" };
+        floorChanged = true;
+      }
+      if (
+        floor.model.entry.endsWith(".lcc") ||
+        floor.model.localBasePath?.includes("/v1/first")
+      ) {
+        floor = {
+          ...floor,
+          model: {
+            ...floor.model,
+            entry: "SpintexUpstairs.lcc2",
+            localBasePath: "/labs/properties/spintex-house/v1-lcc2/first",
+          },
+          notes:
+            floor.notes ??
+            "Primary: LCC2 v1-lcc2/first. Rollback portable: v1/first/SpintexUpstairs.lcc",
+        };
         floorChanged = true;
       }
       const desiredPreview = "/labs/properties/spintex-house/v1/previews/upstairs.jpg";
@@ -321,8 +357,8 @@ export function createSpintexSeed(): PropertyExperienceConfig {
         name: "Downstairs",
         order: 0,
         model: {
-          entry: "SpintexHouseGroundFloor.lcc",
-          localBasePath: "/labs/properties/spintex-house/v1/ground",
+          entry: "SpintexHouseGroundFloor.lcc2",
+          localBasePath: "/labs/properties/spintex-house/v1-lcc2/ground",
         },
         previewImageUrl: "/labs/properties/spintex-house/v1/previews/downstairs.jpg",
         startCamera: null,
@@ -330,7 +366,8 @@ export function createSpintexSeed(): PropertyExperienceConfig {
         viewpoints: [],
         floorPlan: null,
         visitorVisible: true,
-        notes: "Source archive: Spintex House Ground Floor_render.zip (~13M splats, Portable .lcc)",
+        notes:
+          "Primary: LCC2 v1-lcc2/ground. Rollback portable: v1/ground/SpintexHouseGroundFloor.lcc",
         blockZones: [groundStairBlockZone()],
       },
       {
@@ -338,8 +375,8 @@ export function createSpintexSeed(): PropertyExperienceConfig {
         name: "Upstairs",
         order: 1,
         model: {
-          entry: "SpintexUpstairs.lcc",
-          localBasePath: "/labs/properties/spintex-house/v1/first",
+          entry: "SpintexUpstairs.lcc2",
+          localBasePath: "/labs/properties/spintex-house/v1-lcc2/first",
         },
         previewImageUrl: "/labs/properties/spintex-house/v1/previews/upstairs.jpg",
         startCamera: null,
@@ -347,7 +384,7 @@ export function createSpintexSeed(): PropertyExperienceConfig {
         viewpoints: [],
         floorPlan: null,
         visitorVisible: true,
-        notes: "Source archive: Spintex Upstairs_render.zip (~Portable .lcc)",
+        notes: "Primary: LCC2 v1-lcc2/first. Rollback portable: v1/first/SpintexUpstairs.lcc",
         blockZones: [firstStairBlockZone()],
       },
     ],
